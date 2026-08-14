@@ -1,0 +1,7 @@
+w32api headers: 14.0.0.r0.g9b3dd0125
+payload: w32api-headers-14.0.0.r0.g9b3dd0125.tar.zst
+source boundary: vendored in crutkas/MSYS2-packages
+
+The payload contains only the public headers installed by the matching
+msys2-w32api-headers package. It contains no prebuilt objects, libraries, DLLs,
+executables, or compiler binaries.

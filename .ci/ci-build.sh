@@ -10,7 +10,11 @@ DIR="$( cd "$( dirname "$0" )" && pwd )"
 
 # Configure
 mkdir artifacts
-git remote add upstream 'https://github.com/MSYS2/MSYS2-packages'
+if [[ "${GITHUB_REPOSITORY_OWNER:-}" == "crutkas" ]]; then
+    git remote add upstream "https://github.com/${GITHUB_REPOSITORY}.git"
+else
+    git remote add upstream 'https://github.com/MSYS2/MSYS2-packages'
+fi
 git fetch --quiet upstream
 # reduce time required to install packages by disabling pacman's disk space checking
 sed -i 's/^CheckSpace/#CheckSpace/g' /etc/pacman.conf
