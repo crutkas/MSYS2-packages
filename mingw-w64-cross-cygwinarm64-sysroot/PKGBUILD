@@ -1,0 +1,211 @@
+# Maintainer: Chris Reddington <crutkas@microsoft.com>
+
+_target=aarch64-pc-cygwin
+_runtime_commit=ee50e02239f3a10f5a5d7321c2ef9a40a756f2e0
+_runtime_root=msys2-runtime-${_runtime_commit}
+_w32api_version=14.0.0.r0.g9b3dd0125
+
+pkgbase=mingw-w64-cross-cygwinarm64-sysroot
+pkgname=(
+  mingw-w64-cross-cygwinarm64-headers
+  mingw-w64-cross-cygwinarm64-windows-default-manifest
+  mingw-w64-cross-cygwinarm64-sysroot
+)
+pkgver=3.6.10.r0.gee50e0223
+pkgrel=1
+pkgdesc="Compile-time Cygwin/newlib/w32api sysroot for an aarch64-pc-cygwin target"
+arch=('x86_64')
+url="https://github.com/crutkas/msys2-runtime"
+msys2_repository_url="https://github.com/crutkas/msys2-runtime"
+license=('GPL' 'LGPL' 'custom')
+groups=('mingw-w64-cross-toolchain' 'mingw-w64-cross')
+makedepends=('mingw-w64-cross-cygwinarm64-binutils')
+options=('!strip' '!buildflags' '!emptydirs')
+source=(
+  "msys2-runtime-${_runtime_commit}.tar.gz::https://github.com/crutkas/msys2-runtime/archive/${_runtime_commit}.tar.gz"
+  "w32api-headers-${_w32api_version}.tar.zst"
+  newlib.h
+  _newlib_version.h
+  cygwin-compile-only.specs
+  default-manifest.rc
+  default.manifest
+  README.md
+  W32API-SNAPSHOT
+  validate-sysroot.sh
+  newlib-test.c
+  winsup-test.c
+  w32api-test.c
+  abi-test.c
+  sysroot-probe.s
+)
+sha256sums=('0b99b8ce7290c2f1e09dd4febb74172fa422a464ae2db461634556b86ad2fc83'
+            '48f71ba7e14629455259e4a618c0585f31120f51544b88a39cf60f9e8faa2424'
+            'c3f972270c49cb7b6c8690dcb954f7a99394d38c346e2b63add0f35db455bc66'
+            'c36e1a0abd196b35c15ef8d3a695a237ae9812f575f99adebe130dff3b7eb56a'
+            'a54acb9e36aa625770ceb7c08c7fc2cc7e5de7b5f9e317ae223d5d28617a7b99'
+            'dcd90c672825f64c599cb314cc53f17f52ae37e9fb8767a699789a3f580204a1'
+            'bda436b309e682e1b5d6095e122b16087435dcd7f8e12aab6e568036a649f580'
+            '1f9652bebea937575619536653009d6cec653bc7883f01a3e6ebd0ee1d3866bb'
+            '947f9af54085ab87da8156f93e58d4a9b6669a04483ed2a7ccff7229234abbd7'
+            '7065df99e8a32832ae806f0fb97f87c4c8643ff844882437206bf5f8e31da5ec'
+            'd084ac05034379e33a71dc300962ce71728df9f6a3be279181d13dd234d9b492'
+            '47a9e64c00b6f392c93137c83919a881af1d5fc5755cdf179959f8b0ab200228'
+            'd58fd293f20625d2c8b2496ae215d115c017401488cedefb59ebd7c5090fc2f1'
+            'b48ad8c1468272a2ab069b1af4d69f40d1b0770d15725560cb2a2f013f4edcaf'
+            '9ea504b3a75b3d5a314b0899a13ae7bb911dfaa27ca5d059fc26f3abdc340ef9')
+
+build() {
+  local _headers="${srcdir}/sysroot-headers"
+  local _manifest="${srcdir}/sysroot-default-manifest"
+  local _prefix="opt/${_target}"
+
+  rm -rf "${_headers}" "${_manifest}"
+  mkdir -p \
+    "${_headers}/${_prefix}/include" \
+    "${_headers}/${_prefix}/lib" \
+    "${_headers}/${_prefix}/share/cygwin-sysroot/tests" \
+    "${_manifest}/${_prefix}/lib"
+
+  cp -a "${srcdir}/${_runtime_root}/newlib/libc/include/." \
+    "${_headers}/${_prefix}/include/"
+  rm -f "${_headers}/${_prefix}/include/newlib.h"
+
+  if [[ -d "${srcdir}/${_runtime_root}/newlib/libc/machine/aarch64/machine" ]]; then
+    cp -a "${srcdir}/${_runtime_root}/newlib/libc/machine/aarch64/machine/." \
+      "${_headers}/${_prefix}/include/machine/"
+  fi
+  if [[ -d "${srcdir}/${_runtime_root}/newlib/libc/machine/aarch64/include" ]]; then
+    cp -a "${srcdir}/${_runtime_root}/newlib/libc/machine/aarch64/include/." \
+      "${_headers}/${_prefix}/include/"
+  fi
+
+  cp -a "${srcdir}/${_runtime_root}/winsup/cygwin/include/." \
+    "${_headers}/${_prefix}/include/"
+  cp -a "${srcdir}/w32api/." \
+    "${_headers}/${_prefix}/include/w32api/"
+
+  install -m644 \
+    "${srcdir}/newlib.h" \
+    "${_headers}/${_prefix}/include/newlib.h"
+  install -m644 \
+    "${srcdir}/_newlib_version.h" \
+    "${_headers}/${_prefix}/include/_newlib_version.h"
+  install -m644 \
+    "${srcdir}/cygwin-compile-only.specs" \
+    "${_headers}/${_prefix}/lib/cygwin-compile-only.specs"
+
+  install -m644 \
+    "${srcdir}/README.md" \
+    "${srcdir}/W32API-SNAPSHOT" \
+    "${_headers}/${_prefix}/share/cygwin-sysroot/"
+  install -m755 \
+    "${srcdir}/validate-sysroot.sh" \
+    "${_headers}/${_prefix}/share/cygwin-sysroot/"
+  install -m644 \
+    "${srcdir}/newlib-test.c" \
+    "${srcdir}/winsup-test.c" \
+    "${srcdir}/w32api-test.c" \
+    "${srcdir}/abi-test.c" \
+    "${_headers}/${_prefix}/share/cygwin-sysroot/tests/"
+  mv \
+    "${_headers}/${_prefix}/share/cygwin-sysroot/tests/newlib-test.c" \
+    "${_headers}/${_prefix}/share/cygwin-sysroot/tests/newlib.c"
+  mv \
+    "${_headers}/${_prefix}/share/cygwin-sysroot/tests/winsup-test.c" \
+    "${_headers}/${_prefix}/share/cygwin-sysroot/tests/winsup.c"
+  mv \
+    "${_headers}/${_prefix}/share/cygwin-sysroot/tests/w32api-test.c" \
+    "${_headers}/${_prefix}/share/cygwin-sysroot/tests/w32api.c"
+  mv \
+    "${_headers}/${_prefix}/share/cygwin-sysroot/tests/abi-test.c" \
+    "${_headers}/${_prefix}/share/cygwin-sysroot/tests/abi.c"
+
+  aarch64-pc-cygwin-windres \
+    --preprocessor=/usr/bin/cpp \
+    --input="${srcdir}/default-manifest.rc" \
+    --output="${_manifest}/${_prefix}/lib/default-manifest.o"
+
+  aarch64-pc-cygwin-objdump -f \
+    "${_manifest}/${_prefix}/lib/default-manifest.o" \
+    | grep -F "file format pe-aarch64-little"
+
+  {
+    (
+      cd "${_headers}"
+      find opt -type f -print0 | sort -z | xargs -0 sha256sum
+    )
+    (
+      cd "${_manifest}"
+      find opt -type f -print0 | sort -z | xargs -0 sha256sum
+    )
+  } | sort -k2 \
+    > "${srcdir}/sysroot-manifest.sha256"
+}
+
+check() {
+  local _headers="${srcdir}/sysroot-headers"
+  local _manifest="${srcdir}/sysroot-default-manifest"
+  local _prefix="opt/${_target}"
+
+  test -f "${_headers}/${_prefix}/include/newlib.h"
+  test -f "${_headers}/${_prefix}/include/cygwin/version.h"
+  test -f "${_headers}/${_prefix}/include/w32api/windows.h"
+  test -f "${_headers}/${_prefix}/lib/cygwin-compile-only.specs"
+  test -f "${_manifest}/${_prefix}/lib/default-manifest.o"
+  test -f "${srcdir}/sysroot-manifest.sha256"
+  test -z "$(
+    awk '{print $2}' "${srcdir}/sysroot-manifest.sha256" \
+      | sort | uniq -d
+  )"
+
+  ! find "${_headers}" "${_manifest}" -type f \
+    \( -name '*.dll' -o -name '*.exe' -o -name 'crt0.o' \
+       -o -name 'libcygwin.a' -o -name 'libmsys-2.0.a' \) \
+    | grep -q .
+
+  aarch64-pc-cygwin-objdump -f \
+    "${_manifest}/${_prefix}/lib/default-manifest.o" \
+    | grep -F "architecture: aarch64"
+
+  (
+    cd "${srcdir}"
+    aarch64-pc-cygwin-as -o sysroot-probe.o \
+      "${srcdir}/sysroot-probe.s"
+    aarch64-pc-cygwin-objdump -f sysroot-probe.o \
+      | grep -F "file format pe-aarch64-little"
+    rm -f sysroot-probe.o
+  )
+}
+
+package_mingw-w64-cross-cygwinarm64-headers() {
+  pkgdesc="Cygwin, newlib, and w32api headers for aarch64-pc-cygwin"
+  provides=("aarch64-pc-cygwin-headers=${pkgver}")
+  conflicts=('aarch64-pc-cygwin-headers'
+             'mingw-w64-cross-cygwin-arm64-headers')
+
+  cp -a "${srcdir}/sysroot-headers/." "${pkgdir}/"
+}
+
+package_mingw-w64-cross-cygwinarm64-windows-default-manifest() {
+  pkgdesc="Default Windows application manifest for aarch64-pc-cygwin"
+  provides=("aarch64-pc-cygwin-windows-default-manifest=${pkgver}")
+  conflicts=('aarch64-pc-cygwin-windows-default-manifest'
+             'mingw-w64-cross-cygwin-arm64-windows-default-manifest')
+
+  cp -a "${srcdir}/sysroot-default-manifest/." "${pkgdir}/"
+}
+
+package_mingw-w64-cross-cygwinarm64-sysroot() {
+  pkgdesc="Compile-only sysroot package set for aarch64-pc-cygwin"
+  depends=(
+    "mingw-w64-cross-cygwinarm64-headers=${pkgver}-${pkgrel}"
+    "mingw-w64-cross-cygwinarm64-windows-default-manifest=${pkgver}-${pkgrel}"
+  )
+  provides=("aarch64-pc-cygwin-sysroot=${pkgver}")
+  conflicts=('aarch64-pc-cygwin-sysroot'
+             'mingw-w64-cross-cygwin-arm64-sysroot')
+
+  install -Dm644 \
+    "${srcdir}/sysroot-manifest.sha256" \
+    "${pkgdir}/usr/share/cygwinarm64-sysroot/sysroot-manifest.sha256"
+}
