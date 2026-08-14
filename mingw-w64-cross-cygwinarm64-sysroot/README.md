@@ -4,6 +4,15 @@ This package set installs the source-derived newlib and Cygwin headers, a
 vendored w32api header snapshot, a compile-only GCC specs fragment, and a
 target-built default manifest under `/opt/aarch64-pc-cygwin`.
 
+## Source pins
+
+- runtime/newlib/winsup:
+  `crutkas/msys2-runtime@ee50e02239f3a10f5a5d7321c2ef9a40a756f2e0`
+- w32api headers: vendored `14.0.0.r0.g9b3dd0125` snapshot
+
+The runtime SHA is the frozen first ARM64 configuration and register-context
+base. It does not claim a linkable ARM64 runtime DLL.
+
 ## Install order
 
 1. `mingw-w64-cross-cygwinarm64-binutils`
@@ -28,8 +37,11 @@ This is a compile-time bootstrap sysroot. It intentionally does not contain
 the Cygwin convenience archives. None of those can be authoritative until the
 first ARM64 MSYS runtime is linked.
 
-The first runtime link must explicitly produce `msys-2.0.dll` with entry point
-`_msys_dll_entry`. Its source build must supply:
+The runtime build links `new-msys-2.0.dll` with entry point `dll_entry`, then
+installs it as `${bindir}/msys-2.0.dll`. `_msys_dll_entry` is not the runtime
+DLL entry point.
+
+The first runtime link must supply:
 
 - the generated MSYS linker script and export definition;
 - the runtime `libdll.a` and version objects;
@@ -38,10 +50,24 @@ The first runtime link must explicitly produce `msys-2.0.dll` with entry point
 - target `libgcc`;
 - legitimate ARM64 `libkernel32.a` and `libntdll.a`.
 
-That link produces the DLL-side import archive used by the runtime's
-`mkimport` step. Only then may the runtime package install
-`libmsys-2.0.a`, `crt0.o`, `gcrt0.o`, and its derived convenience archives.
-No `libcygwin.a` compatibility alias belongs in this bootstrap layer.
+That link produces the temporary linker import archive `msysdll.a`. The
+runtime's `mkimport` step combines it with the runtime CRT objects to produce
+`${exec_prefix}/aarch64-pc-cygwin/lib/libmsys-2.0.a`.
+
+Normal target executable links then reserve:
+
+- `${exec_prefix}/aarch64-pc-cygwin/lib/crt0.o`, which defines
+  `mainCRTStartup` and calls `msys_crt0`;
+- `${exec_prefix}/aarch64-pc-cygwin/lib/libmsys-2.0.a`.
+
+MSYS-linked user DLLs use `_msys_dll_entry`, defined through
+`DECLARE_CYGWIN_DLL`/`dll_entry.o` and supplied by `libmsys-2.0.a`.
+
+The runtime-generated target library namespace also reserves `libc.a`,
+`libm.a`, `libpthread.a`, `libdl.a`, `libutil.a`, `libresolv.a`, `librt.a`,
+`libacl.a`, `libssp.a`, and `libaio.a`. These are later link-surface artifacts,
+not prerequisites already proven by the frozen source SHA. No `libcygwin.a`
+compatibility alias belongs in this bootstrap layer.
 
 The remaining pre-runtime blocker is a fork-local, source-pinned w32api-runtime
 build that can emit the ARM64 Windows import libraries. Header-only packaging
