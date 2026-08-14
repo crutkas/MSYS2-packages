@@ -1,0 +1,14 @@
+*
+!.gitignore
+!PKGBUILD
+!README.stage0.md
+!abi.c
+!newlib-fragment.c
+!register-pressure.c
+!sysroot-fragment.c
+!sysroot-fragment.cc
+!tls.c
+!unwind.c
+!validate-stage0.sh
+!validate-sysroot.sh
+!winsup-fragment.cc
