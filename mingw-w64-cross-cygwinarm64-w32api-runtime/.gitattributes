@@ -1,0 +1,5 @@
+PKGBUILD text eol=lf
+validate-w32api-runtime.sh binary !eol
+w32api-link-smoke.c binary !eol
+default-manifest.rc text eol=lf
+default.manifest text eol=lf
