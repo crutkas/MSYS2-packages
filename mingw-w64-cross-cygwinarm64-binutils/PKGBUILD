@@ -1,0 +1,127 @@
+# Maintainer: Chris Reddington <crutkas@microsoft.com>
+
+_realname=binutils
+_target=aarch64-pc-cygwin
+_base_commit=44335833f8f734f978211b082b15aed14efcf958
+_pdata_commit=9df1438fd25b08fecdbdf9fc96d30939714cc5cb
+_import_commit=71d45656ca7aaf6895332ce9ef7cabc81ad3eaf0
+pkgname=mingw-w64-cross-cygwinarm64-${_realname}
+pkgver=2.44.50
+pkgrel=1
+pkgdesc="GNU binary utilities for an x86_64 MSYS host and aarch64-pc-cygwin target"
+arch=('x86_64')
+url="https://github.com/crutkas/binutils-woarm64"
+msys2_repository_url="https://github.com/crutkas/binutils-woarm64"
+license=('GPL')
+groups=('mingw-w64-cross-toolchain' 'mingw-w64-cross')
+depends=('libiconv' 'libintl' 'zlib' 'libzstd')
+makedepends=('gcc' 'gettext-devel' 'git' 'libiconv-devel' 'libzstd-devel'
+             'zlib-devel')
+checkdepends=('bc' 'dejagnu')
+provides=("aarch64-pc-cygwin-binutils=${pkgver}"
+          "mingw-w64-cross-cygwin-arm64-binutils=${pkgver}")
+conflicts=('aarch64-pc-cygwin-binutils'
+           'mingw-w64-cross-cygwin-arm64-binutils')
+options=('staticlibs' '!distcc' '!ccache' '!buildflags')
+source=("${_realname}-${_base_commit}.tar.gz::https://github.com/crutkas/binutils-woarm64/archive/${_base_commit}.tar.gz"
+        "${_pdata_commit}.patch::https://github.com/crutkas/binutils-woarm64/commit/${_pdata_commit}.patch"
+        "${_import_commit}.patch::https://github.com/crutkas/binutils-woarm64/commit/${_import_commit}.patch"
+        aarch64-cygwin.exp
+        pdata-aarch64-cygwin.d
+        arm64-short-import-cygwin.d
+        0002-check-for-unusual-file-harder.patch
+        0010-bfd-Increase-_bfd_coff_max_nscns-to-65279.patch
+        9999-workarounds.patch)
+sha256sums=('fc2ab393c06a340d00a1b7cfc8be4b9cd807d0a7189bbb42075a9e3dbf3c5f20'
+            'bf38ea2e7379277e1b2ab6f0ad231bc105c38e462d93ad6e6c038ff3b28cc49d'
+            'f42e7c725c3fe171d82d268e43d925665f72d3c419b7fc3ba0cc983fc3ff6c8c'
+            '2ef3cb80de94a064363831243f7eb261d370a83bd05e2e94cc10d5917eaabb7a'
+            'd428cf324b8a744bfa5b35ec8ba9214649a2da047c08cd5d2849cffd7a31eb0a'
+            'd739779c2054e3c928810b78989d82b8ea3174e08a924145275826408cfddf09'
+            '8a29a639c222c17565bed351f3c47ad26a474a6b745e5d51dcbdefba15820b46'
+            '4e8ac055df61b1b5d6ae29dc87e1154737c2e87c7b244b44866702cabf1a5d18'
+            '261eef15d27d0bf8fcbb0e68a1e6a0f58b5f7ceeb55fd10b39f2352502b3690e')
+
+prepare() {
+  cd "${srcdir}/${_realname}-woarm64-${_base_commit}"
+
+  git init --quiet
+  git apply --whitespace=nowarn \
+    "${srcdir}/${_pdata_commit}.patch" \
+    "${srcdir}/${_import_commit}.patch"
+  rm -rf .git
+
+  local _patch
+  for _patch in \
+    0002-check-for-unusual-file-harder.patch \
+    0010-bfd-Increase-_bfd_coff_max_nscns-to-65279.patch \
+    9999-workarounds.patch
+  do
+    patch -Np1 -i "${srcdir}/${_patch}"
+  done
+
+  install -m644 \
+    "${srcdir}/aarch64-cygwin.exp" \
+    "${srcdir}/pdata-aarch64-cygwin.d" \
+    "${srcdir}/arm64-short-import-cygwin.d" \
+    ld/testsuite/ld-pe/
+}
+
+build() {
+  mkdir -p "${srcdir}/build-${_target}"
+  cd "${srcdir}/build-${_target}"
+
+  export MSYSTEM=CYGWIN
+  "${srcdir}/${_realname}-woarm64-${_base_commit}/configure" \
+    --build="${CHOST}" \
+    --host="${CHOST}" \
+    --target="${_target}" \
+    --prefix=/opt \
+    --with-sysroot="/opt/${_target}" \
+    --with-build-sysroot="/opt/${_target}" \
+    --with-libiconv-prefix=/usr \
+    --with-system-zlib \
+    --enable-64-bit-bfd \
+    --enable-deterministic-archives \
+    --enable-lto \
+    --enable-plugins \
+    --disable-dependency-tracking \
+    --disable-gdb \
+    --disable-gdbserver \
+    --disable-gprofng \
+    --disable-sim \
+    --disable-werror
+
+  # Texinfo 7.2 rejects the old manuals. Skip only documentation generation;
+  # make still propagates compiler and linker failures.
+  make MAKEINFO=true
+}
+
+check() {
+  cd "${srcdir}/build-${_target}"
+
+  make -C bfd LDFLAGS="" MAKEINFO=true check
+
+  local _bfd_object="${srcdir}/bfd-aarch64-pe.o"
+  ./gas/as-new -o "${_bfd_object}" \
+    "${srcdir}/${_realname}-woarm64-${_base_commit}/ld/testsuite/ld-pe/pdata-aarch64.s"
+  ./binutils/objdump -f "${_bfd_object}" | grep -F "file format pe-aarch64-little"
+  ./binutils/objdump -f "${_bfd_object}" | grep -F "architecture: aarch64"
+  rm -f "${_bfd_object}"
+
+  make -C binutils LDFLAGS="" MAKEINFO=true check \
+    RUNTESTFLAGS="binutils-all/aarch64/aarch64.exp"
+  make -C ld LDFLAGS="" MAKEINFO=true check \
+    RUNTESTFLAGS="ld-pe/aarch64-cygwin.exp"
+}
+
+package() {
+  cd "${srcdir}/build-${_target}"
+
+  make MAKEINFO=true DESTDIR="${pkgdir}" install
+  rm -rf "${pkgdir}/opt/include"
+  rm -rf "${pkgdir}/opt/lib"
+  rm -rf "${pkgdir}/opt/share/gdb"
+  rm -rf "${pkgdir}/opt/share/info"
+  rm -rf "${pkgdir}/opt/share/locale"
+}

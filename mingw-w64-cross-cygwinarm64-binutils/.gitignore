@@ -1,0 +1,9 @@
+*
+!PKGBUILD
+!aarch64-cygwin.exp
+!arm64-short-import-cygwin.d
+!pdata-aarch64-cygwin.d
+!0002-check-for-unusual-file-harder.patch
+!0010-bfd-Increase-_bfd_coff_max_nscns-to-65279.patch
+!9999-workarounds.patch
+!.gitignore

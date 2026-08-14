@@ -1,0 +1,17 @@
+# Focused AArch64 Cygwin tests for package validation.
+
+if {![is_pecoff_format] || ![istarget "aarch64-*-cygwin*"]} {
+    return
+}
+
+run_dump_test "pdata-aarch64-cygwin"
+run_dump_test "arm64-addr32-overflow"
+
+set arm64_cygwin_tests {
+  {"AArch64 MSVC short import"
+    "--entry _start --subsystem console" "" ""
+    {arm64-short-import.s arm64-short-import.lib.bz2}
+    {{objdump -d arm64-short-import-cygwin.d}} "arm64-short-import.exe"}
+}
+
+run_ld_link_tests $arm64_cygwin_tests
