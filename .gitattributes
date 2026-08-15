@@ -13,6 +13,7 @@
 *.lzma binary
 *.ttf binary
 *.tgz binary
+*.zst binary
 *.zip binary
 *.rar binary
 *.lib binary
