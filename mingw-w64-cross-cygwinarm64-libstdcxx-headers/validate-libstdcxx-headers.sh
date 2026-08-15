@@ -1,0 +1,432 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+if (( $# != 5 )); then
+  echo "usage: $0 <stage-prefix> <report-dir> <runtime-source> <runtime-build> <fixtures>" >&2
+  exit 2
+fi
+
+prefix_root=$(cd "$1" && pwd)
+report_dir=$2
+runtime_source=$(cd "$3" && pwd)
+runtime_build=$4
+fixtures=$(cd "$5" && pwd)
+target=aarch64-pc-cygwin
+gcc_version=15.0.1
+package=mingw-w64-cross-cygwinarm64-libstdc++-headers
+work=$(mktemp -d "${TMPDIR:-/tmp}/cygwinarm64-libstdcxx-headers.XXXXXX")
+trap 'rm -rf "$work"' EXIT
+
+mkdir -p "$report_dir"
+report_dir=$(cd "$report_dir" && pwd)
+rm -rf "$runtime_build"
+
+cc=/opt/bin/${target}-gcc
+cxx=/opt/bin/${target}-g++
+objdump=/opt/bin/${target}-objdump
+nm=/opt/bin/${target}-nm
+generic_include="${prefix_root}/${target}/include/c++/${gcc_version}"
+target_include="${generic_include}/${target}"
+backward_include="${generic_include}/backward"
+sysroot=/opt/${target}
+specs="${sysroot}/lib/cygwin-compile-only.specs"
+
+validate_include_paths() {
+  python - "$1" <<'PY'
+import pathlib
+import re
+import shlex
+import sys
+
+paths = []
+for line in pathlib.Path(sys.argv[1]).read_text(
+    encoding="utf-8", errors="replace"
+).splitlines():
+    stripped = line.strip()
+    if line.startswith(" ") and stripped.startswith(("/", "\\")):
+        paths.append(stripped)
+    try:
+        tokens = shlex.split(line, posix=True)
+    except ValueError:
+        continue
+    for index, token in enumerate(tokens):
+        if token in ("-I", "-isystem", "-idirafter") and index + 1 < len(tokens):
+            paths.append(tokens[index + 1])
+        elif token.startswith("-I") and len(token) > 2:
+            paths.append(token[2:])
+
+for path in paths:
+    normalized = path.replace("\\", "/").lower()
+    if (
+        "aarch64-w64-mingw32" in normalized
+        or re.search(r"(^|/)usr/include/c\+\+(/|$)", normalized)
+        or re.search(r"(^|/)usr/lib/gcc/x86_64[^/]*/", normalized)
+        or re.search(
+            r"(^|/)(mingw32|mingw64|ucrt64|clang32|clang64|clangarm64)/",
+            normalized,
+        )
+    ):
+        raise SystemExit(f"foreign C++ include path: {path}")
+PY
+}
+
+compile_tool=(
+  "-B${sysroot}/bin/"
+  "--sysroot=${sysroot}"
+  "-specs=${specs}"
+)
+cxx_headers=(
+  -D_WIN64
+  -nostdinc++
+  -isystem "$generic_include"
+  -isystem "$target_include"
+  -isystem "$backward_include"
+  -isystem "${sysroot}/include"
+  -idirafter "${sysroot}/include/w32api"
+)
+
+test -x "$cc"
+test -x "$cxx"
+test -x "$objdump"
+test -x "$nm"
+test -f "$specs"
+test -f "${target_include}/bits/c++config.h"
+test -f "${target_include}/bits/gthr-default.h"
+test -f "${target_include}/bits/gthr-posix.h"
+test "$("$cxx" -dumpmachine)" = "$target"
+grep -Fx 'Thread model: single' <("$cxx" -v 2>&1)
+
+"$cxx" "${compile_tool[@]}" \
+  -dM -E -x c++ /dev/null \
+  > "$work/compiler-macros.txt"
+if grep -Eq '^#define _WIN64( 1)?$' "$work/compiler-macros.txt"; then
+  echo "frozen stage-0 unexpectedly defines _WIN64" >&2
+  exit 1
+fi
+
+"$cxx" "${compile_tool[@]}" "${cxx_headers[@]}" \
+  -std=gnu++17 -dM -E "$fixtures/header-features.cc" \
+  > "$work/header-macros.txt"
+for macro in \
+  _GLIBCXX_HAS_GTHREADS \
+  _GLIBCXX_USE_WCHAR_T \
+  _GLIBCXX_ATOMIC_BUILTINS \
+  _GLIBCXX_HAVE_ALIGNED_ALLOC \
+  _GLIBCXX_HAVE_AT_QUICK_EXIT \
+  _GLIBCXX_HAVE_MEMALIGN \
+  _GLIBCXX_HAVE_POSIX_MEMALIGN \
+  _GLIBCXX_HAVE_QUICK_EXIT \
+  _GLIBCXX_HAVE_TIMESPEC_GET \
+  __GTHREADS \
+  __GTHREADS_CXX0X
+do
+  grep -Eq "^#define ${macro}( 1)?$" "$work/header-macros.txt"
+done
+grep -Fx '#define _GLIBCXX_GTHREAD_USE_WEAK 0' "$work/header-macros.txt"
+grep -Fx '#define __LP64__ 1' "$work/header-macros.txt"
+grep -Fx '#define __SIZEOF_LONG__ 8' "$work/header-macros.txt"
+grep -Fx '#define __SIZEOF_POINTER__ 8' "$work/header-macros.txt"
+grep -Fx '#define __SIZEOF_WCHAR_T__ 2' "$work/header-macros.txt"
+grep -Fx '#define __SIZEOF_LONG_DOUBLE__ 8' "$work/header-macros.txt"
+grep -Fx '#define __cpp_aligned_new 201606L' "$work/header-macros.txt"
+grep -Fx '#define __cpp_sized_deallocation 201309L' "$work/header-macros.txt"
+grep -Fx '#define _WIN64 1' "$work/header-macros.txt"
+if grep -q '^#define _GLIBCXX_HAVE_TLS' "$work/header-macros.txt"; then
+  echo "header stage unexpectedly claims TLS before target link libraries exist" >&2
+  exit 1
+fi
+
+cmp "${target_include}/bits/gthr-default.h" \
+  "${target_include}/bits/gthr-posix.h"
+grep -F '__CYGWIN__' "${target_include}/bits/os_defines.h"
+if grep -Eiq 'mingw|aarch64-w64-mingw32|x86_64' \
+    "${target_include}/bits/c++config.h" \
+    "${target_include}/bits/os_defines.h" \
+    "${target_include}/bits/cpu_defines.h"; then
+  echo "foreign target identity found in configured headers" >&2
+  exit 1
+fi
+
+"$cxx" "${compile_tool[@]}" "${cxx_headers[@]}" \
+  -std=gnu++17 -E -Wp,-v "$fixtures/header-features.cc" \
+  > /dev/null 2> "$work/include-search.txt"
+validate_include_paths "$work/include-search.txt"
+
+"$cxx" "${compile_tool[@]}" "${cxx_headers[@]}" \
+  -std=gnu++17 -O2 -fexceptions -funwind-tables \
+  -c "$fixtures/header-features.cc" -o "$work/header-features.o"
+"$cxx" "${compile_tool[@]}" "${cxx_headers[@]}" \
+  -std=gnu++17 -O2 -fexceptions -funwind-tables \
+  -c "$fixtures/exceptions.cc" -o "$work/exceptions.o"
+"$cxx" "${compile_tool[@]}" "${cxx_headers[@]}" \
+  -std=gnu++17 -O2 \
+  -c "$fixtures/atomic.cc" -o "$work/atomic.o"
+
+for object in header-features exceptions atomic; do
+  test "$(od -An -tx2 -N2 "$work/${object}.o" | tr -d '[:space:]')" = aa64
+  "$objdump" -f "$work/${object}.o" \
+    > "$report_dir/${object}-file.txt"
+  grep -F 'file format pe-aarch64-little' \
+    "$report_dir/${object}-file.txt"
+done
+
+"$objdump" -h "$work/exceptions.o" \
+  > "$report_dir/exceptions-sections.txt"
+"$nm" -u "$work/exceptions.o" \
+  > "$report_dir/exceptions-undefined.txt"
+grep -Eq '[[:space:]]\.pdata[[:space:]]' \
+  "$report_dir/exceptions-sections.txt"
+grep -Eq '[[:space:]]\.xdata[[:space:]]' \
+  "$report_dir/exceptions-sections.txt"
+grep -F '__cxa_throw' "$report_dir/exceptions-undefined.txt"
+grep -E '__gxx_personality|_Unwind_Resume' \
+  "$report_dir/exceptions-undefined.txt"
+
+"$nm" -u "$work/header-features.o" \
+  > "$report_dir/header-features-undefined.txt"
+grep -F 'operator new' <("$nm" -u -C "$work/header-features.o")
+grep -F 'operator delete' <("$nm" -u -C "$work/header-features.o")
+if "$nm" -u "$work/atomic.o" | grep -E '__atomic_|__sync_'; then
+  echo "lock-free atomic probe unexpectedly requires an atomic runtime" >&2
+  exit 1
+fi
+
+(cd "${runtime_source}/winsup" && ./autogen.sh)
+mkdir -p "$runtime_build"
+(
+  cd "$runtime_build"
+  PATH="/opt/bin:${PATH}" \
+  CC="${target}-gcc" \
+  CXX="${target}-g++" \
+  CFLAGS='-D_WIN64' \
+  CXXFLAGS="-D_WIN64 -I${sysroot}/include -nostdinc++ -isystem ${generic_include} -isystem ${target_include} -isystem ${backward_include}" \
+  LDFLAGS="-L${sysroot}/usr/lib" \
+  ac_cv_lib_sframe_sframe_decode=no \
+  ac_cv_lib_zstd_ZSTD_isError=no \
+    "${runtime_source}/winsup/configure" \
+      --host="${target}" \
+      --target="${target}" \
+      --disable-doc \
+      --disable-dumper \
+      --with-cross-bootstrap \
+      > "$report_dir/runtime-configure.log" 2>&1
+)
+
+runtime_cygwin="${runtime_build}/cygwin"
+make -C "$runtime_cygwin" V=1 globals.h \
+  > "$report_dir/runtime-generated-headers.log" 2>&1
+make -C "$runtime_cygwin" V=1 \
+  cxx.o create_posix_thread.o autoload.o \
+  > "$report_dir/runtime-objects.log" 2>&1
+
+for object in cxx create_posix_thread autoload; do
+  object_path="${runtime_cygwin}/${object}.o"
+  test -f "$object_path"
+  test "$(od -An -tx2 -N2 "$object_path" | tr -d '[:space:]')" = aa64
+  "$objdump" -f "$object_path" \
+    > "$report_dir/runtime-${object}-file.txt"
+  "$objdump" -h "$object_path" \
+    > "$report_dir/runtime-${object}-sections.txt"
+  "$nm" -a "$object_path" \
+    > "$report_dir/runtime-${object}-symbols.txt"
+  grep -F 'file format pe-aarch64-little' \
+    "$report_dir/runtime-${object}-file.txt"
+  grep -Eq '[[:space:]]\.pdata[[:space:]]' \
+    "$report_dir/runtime-${object}-sections.txt"
+  grep -Eq '[[:space:]]\.xdata[[:space:]]' \
+    "$report_dir/runtime-${object}-sections.txt"
+done
+"$nm" -C "$runtime_cygwin/cxx.o" \
+  > "$report_dir/runtime-cxx-demangled.txt"
+grep -F 'operator new(unsigned long)' \
+  "$report_dir/runtime-cxx-demangled.txt"
+grep -F '__cxa_pure_virtual' \
+  "$report_dir/runtime-cxx-symbols.txt"
+grep -F "$generic_include" "$report_dir/runtime-objects.log"
+validate_include_paths "$report_dir/runtime-objects.log"
+
+pacman -Q \
+  mingw-w64-cross-cygwinarm64-binutils \
+  mingw-w64-cross-cygwinarm64-gcc-stage1 \
+  mingw-w64-cross-cygwinarm64-headers \
+  mingw-w64-cross-cygwinarm64-sysroot \
+  mingw-w64-cross-cygwinarm64-w32api-runtime \
+  mingw-w64-cross-cygwinarm64-windows-default-manifest \
+  > "$report_dir/packages.txt"
+
+input_packages=(
+  mingw-w64-cross-cygwinarm64-binutils
+  mingw-w64-cross-cygwinarm64-headers
+  mingw-w64-cross-cygwinarm64-windows-default-manifest
+  mingw-w64-cross-cygwinarm64-sysroot
+  mingw-w64-cross-cygwinarm64-gcc-stage1
+  mingw-w64-cross-cygwinarm64-w32api-runtime
+)
+: > "$report_dir/input-packages.txt"
+for index in "${!input_packages[@]}"; do
+  input_package=${input_packages[$index]}
+  input_manifest="$work/${input_package}.sha256"
+  while IFS= read -r input_file; do
+    if [[ -f "$input_file" || -L "$input_file" ]]; then
+      sha256sum "$input_file"
+    fi
+  done < <(pacman -Qlq "$input_package" | LC_ALL=C sort -u) \
+    > "$input_manifest"
+  input_hash=$(sha256sum "$input_manifest" | cut -d' ' -f1)
+  input_count=$(wc -l < "$input_manifest")
+  printf '%s\t%s\t%s\t%s\t%s\n' \
+    "$((index + 1))" \
+    "$input_package" \
+    "$(pacman -Q "$input_package" | cut -d' ' -f2)" \
+    "$input_count" \
+    "$input_hash" \
+    >> "$report_dir/input-packages.txt"
+done
+
+find "${prefix_root}/${target}/include/c++/${gcc_version}" \
+  -type f -print \
+  | sed "s#^${prefix_root}#/opt#" \
+  | LC_ALL=C sort \
+  > "$report_dir/owned-headers.txt"
+header_count=$(wc -l < "$report_dir/owned-headers.txt")
+
+pacman -Ql \
+  mingw-w64-cross-cygwinarm64-binutils \
+  mingw-w64-cross-cygwinarm64-gcc-stage1 \
+  mingw-w64-cross-cygwinarm64-headers \
+  mingw-w64-cross-cygwinarm64-sysroot \
+  mingw-w64-cross-cygwinarm64-w32api-runtime \
+  | sed -n 's/^[^ ]* //p' \
+  | grep -v '/$' \
+  | LC_ALL=C sort -u \
+  > "$work/input-owned-files.txt"
+comm -12 \
+  "$report_dir/owned-headers.txt" \
+  "$work/input-owned-files.txt" \
+  > "$report_dir/collisions.txt"
+test ! -s "$report_dir/collisions.txt"
+{
+  printf 'owned-headers\t%s\n' "$header_count"
+  printf 'input-package-collisions\t0\n'
+  printf 'allowed-prefix\t/opt/%s/include/c++/%s\n' \
+    "$target" "$gcc_version"
+} > "$report_dir/ownership-report.txt"
+
+cp \
+    "$work/compiler-macros.txt" \
+    "$work/header-macros.txt" \
+    "$work/include-search.txt" \
+    "$report_dir/"
+for report_file in "$report_dir"/*; do
+    sed -i \
+      -e "s#${prefix_root}#/opt#g" \
+      -e "s#${runtime_source}#<runtime-source>#g" \
+      -e "s#${runtime_build}#<runtime-build>#g" \
+      -e "s#${fixtures}#<fixtures>#g" \
+      -e "s#${report_dir}#<report>#g" \
+      -e "s#${work}#<work>#g" \
+      "$report_file"
+done
+
+python - "$report_dir" "$work" "$header_count" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+report_dir = pathlib.Path(sys.argv[1])
+work = pathlib.Path(sys.argv[2])
+header_count = int(sys.argv[3])
+
+macros_text = (work / "header-macros.txt").read_text()
+
+def macro(name):
+    match = re.search(
+        rf"^#define {re.escape(name)}(?:\s+(.*))?$",
+        macros_text,
+        re.MULTILINE,
+    )
+    return None if match is None else (match.group(1) or "")
+
+report = {
+    "schema_version": 1,
+    "package": "mingw-w64-cross-cygwinarm64-libstdc++-headers",
+    "target": "aarch64-pc-cygwin",
+    "gcc_source_commit": "bd1d77ba35e2820df5387cca5213925adb07a0ee",
+    "runtime_validation_commit": "a29cc9938c0d8d31d7ac1fc1a286cfa17f1df90c",
+    "header_count": header_count,
+    "installed_target_libraries": 0,
+    "configuration": {
+        "abi": "lp64",
+        "os": "cygwin/newlib",
+        "cpu": "aarch64",
+        "thread_model": "posix",
+        "stage0_reported_thread_model": "single",
+        "stage0_predefines_win64": False,
+        "controlled_win64_define": True,
+        "libstdcxx_tls": False,
+        "libstdcxx_tls_reason": "target link probe cannot succeed before target libgcc and newlib libraries exist",
+        "link_tests_run": False,
+    },
+    "macros": {
+        name: macro(name)
+        for name in (
+            "_GLIBCXX_HAS_GTHREADS",
+            "_GLIBCXX_USE_WCHAR_T",
+            "_GLIBCXX_HAVE_TLS",
+            "_GLIBCXX_ATOMIC_BUILTINS",
+            "_GLIBCXX_HAVE_ALIGNED_ALLOC",
+            "_GLIBCXX_HAVE_AT_QUICK_EXIT",
+            "_GLIBCXX_HAVE_MEMALIGN",
+            "_GLIBCXX_HAVE_POSIX_MEMALIGN",
+            "_GLIBCXX_HAVE_QUICK_EXIT",
+            "_GLIBCXX_HAVE_TIMESPEC_GET",
+            "_GLIBCXX_GTHREAD_USE_WEAK",
+            "__GTHREADS",
+            "__GTHREADS_CXX0X",
+            "__LP64__",
+            "__SIZEOF_LONG__",
+            "__SIZEOF_POINTER__",
+            "__SIZEOF_WCHAR_T__",
+            "__SIZEOF_LONG_DOUBLE__",
+            "__cpp_aligned_new",
+            "__cpp_sized_deallocation",
+            "_WIN64",
+        )
+    },
+    "object_validation": {
+        "format": "pe-aarch64-little",
+        "coff_machine": "0xAA64",
+        "header_features": True,
+        "atomic_lock_free_without_libatomic": True,
+        "exceptions": True,
+        "seh_sections": [".pdata", ".xdata"],
+        "runtime_objects": ["cxx.o", "create_posix_thread.o", "autoload.o"],
+    },
+    "leakage": {
+        "host_cxx_headers": False,
+        "mingw_headers": False,
+        "x86_64_headers": False,
+        "target_libraries_installed": False,
+    },
+    "ownership": {
+        "allowed_prefix": "/opt/aarch64-pc-cygwin/include/c++/15.0.1",
+        "input_package_collisions": 0,
+    },
+    "packages": (report_dir / "packages.txt").read_text().splitlines(),
+    "boundary": {
+        "target_libgcc": "absent",
+        "target_newlib_libraries": "absent",
+        "target_libstdcxx_libraries": "absent",
+        "runtime_dll_and_import_library": "absent",
+    },
+}
+
+(report_dir / "validation-report.json").write_text(
+    json.dumps(report, indent=2, sort_keys=True) + "\n"
+)
+PY
+
+python -m json.tool "$report_dir/validation-report.json" > /dev/null
+echo "libstdc++ header validation passed: ${report_dir}/validation-report.json"

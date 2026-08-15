@@ -1,0 +1,35 @@
+diff --git a/libstdc++-v3/configure.ac b/libstdc++-v3/configure.ac
+index 6d718e3c433..10c741387f8 100644
+--- a/libstdc++-v3/configure.ac
++++ b/libstdc++-v3/configure.ac
+@@ -388,0 +389,10 @@
++    case "${target}" in
++      *-cygwin* | *-msys*)
++        AC_DEFINE(HAVE_ALIGNED_ALLOC)
++        AC_DEFINE(HAVE_AT_QUICK_EXIT)
++        AC_DEFINE(HAVE_POSIX_MEMALIGN)
++        AC_DEFINE(HAVE_QUICK_EXIT)
++        AC_DEFINE(HAVE_TIMESPEC_GET)
++        ;;
++    esac
++
+diff --git a/libstdc++-v3/configure b/libstdc++-v3/configure
+index 087cae61358..5981035eb99 100755
+--- a/libstdc++-v3/configure
++++ b/libstdc++-v3/configure
+@@ -28614,0 +28615,15 @@
++    case "${target}" in
++      *-cygwin* | *-msys*)
++        $as_echo "#define HAVE_ALIGNED_ALLOC 1" >>confdefs.h
++
++        $as_echo "#define HAVE_AT_QUICK_EXIT 1" >>confdefs.h
++
++        $as_echo "#define HAVE_POSIX_MEMALIGN 1" >>confdefs.h
++
++        $as_echo "#define HAVE_QUICK_EXIT 1" >>confdefs.h
++
++        $as_echo "#define HAVE_TIMESPEC_GET 1" >>confdefs.h
++
++        ;;
++    esac
++
