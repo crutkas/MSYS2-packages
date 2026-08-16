@@ -4,3 +4,4 @@ msys2-runtime-3.4
 msys2-runtime-3.5
 msys2-runtime-3.6
 bash
+mingw-w64-cross-cygwinarm64-gcc-stage1

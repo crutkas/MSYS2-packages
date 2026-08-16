@@ -3,58 +3,70 @@
 _realname=gcc
 _target=aarch64-pc-cygwin
 _host=x86_64-pc-msys
-_source_commit=bd1d77ba35e2820df5387cca5213925adb07a0ee
+_source_commit=e1a057af466f066d86b20270fb7864764951420d
+_runtime_commit=a29cc9938c0d8d31d7ac1fc1a286cfa17f1df90c
 _gcc_version=15.0.1
-export SOURCE_DATE_EPOCH=1786669894
-pkgname=mingw-w64-cross-cygwinarm64-${_realname}-stage1
+export SOURCE_DATE_EPOCH=1786817435
+pkgbase=mingw-w64-cross-cygwinarm64-${_realname}-stage1
+pkgname=(
+  mingw-w64-cross-cygwinarm64-${_realname}-stage1
+  mingw-w64-cross-cygwinarm64-${_realname}-libs-stage1
+)
 pkgver=15.0.1dev
-pkgrel=1
-pkgdesc="Stage-0/no-headers GCC for an x86_64 MSYS host and aarch64-pc-cygwin target"
+pkgrel=2
+pkgdesc="Headers-enabled static GCC stage for an x86_64 MSYS host and aarch64-pc-cygwin target"
 arch=('x86_64')
 url="https://github.com/crutkas/gcc-woarm64"
 msys2_repository_url="https://github.com/crutkas/gcc-woarm64"
 license=('GPL-3.0-or-later' 'LGPL-3.0-or-later' 'GFDL-1.3-or-later')
 groups=('mingw-w64-cross-toolchain' 'mingw-w64-cross')
-depends=('gmp' 'isl' 'libiconv' 'libintl' 'libzstd' 'mpc' 'mpfr' 'zlib'
-         "mingw-w64-cross-cygwinarm64-binutils>=2.44.50")
-makedepends=('gcc' 'gmp-devel' 'isl-devel' 'libiconv-devel' 'libzstd-devel'
-             'make' 'mpc-devel' 'mpfr-devel' 'python' 'zlib-devel')
-provides=("aarch64-pc-cygwin-gcc-stage1=${pkgver}"
-          "mingw-w64-cross-cygwin-arm64-gcc-stage1=${pkgver}")
-conflicts=('aarch64-pc-cygwin-gcc-stage1'
-           'mingw-w64-cross-cygwin-arm64-gcc-stage1')
-options=('staticlibs' '!distcc' '!ccache' '!buildflags' '!strip')
+makedepends=('autoconf' 'automake' 'gcc' 'gmp-devel' 'isl-devel'
+             'libiconv-devel' 'libzstd-devel'
+             'make'
+             'mingw-w64-cross-cygwinarm64-binutils>=2.44.50'
+             'mingw-w64-cross-cygwinarm64-headers=3.6.10.r0.gee50e0223-1'
+             'mingw-w64-cross-cygwinarm64-libstdc++-headers=15.0.1dev-1'
+             'mingw-w64-cross-cygwinarm64-sysroot=3.6.10.r0.gee50e0223-1'
+             'mingw-w64-cross-cygwinarm64-w32api-runtime=14.0.0.r0.g9b3dd0125-1'
+             'mingw-w64-cross-cygwinarm64-windows-default-manifest=3.6.10.r0.gee50e0223-1'
+             'mpc-devel' 'mpfr-devel' 'python' 'zlib-devel')
+checkdepends=('dejagnu')
+options=('staticlibs' '!distcc' '!ccache' '!buildflags' '!strip' '!emptydirs')
 source=("${_realname}-${_source_commit}.tar.gz::https://github.com/crutkas/gcc-woarm64/archive/${_source_commit}.tar.gz"
-        README.stage0.md
+        "msys2-runtime-${_runtime_commit}.tar.gz::https://github.com/crutkas/msys2-runtime/archive/${_runtime_commit}.tar.gz"
+        README.static-runtime.md
         abi.c
-        newlib-fragment.c
-        register-pressure.c
-        sysroot-fragment.c
-        sysroot-fragment.cc
-        tls.c
+        ctor-order.c
+        cxa-order.cc
+        lto-gc.c
         unwind.c
-        validate-stage0.sh
-        validate-sysroot.sh
-        winsup-fragment.cc)
-sha256sums=('3ab5b2a037d027ab4e69b5597f2a82e77e87bca79ee764381a717b2e8328d060'
-            '4f2a7de1a555541983502db90746c8a542c7af4c572d0acd0ca36a026c3f3b31'
-            '9c4cea856d05d547f7bf203497e2063119d3331c7e72c3d6bedb37b42fb0c9b1'
-            'cdb6688ae467a9d15f5e7a5073c55db4c2c6eeb8df31a1ffe81527046fd221cc'
-            'cfdd4d0a6431f0a2d7c9d24bc07da196a21959fa87883ba1f4c79d4bc6c7a3c3'
-            '1d5986278b8db48ceae7276c1573fead90914d30f543275a015dff332a58c4f3'
-            '8a53883b78992e4227c7339b2bde64d334072fb30654b5443f74ad7ca667086f'
-            'b7bae78db932843a8d7867b83272bf40302e6497762578b1140ddf96e05d6d57'
+        validate-static-runtime.sh)
+sha256sums=('8194893d7093f3cadedc2ec42375ffbbc02a22e30d943e5f1c1aefa273af8122'
+            'e53b4ce39430398fe6edb515c99e9bb0a37d2d36aedf146ce8f49c87ca7f5819'
+            '91e186e162d680fa11f3796ed1aef09d55f1ac78d951bbbc0b14279d93067ed9'
+            '92c775cb55d4e1f55c13c9efe83484067e906ca9073403fb60eac92ef2760494'
+            '75e360b6fa75efd427625a50263c1c51f221b35192f94e90ce8949da01b50350'
+            'f51b4bcfbb295fb34101a9c1745a8a75d09052116578c48be824a2116300777d'
+            'a7cbb04fef333a9847065fb0b93da7fa2af870dc3292a642d3873d8cba462af6'
             '8bf4ac2be58427a707da890beabbff99202f5346bfd314950756fd55fb4d33ce'
-            'dd009c863db6cdb481ab4bf3e32bc785671d397f7dd6b422c324620d57e0f4e1'
-            '92eec788a18f91c2ba7e7c7d35422b348457615bb18ad5cd6e2e41449820f8a0'
-            '5d62588e9b6a9208e8af9de55c760c3129a7f94fa565a6cd52bc0be9c55e4be1')
+            'bea397ff421e0f46edde892e676670fb489ac08f3e84f75c16f905791040a615')
 
 _source_dir="${_realname}-woarm64-${_source_commit}"
+_runtime_dir="msys2-runtime-${_runtime_commit}"
 _build_dir="build-${_target}-stage1"
+_stage_dir="stage-${_target}-stage1"
+_report_dir="static-runtime-report"
 
 build() {
-  rm -rf "${srcdir}/${_build_dir}"
-  mkdir -p "${srcdir}/${_build_dir}"
+  rm -rf \
+    "${srcdir}/${_build_dir}" \
+    "${srcdir}/${_stage_dir}" \
+    "${srcdir}/${_report_dir}" \
+    "${srcdir}/runtime-build-${_target}"
+  mkdir -p \
+    "${srcdir}/${_build_dir}" \
+    "${srcdir}/${_stage_dir}" \
+    "${srcdir}/${_report_dir}"
   cd "${srcdir}/${_build_dir}"
 
   export MSYSTEM=MSYS
@@ -64,6 +76,8 @@ build() {
   export CXXFLAGS="-O2 -pipe ${_prefix_map}"
   export CFLAGS_FOR_BUILD="${CFLAGS}"
   export CXXFLAGS_FOR_BUILD="${CXXFLAGS}"
+  export CFLAGS_FOR_TARGET="-O2 -pipe ${_prefix_map}"
+  export CXXFLAGS_FOR_TARGET="${CFLAGS_FOR_TARGET}"
 
   "../${_source_dir}/configure" \
     --build="${_host}" \
@@ -74,13 +88,11 @@ build() {
     --with-sysroot="/opt/${_target}" \
     --with-build-sysroot="/opt/${_target}" \
     --with-build-time-tools="/opt/${_target}/bin" \
-    --with-native-system-header-dir=/usr/include \
-    --without-headers \
+    --with-native-system-header-dir=/include \
     --with-newlib \
     --with-abi=lp64 \
     --with-arch=armv8-a \
-    --enable-multilib \
-    --with-multilib-list=lp64 \
+    --disable-multilib \
     --enable-languages=c,c++,lto \
     --enable-lto \
     --disable-plugin \
@@ -89,7 +101,8 @@ build() {
     --disable-bootstrap \
     --disable-nls \
     --disable-rpath \
-    --disable-threads \
+    --enable-threads=posix \
+    --enable-__cxa_atexit \
     --disable-win32-registry \
     --disable-werror \
     --disable-libada \
@@ -113,7 +126,21 @@ build() {
     --with-mpfr=/usr \
     --with-system-zlib
 
-  make MAKEINFO=true all-gcc
+  make MAKEINFO=true all-gcc all-target-libgcc
+  make -C "${srcdir}/${_build_dir}/${_target}/libgcc" \
+    enable_shared=yes libgcc_eh.a
+
+  _install_compiler "${srcdir}/${_stage_dir}"
+  _install_runtime "${srcdir}/${_stage_dir}"
+
+  bash "${srcdir}/validate-static-runtime.sh" \
+    "${srcdir}/${_stage_dir}/opt" \
+    "${srcdir}/${_report_dir}" \
+    "${srcdir}/${_build_dir}" \
+    "${srcdir}/${_source_dir}" \
+    "${srcdir}/${_runtime_dir}" \
+    "${srcdir}/runtime-build-${_target}" \
+    "${srcdir}"
 }
 
 _install_compiler() {
@@ -136,50 +163,110 @@ _install_compiler() {
   rm -rf \
     "${_root}/opt/lib/gcc/${_target}/${_gcc_version}/install-tools" \
     "${_root}/opt/libexec/gcc/${_target}/${_gcc_version}/install-tools"
+  install -m644 \
+    "${srcdir}/${_source_dir}/libgcc/gcov.h" \
+    "${_root}/opt/lib/gcc/${_target}/${_gcc_version}/include/"
 
   find "${_root}/opt" -type f \( -name '*.exe' -o -name '*.dll' \) \
     -exec strip --strip-unneeded {} +
 }
 
-check() {
-  local _check_root="${srcdir}/stage0-check-root"
-  local _report_dir="${srcdir}/stage0-report"
+_install_runtime() {
+  local _root=$1
+  local _libdir="${_root}/opt/lib/gcc/${_target}/${_gcc_version}"
+  local _build_libdir="${srcdir}/${_build_dir}/${_target}/libgcc"
 
-  rm -rf "${_check_root}" "${_report_dir}"
-  _install_compiler "${_check_root}"
-
-  bash "${srcdir}/validate-stage0.sh" \
-    "${_check_root}/opt" \
-    "${_report_dir}"
+  install -d "${_libdir}"
+  install -m644 \
+    "${_build_libdir}/libgcc.a" \
+    "${_build_libdir}/libgcc_eh.a" \
+    "${_build_libdir}/libgcov.a" \
+    "${_build_libdir}/crtbegin.o" \
+    "${_build_libdir}/crtbeginS.o" \
+    "${_build_libdir}/crtend.o" \
+    "${_build_libdir}/crtfastmath.o" \
+    "${_libdir}/"
 }
 
-package() {
+check() {
+  local _log="${srcdir}/${_report_dir}/dejagnu-cygming-unprioritized-cdtor.log"
+  local _sum="${srcdir}/${_report_dir}/dejagnu-cygming-unprioritized-cdtor.sum"
+
+  make -C "${srcdir}/${_build_dir}" gcc-site.exp
+  (
+    cd "${srcdir}/${_build_dir}/gcc"
+    rm -f gcc.log gcc.sum
+    env -u MAKEFLAGS -u MFLAGS timeout 600s runtest \
+      --tool gcc \
+      --srcdir="${srcdir}/${_source_dir}/gcc/testsuite" \
+      aarch64.exp=cygming-unprioritized-cdtor.c
+  ) 2>&1 | tee "${_log}"
+  cp "${srcdir}/${_build_dir}/gcc/gcc.sum" "${_sum}"
+  grep -Eq '^# of expected passes[[:space:]]+5$' "${_sum}"
+  if grep -Eq '^(FAIL|UNRESOLVED|XPASS):|^# of unexpected|^# of unresolved' \
+      "${_sum}"; then
+    return 1
+  fi
+  sed -E -i \
+    -e "s#${srcdir}#<srcdir>#g" \
+    -e 's/^Test run by .* on .*/Test run normalized/' \
+    "${_log}" "${_sum}"
+}
+
+package_mingw-w64-cross-cygwinarm64-gcc-stage1() {
+  pkgdesc="C, C++, and LTO compiler for the aarch64-pc-cygwin static runtime stage"
+  depends=('gmp' 'isl' 'libiconv' 'libintl' 'libzstd' 'mpc' 'mpfr' 'zlib'
+           "mingw-w64-cross-cygwinarm64-binutils>=2.44.50"
+           'mingw-w64-cross-cygwinarm64-libstdc++-headers=15.0.1dev-1'
+           "mingw-w64-cross-cygwinarm64-gcc-libs-stage1=${pkgver}-${pkgrel}")
+  provides=("aarch64-pc-cygwin-gcc-stage1=${pkgver}"
+            "mingw-w64-cross-cygwin-arm64-gcc-stage1=${pkgver}"
+            "mingw-w64-cross-cygwinarm64-gcc-stage1=15.0.1dev-1")
+  conflicts=('aarch64-pc-cygwin-gcc-stage1'
+             'mingw-w64-cross-cygwin-arm64-gcc-stage1')
+
   _install_compiler "${pkgdir}"
+
+  local _licensedir="${pkgdir}/opt/share/licenses/${pkgname}"
+  install -d "${_licensedir}"
+  install -m644 \
+    "${srcdir}/${_source_dir}/COPYING3" \
+    "${srcdir}/${_source_dir}/COPYING.RUNTIME" \
+    "${_licensedir}/"
+}
+
+package_mingw-w64-cross-cygwinarm64-gcc-libs-stage1() {
+  pkgdesc="Static GCC runtime and startup objects for aarch64-pc-cygwin"
+  depends=("mingw-w64-cross-cygwinarm64-binutils>=2.44.50"
+           'mingw-w64-cross-cygwinarm64-headers=3.6.10.r0.gee50e0223-1'
+           'mingw-w64-cross-cygwinarm64-sysroot=3.6.10.r0.gee50e0223-1'
+           'mingw-w64-cross-cygwinarm64-w32api-runtime=14.0.0.r0.g9b3dd0125-1'
+           'mingw-w64-cross-cygwinarm64-windows-default-manifest=3.6.10.r0.gee50e0223-1')
+  provides=("aarch64-pc-cygwin-gcc-libs=${pkgver}"
+            "aarch64-pc-cygwin-gcc-static-runtime=${pkgver}")
+  conflicts=('aarch64-pc-cygwin-gcc-libs'
+             'aarch64-pc-cygwin-gcc-static-runtime'
+             'mingw-w64-cross-cygwin-arm64-gcc-libs-stage1')
+
+  _install_runtime "${pkgdir}"
 
   local _docdir="${pkgdir}/opt/share/doc/${pkgname}"
   local _licensedir="${pkgdir}/opt/share/licenses/${pkgname}"
   install -d "${_docdir}" "${_licensedir}"
+  cp -a "${srcdir}/${_report_dir}/." "${_docdir}/"
   install -m644 \
-    "${srcdir}/README.stage0.md" \
+    "${srcdir}/README.static-runtime.md" \
     "${srcdir}/abi.c" \
-    "${srcdir}/newlib-fragment.c" \
-    "${srcdir}/register-pressure.c" \
-    "${srcdir}/sysroot-fragment.c" \
-    "${srcdir}/sysroot-fragment.cc" \
-    "${srcdir}/tls.c" \
+    "${srcdir}/ctor-order.c" \
+    "${srcdir}/cxa-order.cc" \
+    "${srcdir}/lto-gc.c" \
     "${srcdir}/unwind.c" \
-    "${srcdir}/winsup-fragment.cc" \
     "${_docdir}/"
   install -m755 \
-    "${srcdir}/validate-stage0.sh" \
-    "${srcdir}/validate-sysroot.sh" \
+    "${srcdir}/validate-static-runtime.sh" \
     "${_docdir}/"
   install -m644 \
     "${srcdir}/${_source_dir}/COPYING3" \
     "${srcdir}/${_source_dir}/COPYING.RUNTIME" \
     "${_licensedir}/"
-
-  bash "${srcdir}/validate-stage0.sh" \
-    "${pkgdir}/opt" \
-    "${_docdir}"
 }

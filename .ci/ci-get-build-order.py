@@ -26,7 +26,8 @@ def get_toplevel():
 
 
 def list_changes(*git_args):
-    out = run("git", "log", *git_args, "upstream/master..").splitlines()
+    base_revision = os.environ.get("CI_BASE_REV", "upstream/master")
+    out = run("git", "log", *git_args, f"{base_revision}..").splitlines()
     out += run("git", "log", *git_args, "HEAD^..").splitlines()
     return list(dict.fromkeys(x.split("::")[-1] for x in sorted(out)))
 
