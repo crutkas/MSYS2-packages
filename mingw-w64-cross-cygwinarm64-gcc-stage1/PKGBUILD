@@ -43,13 +43,13 @@ source=("${_realname}-${_source_commit}.tar.gz::https://github.com/crutkas/gcc-w
         validate-static-runtime.sh)
 sha256sums=('8194893d7093f3cadedc2ec42375ffbbc02a22e30d943e5f1c1aefa273af8122'
             'e53b4ce39430398fe6edb515c99e9bb0a37d2d36aedf146ce8f49c87ca7f5819'
-            '91e186e162d680fa11f3796ed1aef09d55f1ac78d951bbbc0b14279d93067ed9'
+            'cbe0bfe000bd5fb33356221a1f89404c292abe6dcabea7b514e6baea709eec40'
             '92c775cb55d4e1f55c13c9efe83484067e906ca9073403fb60eac92ef2760494'
-            '75e360b6fa75efd427625a50263c1c51f221b35192f94e90ce8949da01b50350'
-            'f51b4bcfbb295fb34101a9c1745a8a75d09052116578c48be824a2116300777d'
-            'a7cbb04fef333a9847065fb0b93da7fa2af870dc3292a642d3873d8cba462af6'
+            '461166c004128c55a7bc45ce3f9c10a19193cdf967df0b28bad3e00388690c63'
+            '61d1c3448abfd979ced3d7532daaa1515ddc85b5235d67b25e021c44947931d2'
+            '04a23435d74a4aac52381a9f940a5e26d0e31cf33d60a4fff11a1a23f626dc44'
             '8bf4ac2be58427a707da890beabbff99202f5346bfd314950756fd55fb4d33ce'
-            'bea397ff421e0f46edde892e676670fb489ac08f3e84f75c16f905791040a615')
+            '9b0f04e86de91ba2d7237619897a179b28bde98d651cbb544e1c633702f049c2')
 
 _source_dir="${_realname}-woarm64-${_source_commit}"
 _runtime_dir="msys2-runtime-${_runtime_commit}"

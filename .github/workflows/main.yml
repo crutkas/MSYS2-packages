@@ -15,7 +15,8 @@ jobs:
         (github.event_name != 'push' || github.ref != 'refs/heads/master') &&
         (github.repository != 'crutkas/MSYS2-packages' ||
          github.event_name != 'push' ||
-         github.ref_name != 'crutkas-package-aarch64-static-libgcc')
+         (github.ref_type != 'tag' &&
+          github.ref_name != 'crutkas-package-aarch64-static-libgcc'))
       }}
     env:
       CI_BASE_REPOSITORY: https://github.com/${{ github.repository }}.git
