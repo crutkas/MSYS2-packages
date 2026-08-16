@@ -10,8 +10,14 @@ DIR="$( cd "$( dirname "$0" )" && pwd )"
 
 # Configure
 mkdir artifacts
-git remote add upstream 'https://github.com/MSYS2/MSYS2-packages'
-git fetch --quiet upstream
+ci_base_remote=ci-base
+ci_base_repository=${CI_BASE_REPOSITORY:-https://github.com/crutkas/MSYS2-packages}
+ci_base_ref=${CI_BASE_REF:-master}
+git remote remove "${ci_base_remote}" > /dev/null 2>&1 || true
+git remote add "${ci_base_remote}" "${ci_base_repository}"
+git fetch --quiet "${ci_base_remote}" \
+    "${ci_base_ref}:refs/remotes/${ci_base_remote}/${ci_base_ref}"
+export CI_BASE_REV="${ci_base_remote}/${ci_base_ref}"
 # reduce time required to install packages by disabling pacman's disk space checking
 sed -i 's/^CheckSpace/#CheckSpace/g' /etc/pacman.conf
 
@@ -90,7 +96,15 @@ for package in "${packages[@]}"; do
     echo "::group::[build] ${package}"
     execute 'Clear cache' pacman -Scc --noconfirm
     execute 'Fetch keys' "$DIR/fetch-validpgpkeys.sh"
-    execute 'Building binary' makepkg --noconfirm --noprogressbar --nocheck --syncdeps --rmdeps --cleanbuild
+    makepkg_args=(--noconfirm --noprogressbar --syncdeps --rmdeps --cleanbuild)
+    if [[ "${CI_RUN_CHECK:-0}" != 1 ]]; then
+        makepkg_args+=(--nocheck)
+    fi
+    execute 'Building binary' makepkg "${makepkg_args[@]}"
+    if [[ "${CI_CANONICALIZE_PACKAGES:-0}" == 1 ]]; then
+        execute 'Canonicalizing package containers' \
+            bash "$DIR/canonicalize-packages.sh" *.pkg.tar.zst
+    fi
     repo-add $PWD/artifacts/ci.db.tar.gz $PWD/$package/*.pkg.tar.*
     pacman -Sy
     cp $PWD/$package/*.pkg.tar.* $PWD/artifacts
