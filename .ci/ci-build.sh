@@ -103,7 +103,7 @@ for package in "${packages[@]}"; do
     execute 'Building binary' makepkg "${makepkg_args[@]}"
     if [[ "${CI_CANONICALIZE_PACKAGES:-0}" == 1 ]]; then
         execute 'Canonicalizing package containers' \
-            "$DIR/canonicalize-packages.sh" *.pkg.tar.zst
+            bash "$DIR/canonicalize-packages.sh" *.pkg.tar.zst
     fi
     repo-add $PWD/artifacts/ci.db.tar.gz $PWD/$package/*.pkg.tar.*
     pacman -Sy
