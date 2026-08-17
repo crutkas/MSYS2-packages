@@ -21,8 +21,8 @@ jobs:
     env:
       CI_BASE_REPOSITORY: https://github.com/${{ github.repository }}.git
       CI_BASE_REF: ${{ github.event.pull_request.base.ref || 'master' }}
-      CI_RUN_CHECK: ${{ (github.repository == 'crutkas/MSYS2-packages' && github.head_ref == 'crutkas-package-aarch64-static-libgcc') && '1' || '0' }}
-      CI_CANONICALIZE_PACKAGES: ${{ (github.repository == 'crutkas/MSYS2-packages' && github.head_ref == 'crutkas-package-aarch64-static-libgcc') && '1' || '0' }}
+      CI_RUN_CHECK: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system')) && '1' || '0' }}
+      CI_CANONICALIZE_PACKAGES: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system')) && '1' || '0' }}
       SOURCE_DATE_EPOCH: 1786817435
     strategy:
       fail-fast: false
@@ -77,7 +77,7 @@ jobs:
           msys2 -c 'pacman --noconfirm -Suu'
 
       - name: Download fork-local AArch64 Cygwin inputs
-        if: ${{ github.repository == 'crutkas/MSYS2-packages' && github.head_ref == 'crutkas-package-aarch64-static-libgcc' }}
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -124,7 +124,7 @@ jobs:
           }
 
       - name: Install fork-local AArch64 Cygwin inputs
-        if: ${{ github.repository == 'crutkas/MSYS2-packages' && github.head_ref == 'crutkas-package-aarch64-static-libgcc' }}
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
         shell: msys2 {0}
         run: |
           input_dir=$(cygpath -u "$RUNNER_TEMP/cygwinarm64-inputs")
