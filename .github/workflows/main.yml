@@ -64,6 +64,7 @@ jobs:
         run: |
           & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -Suuy
           & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -Suu
+          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm --needed -S git python base-devel
 
       - name: Download fork-local AArch64 Cygwin inputs
         if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
