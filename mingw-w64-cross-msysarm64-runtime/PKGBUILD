@@ -1,0 +1,138 @@
+# Maintainer: Chris Reddington <crutkas@microsoft.com>
+
+_runtime_commit=6922c388be93e423c1186f0b58c39380a5ee9e2d
+_runtime_root=msys2-runtime-${_runtime_commit}
+_build_target=aarch64-pc-cygwin
+_install_target=aarch64-pc-msys
+_sysroot_version=3.6.10.r0.g6922c388b
+_sysroot_pkgrel=1
+
+pkgbase=mingw-w64-cross-msysarm64-runtime
+pkgname=(
+  mingw-w64-cross-msysarm64-runtime
+  mingw-w64-cross-msysarm64-runtime-devel
+)
+pkgver=3.6.10.r0.g6922c388b
+pkgrel=1
+pkgdesc="Source-built ARM64 MSYS runtime for aarch64-pc-msys"
+arch=('x86_64')
+url="https://github.com/crutkas/msys2-runtime"
+msys2_repository_url="https://github.com/crutkas/msys2-runtime"
+license=('GPL' 'LGPL' 'custom')
+groups=('mingw-w64-cross-toolchain' 'mingw-w64-cross')
+makedepends=(
+  'autotools'
+  'cocom'
+  'docbook-xsl'
+  'gcc'
+  'gettext-devel'
+  'git'
+  'libiconv-devel'
+  'mingw-w64-cross-cygwinarm64-binutils'
+  'mingw-w64-cross-cygwinarm64-gcc-stage1'
+  'mingw-w64-cross-cygwinarm64-libstdc++-headers'
+  'mingw-w64-cross-msysarm64-sysroot'
+  'mingw-w64-cross-msysarm64-w32api-runtime'
+  'perl'
+  'xmlto'
+  'zlib-devel'
+)
+options=('!strip' '!buildflags' '!emptydirs')
+source=(
+  "msys2-runtime-${_runtime_commit}.tar.gz::https://github.com/crutkas/msys2-runtime/archive/${_runtime_commit}.tar.gz"
+  'README.md'
+)
+sha256sums=(
+  'f9a6bd4366802d05d43b7c3876fceb92b93b89b172eebb020d48d2fb36389f89'
+  'f50d9bac28288662a2636955d7f3be8cb263cb2b75b37d2ad9e73b359b3de2b1'
+)
+
+build() {
+  local build_dir="${srcdir}/build-${_build_target}"
+
+  (cd "${srcdir}/${_runtime_root}/winsup" && ./autogen.sh)
+
+  rm -rf "${build_dir}"
+  mkdir -p "${build_dir}"
+  (
+    cd "${build_dir}"
+    PATH="/opt/bin:${PATH}" \
+      ac_cv_lib_sframe_sframe_decode=no \
+      ac_cv_lib_zstd_ZSTD_isError=no \
+      CC="${_build_target}-gcc" \
+      CXX="${_build_target}-g++" \
+      "${srcdir}/${_runtime_root}/winsup/configure" \
+        --host="${_build_target}" \
+        --target="${_build_target}" \
+        --prefix="${build_dir}/install" \
+        --disable-doc \
+        --with-cross-bootstrap \
+        --with-msys2-runtime-commit="${_runtime_commit}" \
+        CFLAGS_FOR_TARGET='-O2 -g -D__MSYS__' \
+        CXXFLAGS_FOR_TARGET='-O2 -g -D__MSYS__'
+  )
+
+  make -C "${build_dir}" -j"$(nproc)" all-target-newlib
+  make -C "${build_dir}" configure-target-winsup
+  make -C "${build_dir}/${_build_target}/winsup/cygwin" -j"$(nproc)"
+}
+
+package_mingw-w64-cross-msysarm64-runtime() {
+  local build_dir="${srcdir}/build-${_build_target}"
+  local cygwin_dir="${build_dir}/${_build_target}/winsup/cygwin"
+  local pkgroot="${pkgdir}/opt/${_install_target}"
+
+  pkgdesc="MSYS runtime DLL for aarch64-pc-msys"
+  provides=("aarch64-pc-msys-runtime=${pkgver}")
+  conflicts=('aarch64-pc-msys-runtime')
+
+  install -Dm755 "${cygwin_dir}/new-msys-2.0.dll" \
+    "${pkgroot}/bin/msys-2.0.dll"
+}
+
+package_mingw-w64-cross-msysarm64-runtime-devel() {
+  local build_dir="${srcdir}/build-${_build_target}"
+  local cygwin_dir="${build_dir}/${_build_target}/winsup/cygwin"
+  local newlib_dir="${build_dir}/${_build_target}/newlib"
+  local cygserver_dir="${build_dir}/${_build_target}/winsup/cygserver"
+  local pkgroot="${pkgdir}/opt/${_install_target}"
+  local libdir="${pkgroot}/lib"
+
+  pkgdesc="MSYS runtime libraries and startup objects for aarch64-pc-msys"
+  depends=(
+    "mingw-w64-cross-msysarm64-runtime=${pkgver}-${pkgrel}"
+    "mingw-w64-cross-msysarm64-sysroot=${_sysroot_version}-${_sysroot_pkgrel}"
+  )
+  provides=("aarch64-pc-msys-runtime-devel=${pkgver}")
+  conflicts=('aarch64-pc-msys-runtime-devel')
+  options=('!strip')
+
+  install -d "${libdir}"
+
+  for file in \
+    crt0.o \
+    gcrt0.o \
+    libaio.a \
+    libacl.a \
+    libdl.a \
+    libmsys-2.0.a \
+    libpthread.a \
+    libresolv.a \
+    librt.a \
+    libssp.a \
+    libutil.a
+  do
+    [[ -f "${cygwin_dir}/${file}" ]] || continue
+    install -Dm644 "${cygwin_dir}/${file}" "${libdir}/${file}"
+  done
+
+  install -Dm644 "${cygserver_dir}/libcygserver.a" \
+    "${libdir}/libcygserver.a"
+
+  ln -sf libmsys-2.0.a "${libdir}/libg.a"
+
+  # Keep the newlib target archives authoritative and package only the
+  # source-built runtime layer; headers remain owned by the sysroot package.
+  install -Dm644 "${newlib_dir}/libc.a" "${libdir}/libc.a"
+  install -Dm644 "${newlib_dir}/libm.a" "${libdir}/libm.a"
+}

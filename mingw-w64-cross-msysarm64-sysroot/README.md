@@ -21,26 +21,22 @@ aarch64-pc-msys-gcc \
   -c source.c
 ```
 
-## Deliberate runtime boundary
+## Runtime boundary
 
-This is a compile-time bootstrap sysroot. It intentionally does not contain
-`cygwin1.dll`, `msys-2.0.dll`, `libcygwin.a`, `libmsys-2.0.a`, `crt0.o`, or
-the MSYS convenience archives. None of those can be authoritative until the
-first ARM64 MSYS runtime is linked.
+The first source-built runtime layer now lives in
+`mingw-w64-cross-msysarm64-runtime` and
+`mingw-w64-cross-msysarm64-runtime-devel`.
 
-The first runtime link must explicitly produce `msys-2.0.dll` with entry point
-`_msys_dll_entry`. Its source build must supply:
+It supplies the authoritative ARM64 MSYS DLL and startup/library layer:
 
-- the generated MSYS linker script and export definition;
-- the runtime `libdll.a` and version objects;
-- `libcygserver.a`;
-- the newly built newlib `libm.a` and `libc.a`;
-- target `libgcc`;
-- legitimate ARM64 `libkernel32.a` and `libntdll.a`.
+- `msys-2.0.dll`
+- `libmsys-2.0.a`
+- newlib `libc.a` and `libm.a`
+- `crt0.o` and `gcrt0.o`
+- the subordinate runtime archives (`libpthread.a`, `libdl.a`, `libutil.a`,
+  `libresolv.a`, `librt.a`, `libacl.a`, `libaio.a`, `libssp.a`)
+- `libcygserver.a`
 
-That link produces the DLL-side import archive used by the runtime's
-`mkimport` step. Only then may the runtime package install
-`libmsys-2.0.a`, `crt0.o`, `gcrt0.o`, and its derived convenience archives.
 No `libcygwin.a` compatibility alias belongs in this bootstrap layer.
 
 The remaining pre-runtime blocker is a fork-local, source-pinned w32api-runtime
