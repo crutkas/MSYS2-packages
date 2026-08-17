@@ -6,9 +6,9 @@ pkgname=('bash' 'bash-devel')
 _basever=5.2
 _patchlevel=037 #prepare for some patches
 pkgver=${_basever}.${_patchlevel}
-pkgrel=3
+pkgrel=2
 pkgdesc="The GNU Bourne Again shell"
-arch=('i686' 'x86_64' 'aarch64')
+arch=('i686' 'x86_64')
 license=('GPL')
 url="https://www.gnu.org/software/bash/bash.html"
 msys2_repository_url="https://git.savannah.gnu.org/cgit/bash.git"
@@ -22,8 +22,7 @@ source=(https://ftp.gnu.org/gnu/bash/bash-${_basever}.tar.gz{,.sig}
         0002-bash-4.3-msysize.patch
         0005-bash-4.3-msys2-fix-lineendings.patch
         0006-bash-4.3-add-pwd-W-option.patch
-        0007-fix-static-build.patch
-        0008-bash-5.2-gcc15-build-fix.patch)
+        0007-fix-static-build.patch)
 if [ $_patchlevel -gt 000 ]; then
   for (( p=1; p<=$((10#${_patchlevel})); p++ )); do
     source=(${source[@]} https://ftp.gnu.org/gnu/bash/bash-${_basever}-patches/bash${_basever//./}-$(printf "%03d" $p){,.sig})
@@ -47,7 +46,6 @@ prepare() {
   patch -p1 -i ${srcdir}/0005-bash-4.3-msys2-fix-lineendings.patch
   patch -p1 -i ${srcdir}/0006-bash-4.3-add-pwd-W-option.patch
   patch -p1 -i ${srcdir}/0007-fix-static-build.patch
-  patch -p1 -i ${srcdir}/0008-bash-5.2-gcc15-build-fix.patch
 
   autoconf
 }
@@ -55,9 +53,7 @@ prepare() {
 build() {
   cd ${srcdir}/${pkgname}-$_basever
 
-  local CHOST="${CHOST/-cygwin/-msys}"
-  export MSYSTEM=MSYS
-  CFLAGS+=" -std=gnu17"
+  export MSYSTEM=CYGWIN
   ./configure --build=${CHOST} \
     --prefix=/usr \
     --sysconfdir=/etc \
@@ -130,12 +126,11 @@ package_bash-devel() {
 
 sha256sums=('a139c166df7ff4471c5e0733051642ee5556c1cc8a4a78f145583c5c81ab32fb'
             'SKIP'
-            '31b9507bcf93cc2a770fb52146e16671b3f1858e03dd881b08faf14884a38ff5'
+            '948b8b5401dcb4e5eb577cfa6543e740e2e3bd0690939d8e77d078d75d110097'
             '16584e119db9418030912171f89aecae319858ecd357d3e56c95eba83667dae7'
             'c55c24110fbe90a2000411239e6399c1baed2843a61220b4e8a7a036f4a7436a'
             '500c75c64593a70276585345a55c807226c0cc220d08b7cccece2ab005b3bcea'
             'cbae1aa81d56eba4e916bdaf2b2983731d6e2537dd8d606a3b378e49bcb81e79'
-            '8f669a2dd9cc9729cbdb25b7890122452303e8c3c2a7e1e4618e1f2714cd2519'
             'f42f2fee923bc2209f406a1892772121c467f44533bedfe00a176139da5d310a'
             'SKIP'
             '45cc5e1b876550eee96f95bffb36c41b6cb7c07d33f671db5634405cd00fd7b8'
