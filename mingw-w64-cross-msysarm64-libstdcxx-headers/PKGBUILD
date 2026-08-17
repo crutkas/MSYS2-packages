@@ -1,0 +1,361 @@
+# Maintainer: Chris Reddington <crutkas@microsoft.com>
+
+_target=aarch64-pc-msys
+_host=x86_64-pc-msys
+_gcc_commit=bd1d77ba35e2820df5387cca5213925adb07a0ee
+_gcc_root=gcc-woarm64-${_gcc_commit}
+_gcc_version=15.0.1
+_runtime_commit=6922c388be93e423c1186f0b58c39380a5ee9e2d
+_runtime_root=msys2-runtime-${_runtime_commit}
+_sysroot_version=3.6.10.r0.g6922c388b
+export SOURCE_DATE_EPOCH=1786669894
+
+pkgname=mingw-w64-cross-msysarm64-libstdc++-headers
+pkgver=15.0.1dev
+pkgrel=1
+pkgdesc="Configured target libstdc++ headers for aarch64-pc-msys"
+arch=('x86_64')
+url="https://github.com/crutkas/gcc-woarm64"
+msys2_repository_url="https://github.com/crutkas/gcc-woarm64"
+license=('GPL-3.0-or-later' 'GPL-3.0-or-later WITH GCC-exception-3.1')
+groups=('mingw-w64-cross-toolchain' 'mingw-w64-cross')
+depends=(
+  "mingw-w64-cross-cygwinarm64-gcc-stage1=15.0.1dev-1"
+  "mingw-w64-cross-msysarm64-sysroot=${_sysroot_version}-1"
+)
+makedepends=(
+  'autoconf'
+  'automake'
+  'gcc'
+  'gmp-devel'
+  'isl-devel'
+  'libiconv-devel'
+  'libzstd-devel'
+  'make'
+  'mingw-w64-cross-cygwinarm64-binutils>=2.44.50'
+  'mingw-w64-cross-msysarm64-w32api-runtime=14.0.0.r0.g9b3dd0125-1'
+  'mpc-devel'
+  'mpfr-devel'
+  'python'
+  'zlib-devel'
+)
+provides=("aarch64-pc-msys-libstdc++-headers=${pkgver}")
+conflicts=(
+  'aarch64-pc-msys-libstdc++-headers'
+  'mingw-w64-cross-cygwinarm64-libstdc++-headers'
+)
+options=('!strip' '!buildflags' '!emptydirs')
+source=(
+  "gcc-${_gcc_commit}.tar.gz::https://github.com/crutkas/gcc-woarm64/archive/${_gcc_commit}.tar.gz"
+  "msys2-runtime-${_runtime_commit}.tar.gz::https://github.com/crutkas/msys2-runtime/archive/${_runtime_commit}.tar.gz"
+  0001-libstdcxx-cygwin-bootstrap-features.patch
+  README.md
+  atomic.cc
+  exceptions.cc
+  header-features.cc
+  validate-libstdcxx-headers.sh
+)
+sha256sums=('3ab5b2a037d027ab4e69b5597f2a82e77e87bca79ee764381a717b2e8328d060'
+            'f9a6bd4366802d05d43b7c3876fceb92b93b89b172eebb020d48d2fb36389f89'
+            '58bbd49450bcfd01be5feb42df19125630314177a022607f1c278e4ac0d374eb'
+            '1ce54a8480ec98c2e9774c750af93e5b17ff4292c4ba13afe0124c45c07785b3'
+            'f76d8b6988bf512429efff8454cbc505369138ff6ba1efbb34ef5a2648487452'
+            '70c412971f56b717f536ac575e7b39fa65873ad6e43f671af1acc940b0c7e0f8'
+            '75dc473d561ae852fd1a0e57340b4e243e47f515cfdda4ceca863cfe648cba67'
+            'c9fb5a244c53dd037827c6ba66adb707fcc001e69eb22d5fc9f4a96a706e6062')
+
+_gcc_build=build-${_target}-libstdcxx-headers
+_libstdcxx_build=${_gcc_build}/${_target}/libstdc++-v3
+_stage=stage-${_target}-libstdcxx-headers
+_report=libstdcxx-headers-report
+
+prepare() {
+  cd "${srcdir}/${_gcc_root}"
+  patch -Np1 -i \
+    "${srcdir}/0001-libstdcxx-cygwin-bootstrap-features.patch"
+}
+
+_configure_bootstrap_compiler() {
+  local _builddir="${srcdir}/${_gcc_build}"
+  local _source="${srcdir}/${_gcc_root}"
+  local _prefix_map="-ffile-prefix-map=${srcdir}=. -fdebug-prefix-map=${srcdir}=. -fmacro-prefix-map=${srcdir}=."
+  local -a _args=(
+    "--build=${_host}"
+    "--host=${_host}"
+    "--target=${_target}"
+    '--prefix=/opt'
+    '--libexecdir=/opt/libexec'
+    "--with-sysroot=/opt/${_target}"
+    "--with-build-sysroot=/opt/${_target}"
+    "--with-build-time-tools=/opt/${_target}/bin"
+    '--with-native-system-header-dir=/include'
+    '--with-newlib'
+    '--with-abi=lp64'
+    '--with-arch=armv8-a'
+    '--enable-multilib'
+    '--with-multilib-list=lp64'
+    '--enable-languages=c,c++,lto'
+    '--enable-lto'
+    '--disable-plugin'
+    '--enable-static'
+    '--disable-shared'
+    '--disable-bootstrap'
+    '--disable-nls'
+    '--disable-rpath'
+    '--enable-threads=posix'
+    '--disable-win32-registry'
+    '--disable-werror'
+    '--disable-libada'
+    '--disable-libatomic'
+    '--disable-libcc1'
+    '--disable-libffi'
+    '--disable-libgfortran'
+    '--disable-libgm2'
+    '--disable-libgomp'
+    '--disable-libitm'
+    '--disable-libobjc'
+    '--disable-libphobos'
+    '--disable-libquadmath'
+    '--disable-libsanitizer'
+    '--disable-libssp'
+    '--disable-libstdcxx'
+    '--disable-libvtv'
+    '--with-gmp=/usr'
+    '--with-isl=/usr'
+    '--with-mpc=/usr'
+    '--with-mpfr=/usr'
+    '--with-system-zlib'
+  )
+
+  mkdir -p "${_builddir}" "${srcdir}/${_report}"
+  (
+    cd "${_builddir}"
+    CFLAGS="-O2 -pipe ${_prefix_map}" \
+    CXXFLAGS="-O2 -pipe ${_prefix_map}" \
+    CFLAGS_FOR_BUILD="-O2 -pipe ${_prefix_map}" \
+    CXXFLAGS_FOR_BUILD="-O2 -pipe ${_prefix_map}" \
+      "${_source}/configure" "${_args[@]}"
+  )
+
+  printf '%s\n' "${_args[@]}" \
+    > "${srcdir}/${_report}/gcc-configure-args.txt"
+}
+
+_configure_libstdcxx() {
+  local _builddir="${srcdir}/${_gcc_build}"
+  local _libbuild="${srcdir}/${_libstdcxx_build}"
+  local _source="${srcdir}/${_gcc_root}"
+  local _tool_target=aarch64-pc-cygwin
+  local _xgcc="${_builddir}/gcc/xgcc.exe"
+  local _target_flags="-B${_builddir}/gcc/ -B/opt/libexec/gcc/${_target}/${_gcc_version}/ -B/opt/${_target}/bin/ -B/opt/${_target}/lib/ -isystem /opt/lib/gcc/${_target}/${_gcc_version}/include -isystem /opt/lib/gcc/${_target}/${_gcc_version}/include-fixed -isystem /opt/${_target}/include --sysroot=/opt/${_target}"
+  local _runtime="${srcdir}/${_runtime_root}"
+  local -a _args=(
+    '--cache-file=./config.cache'
+    "--with-cross-host=${_host}"
+    '--prefix=/opt'
+    '--libexecdir=/opt/libexec'
+    '--with-newlib'
+    '--disable-multilib'
+    '--enable-libstdcxx-threads'
+    '--disable-libstdcxx-pch'
+    '--enable-static'
+    '--disable-shared'
+    '--disable-nls'
+    "--with-gxx-include-dir=/opt/${_target}/include/c++/${_gcc_version}"
+    "--with-target-subdir=${_target}"
+    "--build=${_host}"
+    "--host=${_target}"
+    "--target=${_target}"
+  )
+
+  local _libgcc_build="${_builddir}/${_target}/libgcc"
+  mkdir -p "${_libbuild}" "${_libgcc_build}"
+  ln -sf "${_source}/libgcc/gthr-posix.h" \
+    "${_libgcc_build}/gthr-default.h"
+
+  grep -Eq '^aligned_alloc \(size_t align, size_t size\)' \
+    "${_runtime}/newlib/libc/stdlib/aligned_alloc.c"
+  grep -Eq '^at_quick_exit\(void \(\*func\)\(void\)\)' \
+    "${_runtime}/newlib/libc/stdlib/quick_exit.c"
+  grep -Eq '^quick_exit\(int status\)' \
+    "${_runtime}/newlib/libc/stdlib/quick_exit.c"
+  grep -Eq '^timespec_get \(struct timespec \*ts, int base\)' \
+    "${_runtime}/winsup/cygwin/times.cc"
+  grep -Eq '^posix_memalign \(void \*\*memptr, size_t alignment, size_t bytes\)' \
+    "${_runtime}/winsup/cygwin/mm/malloc_wrapper.cc"
+  grep -Eq '^memalign \(size_t alignment, size_t bytes\)' \
+    "${_runtime}/winsup/cygwin/mm/malloc_wrapper.cc"
+
+  (
+    cd "${_libbuild}"
+    CONFIG_SITE=no-such-file \
+    AR="/opt/bin/${_tool_target}-ar" \
+    AS="/opt/bin/${_tool_target}-as" \
+    CC="${_xgcc} ${_target_flags}" \
+    CFLAGS='-O2 -pipe -D_WIN64' \
+    CXX="${_xgcc} -shared-libgcc -nostdinc++ ${_target_flags}" \
+    CXXFLAGS='-O2 -pipe -D_WIN64' \
+    LD="/opt/bin/${_tool_target}-ld" \
+    NM="/opt/bin/${_tool_target}-nm" \
+    OBJCOPY="/opt/bin/${_tool_target}-objcopy" \
+    OBJDUMP="/opt/bin/${_tool_target}-objdump" \
+    RANLIB="/opt/bin/${_tool_target}-ranlib" \
+    READELF="/opt/bin/${_tool_target}-readelf" \
+    STRIP="/opt/bin/${_tool_target}-strip" \
+    WINDMC="/opt/bin/${_tool_target}-windmc" \
+    WINDRES="/opt/bin/${_tool_target}-windres" \
+      "${_source}/libstdc++-v3/configure" "${_args[@]}"
+  )
+
+  printf '%s\n' "${_args[@]}" \
+    > "${srcdir}/${_report}/libstdcxx-configure-args.txt"
+}
+
+build() {
+  rm -rf \
+    "${srcdir:?}/${_gcc_build}" \
+    "${srcdir:?}/${_stage}" \
+    "${srcdir:?}/${_report}"
+  mkdir -p "${srcdir}/${_stage}" "${srcdir}/${_report}"
+
+  export MSYSTEM=MSYS
+  export lt_cv_deplibs_check_method=pass_all
+
+  _configure_bootstrap_compiler
+  make -C "${srcdir}/${_gcc_build}" MAKEINFO=true \
+    configure-gcc \
+    all-build-libiberty \
+    all-libiberty \
+    all-build-libcpp \
+    all-libcpp \
+    all-libdecnumber \
+    all-libbacktrace
+  make -C "${srcdir}/${_gcc_build}/gcc" MAKEINFO=true xgcc.exe
+  "${srcdir}/${_gcc_build}/gcc/xgcc.exe" \
+    -B"${srcdir}/${_gcc_build}/gcc/" \
+    -B"/opt/libexec/gcc/${_target}/${_gcc_version}/" \
+    -v -E -x c++ /dev/null 2>&1 \
+    | tee "${srcdir}/${_report}/bootstrap-compiler.txt"
+  grep -Fx 'Thread model: posix' \
+    "${srcdir}/${_report}/bootstrap-compiler.txt"
+
+  _configure_libstdcxx
+  make -C "${srcdir}/${_libstdcxx_build}/include" all-local
+  make -C "${srcdir}/${_libstdcxx_build}/include" \
+    DESTDIR="${srcdir}/${_stage}" install-headers
+  make -C "${srcdir}/${_libstdcxx_build}/libsupc++" \
+    DESTDIR="${srcdir}/${_stage}" \
+    install-stdHEADERS install-bitsHEADERS
+
+  local _include="${srcdir}/${_stage}/opt/${_target}/include/c++/${_gcc_version}"
+  local _sharedir="${srcdir}/${_stage}/opt/${_target}/share/msys-sysroot/libstdcxx-headers"
+  mkdir -p "${_sharedir}"
+
+  (
+    cd "${srcdir}/${_stage}"
+    find "opt/${_target}/include/c++/${_gcc_version}" \
+      -type f -print0 \
+      | LC_ALL=C sort -z \
+      | xargs -0 sha256sum
+  ) > "${_sharedir}/header-manifest.sha256"
+  sed 's/^[[:xdigit:]]\{64\} [* ]//' \
+    "${_sharedir}/header-manifest.sha256" \
+    > "${_sharedir}/header-manifest.txt"
+
+  {
+    sha256sum \
+      "${srcdir}/${_gcc_root}/configure" \
+      "${srcdir}/${_gcc_root}/libstdc++-v3/configure" \
+      "${srcdir}/${_report}/gcc-configure-args.txt" \
+      "${srcdir}/${_report}/libstdcxx-configure-args.txt" \
+      "${srcdir}/0001-libstdcxx-cygwin-bootstrap-features.patch" \
+      "${srcdir}/${_libstdcxx_build}/config.h" \
+      "${_include}/${_target}/bits/c++config.h"
+  } | sed \
+    -e "s#${srcdir}/${_gcc_root}/##" \
+    -e "s#${srcdir}/${_report}/##" \
+    -e "s#${srcdir}/${_libstdcxx_build}/##" \
+    -e "s#${_include}/##" \
+    -e "s#${srcdir}/##" \
+    > "${srcdir}/${_report}/configuration-sha256.txt"
+
+  cat > "${srcdir}/${_report}/source-identity.txt" <<EOF
+package-version	${pkgver}-${pkgrel}
+gcc-repository	https://github.com/crutkas/gcc-woarm64
+gcc-commit	${_gcc_commit}
+gcc-archive-sha256	3ab5b2a037d027ab4e69b5597f2a82e77e87bca79ee764381a717b2e8328d060
+runtime-validation-repository	https://github.com/crutkas/msys2-runtime
+runtime-validation-commit	${_runtime_commit}
+runtime-validation-archive-sha256	f9a6bd4366802d05d43b7c3876fceb92b93b89b172eebb020d48d2fb36389f89
+stage0-package-base	389051fb5aab566707a95fd69d73f5659e02c696
+sysroot-runtime-commit	6922c388be93e423c1186f0b58c39380a5ee9e2d
+sysroot-runtime-archive-sha256	f9a6bd4366802d05d43b7c3876fceb92b93b89b172eebb020d48d2fb36389f89
+sysroot-w32api-snapshot-sha256	48f71ba7e14629455259e4a618c0585f31120f51544b88a39cf60f9e8faa2424
+w32api-runtime-commit	9b3dd0125792fe94d16cacdc596dbd42fca1b369
+w32api-runtime-archive-sha256	a538427786ab530b253c8350a9b4c14e511032f8900366336b29065ad23de129
+target	${_target}
+abi	lp64
+thread-model	posix
+tls-feature	disabled-until-target-link-libraries-exist
+installed-libraries	0
+EOF
+
+  cp \
+    "${srcdir}/${_report}/gcc-configure-args.txt" \
+    "${srcdir}/${_report}/libstdcxx-configure-args.txt" \
+    "${srcdir}/${_report}/configuration-sha256.txt" \
+    "${srcdir}/${_report}/source-identity.txt" \
+    "${_sharedir}/"
+
+  bash "${srcdir}/validate-libstdcxx-headers.sh" \
+    "${srcdir}/${_stage}/opt" \
+    "${srcdir}/${_report}" \
+    "${srcdir}/${_runtime_root}" \
+    "${srcdir}/runtime-build-${_target}" \
+    "${srcdir}"
+
+  cp "${srcdir}/${_report}/"* "${_sharedir}/"
+  install -m644 \
+    "${srcdir}/0001-libstdcxx-cygwin-bootstrap-features.patch" \
+    "${srcdir}/README.md" \
+    "${srcdir}/atomic.cc" \
+    "${srcdir}/exceptions.cc" \
+    "${srcdir}/header-features.cc" \
+    "${_sharedir}/"
+  install -m755 \
+    "${srcdir}/validate-libstdcxx-headers.sh" \
+    "${_sharedir}/"
+
+  test "$(find "${_include}" -type f | wc -l)" -gt 800
+  test -z "$(
+    find "${srcdir}/${_stage}" -type f \
+      \( -name '*.a' -o -name '*.dll' -o -name '*.exe' -o -name '*.o' \) \
+      -print -quit
+  )"
+}
+
+check() {
+  local _stage_root="${srcdir}/${_stage}"
+  local _sharedir="opt/${_target}/share/msys-sysroot/libstdcxx-headers"
+
+  (
+    cd "${_stage_root}"
+    sha256sum -c "${_sharedir}/header-manifest.sha256"
+  )
+  python -m json.tool \
+    "${_stage_root}/${_sharedir}/validation-report.json" \
+    > /dev/null
+  grep -Fx $'installed-libraries\t0' \
+    "${_stage_root}/${_sharedir}/source-identity.txt"
+}
+
+package() {
+  cp -a "${srcdir}/${_stage}/." "${pkgdir}/"
+
+  local _licensedir="${pkgdir}/opt/share/licenses/${pkgname}"
+  mkdir -p "${_licensedir}"
+  install -m644 \
+    "${srcdir}/${_gcc_root}/COPYING3" \
+    "${srcdir}/${_gcc_root}/COPYING.RUNTIME" \
+    "${_licensedir}/"
+}
