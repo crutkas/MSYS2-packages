@@ -2,12 +2,12 @@
 
 pkgbase=ncurses
 pkgname=('ncurses' 'ncurses-devel')
-_base_ver=6.5
-_date_rev=20240831
+_base_ver=6.6
+_date_rev=20260815
 pkgver=${_base_ver}.${_date_rev}
-pkgrel=2
+pkgrel=1
 pkgdesc="System V Release 4.0 curses emulation library"
-arch=('i686' 'x86_64')
+arch=('i686' 'x86_64' 'aarch64')
 url="https://www.gnu.org/software/ncurses/"
 msys2_repository_url="https://github.com/ThomasDickey/ncurses-snapshots"
 msys2_references=(
@@ -16,10 +16,10 @@ msys2_references=(
 )
 license=('spdx:MIT')
 makedepends=('autotools' 'gcc')
-source=(https://invisible-island.net/archives/ncurses/current/${pkgbase}-${_base_ver}-${_date_rev}.tgz{,.asc}
+source=(https://invisible-mirror.net/archives/ncurses/current/${pkgbase}-${_base_ver}-${_date_rev}.tgz{,.asc}
         "ncurses-6.3-pkgconfig.patch"
         "ncurses-6.3-cflags-private.patch")
-sha256sums=('685161fec9c20c0896f6d7569f8d1cba9124a1884d3d8be527253a773b787577'
+sha256sums=('4a883a88df461191d249cb14ff835d0058d5f773e5be215d5b5461317687d6a2'
             'SKIP'
             'b8544a607dfbeffaba2b087f03b57ed1fa81286afca25df65f61b04b5f3b3738'
             '3107029dfb807e338d34641d78329cd6725c58e6b873352621f4b9611a8380bf')
@@ -37,6 +37,7 @@ prepare() {
 
 build() {
   cd ${srcdir}/${pkgbase}-${_base_ver}-${_date_rev}
+  local CHOST="${CHOST/-cygwin/-msys}"
 
   ./configure \
     --build=${CHOST} \
@@ -87,7 +88,7 @@ package_ncurses() {
   cp -rf $srcdir/dest/usr/share ${pkgdir}/usr/
 
   # install license, rip it from the readme
-  cd ${srcdir}/${pkgname}-${_base_ver}-${_date_rev}
+  cd ${srcdir}/${pkgbase}-${_base_ver}-${_date_rev}
   install -dm755 ${pkgdir}/usr/share/licenses/${pkgname}
   grep -B 100 '$Id' README > ${pkgdir}/usr/share/licenses/${pkgname}/license.txt
 }
