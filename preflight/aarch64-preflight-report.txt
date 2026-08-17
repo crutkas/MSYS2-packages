@@ -1,0 +1,66 @@
+AArch64 ncurses/readline preflight report
+
+Status
+- Bash changes removed from this branch.
+- No package readiness claim was made or validated.
+- This branch now only carries a durable preflight report.
+
+Compiler
+- Target: aarch64-pc-cygwin
+- Macros observed:
+  - __CYGWIN__=1
+  - __aarch64__=1
+  - __AARCH64EL__=1
+  - __SIZEOF_POINTER__=8
+
+Manual ncurses object checks
+- Source files:
+  - ncurses/tinfo/lib_napms.c
+  - ncurses/tinfo/lib_baudrate.c
+- Command shape:
+  - aarch64-pc-cygwin-gcc -DHAVE_CONFIG_H -DNCURSES_STATIC -D__MINGW_NOTHROW= \
+    -I"$WORKTREE/ncurses/src/ncurses-6.6-20260815/include" \
+    -I"$WORKTREE/ncurses/src/ncurses-6.5/include" \
+    -I"$WORKTREE/ncurses/src/ncurses-6.5" \
+    -I"$WORKTREE/ncurses/src/ncurses-6.5/ncurses" \
+    -I"$WORKTREE/ncurses/src/ncurses-6.5/panel" \
+    -I"$WORKTREE/ncurses/src/ncurses-6.5/menu" \
+    -I"$WORKTREE/ncurses/src/ncurses-6.5/form" \
+    -I"$WORKTREE/ncurses/src/ncurses-6.5/progs" \
+    -I"$WORKTREE/ncurses/src/ncurses-6.5/misc" \
+    -c <source> -o <object>
+- Object format: pe-aarch64-little
+- SHA-256:
+  - lib_napms.o: d5e0effa8c17c5ca6a65f38b5d2f0a957507830ae5c54940f2c12e56a1b02ec0
+  - lib_baudrate.o: c9b7b758290b063bb7f5e0166e61f4268ad1b13e0a01ce9575a2a8667bf6749d
+
+Manual readline object checks
+- Source files:
+  - history.c
+  - xmalloc.c
+  - savestring.c
+- Command shape:
+  - aarch64-pc-cygwin-gcc -DHAVE_CONFIG_H \
+    -I"$WORKTREE/readline/src/build-static-MSYS" \
+    -I"$WORKTREE/readline/src/readline-8.3" \
+    -I"$WORKTREE/readline/src/readline-8.3/readline" \
+    -I"$WORKTREE/readline/src/readline-8.3/examples" \
+    -I"$WORKTREE/readline/src/readline-8.3/support" \
+    -c <source> -o <object>
+- Object format: pe-aarch64-little
+- SHA-256:
+  - history.o: bbd0d7393f7cc4197f2cb21cce5193695a17d4122f4a997bd9b92cdd7e8e4d43
+  - xmalloc.o: b4bafae51bd652da44f03c1c52336b4ed2f242a9223c15ac95a3303e2dbdf150
+  - savestring.o: f0d29b04192b2513339a2188ae7a8619b4fa514d7b17287e78422401d13f9884
+
+Blockers
+- makepkg/package readiness was not proven for AArch64.
+- A final ARM64 MSYS runtime/sysroot package is still required for native target builds.
+- If cross building, the recipe should be explicit about separate build/host triples:
+  - --build=x86_64-pc-msys
+  - --host=aarch64-pc-msys
+  - plus the final compiler/sysroot
+
+Notes
+- Bash preparation belongs on the separate fork-local branch/PR already in progress.
+- This report is path-independent and fork-safe.
