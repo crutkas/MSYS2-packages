@@ -2,7 +2,7 @@
 
 pkgname=('db' 'libdb' 'libdb-devel' 'db-docs')
 pkgver=6.2.32
-pkgrel=5
+pkgrel=6
 pkgdesc="The Berkeley DB embedded database system"
 url="https://www.oracle.com/technetwork/database/database-technologies/berkeleydb/overview/index.html"
 msys2_references=(
@@ -25,6 +25,7 @@ prepare() {
 
 build() {
   cd "${srcdir}"/$pkgname-${pkgver}/build_unix
+  CFLAGS+=" -Wno-incompatible-pointer-types"
 
   ../dist/configure \
     --prefix=/usr \
