@@ -42,17 +42,6 @@ jobs:
           $BUILD_DRIVE = Split-Path $env:GITHUB_WORKSPACE -Qualifier
           echo "drive=$BUILD_DRIVE" >> $env:GITHUB_OUTPUT
 
-      - name: Configure Pagefile
-        if: ${{ matrix.msystem != 'CLANGARM64' }}
-        # https://github.com/al-cheb/configure-pagefile-action/issues/16
-        continue-on-error: true
-        uses: al-cheb/configure-pagefile-action@v1.4
-        with:
-          minimum-size: 4GB
-          maximum-size: 16GB
-          # Needs to be C:, see https://github.com/al-cheb/configure-pagefile-action/issues/18
-          disk-root: "C:"
-
       - uses: actions/checkout@v4
         with:
           path: temp
