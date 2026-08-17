@@ -32,8 +32,9 @@ newlib archives and startup objects:
 - `librt.a`
 - `libacl.a`
 - `libaio.a`
+- `libgmon.a`
 - `libssp.a`
 - `libcygserver.a`
-- `libg.a`
+- source-produced newlib `libg.a`
 
 No `libcygwin.a` compatibility alias belongs in this bootstrap layer.

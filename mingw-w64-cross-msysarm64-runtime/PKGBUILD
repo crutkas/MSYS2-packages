@@ -49,6 +49,8 @@ sha256sums=(
 
 build() {
   local build_dir="${srcdir}/build-${_build_target}"
+  export PATH="/opt/bin:${PATH}"
+  export SOURCE_DATE_EPOCH="$(git -C "${startdir}" show -s --format=%ct HEAD)"
 
   (cd "${srcdir}/${_runtime_root}/winsup" && ./autogen.sh)
 
@@ -56,13 +58,9 @@ build() {
   mkdir -p "${build_dir}"
   (
     cd "${build_dir}"
-    PATH="/opt/bin:${PATH}" \
-      ac_cv_lib_sframe_sframe_decode=no \
+    ac_cv_lib_sframe_sframe_decode=no \
       ac_cv_lib_zstd_ZSTD_isError=no \
-      CC="${_build_target}-gcc" \
-      CXX="${_build_target}-g++" \
-      "${srcdir}/${_runtime_root}/winsup/configure" \
-        --host="${_build_target}" \
+      ../configure \
         --target="${_build_target}" \
         --prefix="${build_dir}/install" \
         --disable-doc \
@@ -77,17 +75,70 @@ build() {
   make -C "${build_dir}/${_build_target}/winsup/cygwin" -j"$(nproc)"
 }
 
+check() {
+  local build_dir="${srcdir}/build-${_build_target}"
+  local cygwin_dir="${build_dir}/${_build_target}/winsup/cygwin"
+  local newlib_dir="${build_dir}/${_build_target}/newlib"
+  local report_dir="${build_dir}/validation"
+  local ar="${_build_target}-ar"
+  export PATH="/opt/bin:${PATH}"
+
+  rm -rf "${report_dir}"
+  mkdir -p "${report_dir}"
+
+  "${srcdir}/${_runtime_root}/.github/checks/validate-aarch64-runtime.sh" \
+    "${build_dir}" \
+    "${report_dir}"
+
+  test -f "${newlib_dir}/libg.a"
+  test -f "${cygwin_dir}/libgmon.a"
+  test -f "${newlib_dir}/libc.a"
+  diff -u <("${ar}" t "${newlib_dir}/libc.a") \
+    <("${ar}" t "${newlib_dir}/libg.a")
+
+  for target_file in \
+    /opt/${_install_target}/bin/msys-2.0.dll \
+    /opt/${_install_target}/lib/crt0.o \
+    /opt/${_install_target}/lib/gcrt0.o \
+    /opt/${_install_target}/lib/libaio.a \
+    /opt/${_install_target}/lib/libacl.a \
+    /opt/${_install_target}/lib/libc.a \
+    /opt/${_install_target}/lib/libdl.a \
+    /opt/${_install_target}/lib/libg.a \
+    /opt/${_install_target}/lib/libgmon.a \
+    /opt/${_install_target}/lib/libmsys-2.0.a \
+    /opt/${_install_target}/lib/libpthread.a \
+    /opt/${_install_target}/lib/libresolv.a \
+    /opt/${_install_target}/lib/librt.a \
+    /opt/${_install_target}/lib/libssp.a \
+    /opt/${_install_target}/lib/libutil.a
+  do
+    if owner=$(pacman -Qoq "${target_file}" 2>/dev/null); then
+      echo "ownership collision for ${target_file}: ${owner}" >&2
+      exit 1
+    fi
+  done
+}
+
 package_mingw-w64-cross-msysarm64-runtime() {
   local build_dir="${srcdir}/build-${_build_target}"
   local cygwin_dir="${build_dir}/${_build_target}/winsup/cygwin"
   local pkgroot="${pkgdir}/opt/${_install_target}"
+  local license_dir="${pkgdir}/usr/share/licenses/${pkgname}"
 
   pkgdesc="MSYS runtime DLL for aarch64-pc-msys"
   provides=("aarch64-pc-msys-runtime=${pkgver}")
   conflicts=('aarch64-pc-msys-runtime')
+  depends=("mingw-w64-cross-msysarm64-sysroot=${_sysroot_version}-${_sysroot_pkgrel}")
 
   install -Dm755 "${cygwin_dir}/new-msys-2.0.dll" \
     "${pkgroot}/bin/msys-2.0.dll"
+  install -Dm644 "${srcdir}/${_runtime_root}/COPYING" "${license_dir}/COPYING"
+  install -Dm644 "${srcdir}/${_runtime_root}/COPYING.LIB" "${license_dir}/COPYING.LIB"
+  install -Dm644 "${srcdir}/${_runtime_root}/COPYING.NEWLIB" "${license_dir}/COPYING.NEWLIB"
+  install -Dm644 "${srcdir}/${_runtime_root}/COPYING.LIBGLOSS" "${license_dir}/COPYING.LIBGLOSS"
+  install -Dm644 "${srcdir}/${_runtime_root}/COPYING3" "${license_dir}/COPYING3"
+  install -Dm644 "${srcdir}/${_runtime_root}/COPYING3.LIB" "${license_dir}/COPYING3.LIB"
 }
 
 package_mingw-w64-cross-msysarm64-runtime-devel() {
@@ -97,6 +148,7 @@ package_mingw-w64-cross-msysarm64-runtime-devel() {
   local cygserver_dir="${build_dir}/${_build_target}/winsup/cygserver"
   local pkgroot="${pkgdir}/opt/${_install_target}"
   local libdir="${pkgroot}/lib"
+  local license_dir="${pkgdir}/usr/share/licenses/${pkgname}"
 
   pkgdesc="MSYS runtime libraries and startup objects for aarch64-pc-msys"
   depends=(
@@ -115,6 +167,8 @@ package_mingw-w64-cross-msysarm64-runtime-devel() {
     libaio.a \
     libacl.a \
     libdl.a \
+    libgmon.a \
+    libg.a \
     libmsys-2.0.a \
     libpthread.a \
     libresolv.a \
@@ -122,17 +176,29 @@ package_mingw-w64-cross-msysarm64-runtime-devel() {
     libssp.a \
     libutil.a
   do
-    [[ -f "${cygwin_dir}/${file}" ]] || continue
-    install -Dm644 "${cygwin_dir}/${file}" "${libdir}/${file}"
+    case "${file}" in
+      libg.a)
+        src="${newlib_dir}/${file}"
+        ;;
+      *)
+        src="${cygwin_dir}/${file}"
+        ;;
+    esac
+    test -f "${src}"
+    install -Dm644 "${src}" "${libdir}/${file}"
   done
 
   install -Dm644 "${cygserver_dir}/libcygserver.a" \
     "${libdir}/libcygserver.a"
 
-  ln -sf libmsys-2.0.a "${libdir}/libg.a"
-
   # Keep the newlib target archives authoritative and package only the
   # source-built runtime layer; headers remain owned by the sysroot package.
   install -Dm644 "${newlib_dir}/libc.a" "${libdir}/libc.a"
   install -Dm644 "${newlib_dir}/libm.a" "${libdir}/libm.a"
+  install -Dm644 "${srcdir}/${_runtime_root}/COPYING" "${license_dir}/COPYING"
+  install -Dm644 "${srcdir}/${_runtime_root}/COPYING.LIB" "${license_dir}/COPYING.LIB"
+  install -Dm644 "${srcdir}/${_runtime_root}/COPYING.NEWLIB" "${license_dir}/COPYING.NEWLIB"
+  install -Dm644 "${srcdir}/${_runtime_root}/COPYING.LIBGLOSS" "${license_dir}/COPYING.LIBGLOSS"
+  install -Dm644 "${srcdir}/${_runtime_root}/COPYING3" "${license_dir}/COPYING3"
+  install -Dm644 "${srcdir}/${_runtime_root}/COPYING3.LIB" "${license_dir}/COPYING3.LIB"
 }
