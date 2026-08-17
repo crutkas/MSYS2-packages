@@ -52,21 +52,18 @@ jobs:
       - name: Add staging repo
         shell: pwsh
         run: |
-          $bash = 'C:\msys64\usr\bin\bash.exe'
-          $script = @'
-          sed -i '1s|^|[staging]\nServer = https://repo.msys2.org/staging/\nSigLevel = Never\n|' /etc/pacman.conf
-          '@
-          & $bash --login -lc $script
+          $pacmanConf = 'C:\msys64\etc\pacman.conf'
+          $contents = Get-Content $pacmanConf -Raw
+          if ($contents -notmatch '^\[staging\]') {
+            $contents = "[staging]`nServer = https://repo.msys2.org/staging/`nSigLevel = Never`n$contents"
+          }
+          Set-Content $pacmanConf -Value $contents -NoNewline
 
       - name: Update using staging
         shell: pwsh
         run: |
-          $bash = 'C:\msys64\usr\bin\bash.exe'
-          $script = @'
-          pacman --noconfirm -Suuy
-          pacman --noconfirm -Suu
-          '@
-          & $bash --login -lc $script
+          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -Suuy
+          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -Suu
 
       - name: Download fork-local AArch64 Cygwin inputs
         if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
@@ -119,19 +116,15 @@ jobs:
         if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
         shell: pwsh
         run: |
-          $bash = 'C:\msys64\usr\bin\bash.exe'
-          $script = @'
-          input_dir=$(cygpath -u "$RUNNER_TEMP/cygwinarm64-inputs")
-          pacman --noconfirm -U \
-            "$input_dir/mingw-w64-cross-cygwinarm64-binutils-2.44.50-1-x86_64.pkg.tar.zst" \
-            "$input_dir/mingw-w64-cross-cygwinarm64-headers-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst" \
-            "$input_dir/mingw-w64-cross-cygwinarm64-windows-default-manifest-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst" \
-            "$input_dir/mingw-w64-cross-cygwinarm64-sysroot-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst" \
-            "$input_dir/mingw-w64-cross-cygwinarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst" \
-            "$input_dir/mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-1-x86_64.pkg.tar.zst" \
-            "$input_dir/mingw-w64-cross-cygwinarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst"
-          '@
-          & $bash --login -lc $script
+          $input_dir = Join-Path $env:RUNNER_TEMP 'cygwinarm64-inputs'
+          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -U `
+            "$input_dir\mingw-w64-cross-cygwinarm64-binutils-2.44.50-1-x86_64.pkg.tar.zst" `
+            "$input_dir\mingw-w64-cross-cygwinarm64-headers-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst" `
+            "$input_dir\mingw-w64-cross-cygwinarm64-windows-default-manifest-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst" `
+            "$input_dir\mingw-w64-cross-cygwinarm64-sysroot-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst" `
+            "$input_dir\mingw-w64-cross-cygwinarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst" `
+            "$input_dir\mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-1-x86_64.pkg.tar.zst" `
+            "$input_dir\mingw-w64-cross-cygwinarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst"
 
       - name: Move Checkout
         run: |
@@ -143,10 +136,9 @@ jobs:
         shell: pwsh
         run: |
           $bash = 'C:\msys64\usr\bin\bash.exe'
-          $script = @'
-          cd "$(cygpath '${{ steps.facts.outputs.drive }}/_')"
-          ./.ci/ci-build.sh
-          '@
+          $buildRoot = '${{ steps.facts.outputs.drive }}\_'
+          $buildRoot = & 'C:\msys64\usr\bin\cygpath.exe' -u $buildRoot
+          $script = "cd '$buildRoot' && ./.ci/ci-build.sh"
           & $bash --login -lc $script
 
       - name: "Upload binaries"
