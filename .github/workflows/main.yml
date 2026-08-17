@@ -50,15 +50,23 @@ jobs:
           persist-credentials: false
 
       - name: Add staging repo
-        shell: 'C:\msys64\usr\bin\bash.exe --login -eo pipefail -c "{0}"'
+        shell: pwsh
         run: |
+          $bash = 'C:\msys64\usr\bin\bash.exe'
+          $script = @'
           sed -i '1s|^|[staging]\nServer = https://repo.msys2.org/staging/\nSigLevel = Never\n|' /etc/pacman.conf
+          '@
+          & $bash --login -lc $script
 
       - name: Update using staging
-        shell: 'C:\msys64\usr\bin\bash.exe --login -eo pipefail -c "{0}"'
+        shell: pwsh
         run: |
+          $bash = 'C:\msys64\usr\bin\bash.exe'
+          $script = @'
           pacman --noconfirm -Suuy
           pacman --noconfirm -Suu
+          '@
+          & $bash --login -lc $script
 
       - name: Download fork-local AArch64 Cygwin inputs
         if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
@@ -109,8 +117,10 @@ jobs:
 
       - name: Install fork-local AArch64 Cygwin inputs
         if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
-        shell: 'C:\msys64\usr\bin\bash.exe --login -eo pipefail -c "{0}"'
+        shell: pwsh
         run: |
+          $bash = 'C:\msys64\usr\bin\bash.exe'
+          $script = @'
           input_dir=$(cygpath -u "$RUNNER_TEMP/cygwinarm64-inputs")
           pacman --noconfirm -U \
             "$input_dir/mingw-w64-cross-cygwinarm64-binutils-2.44.50-1-x86_64.pkg.tar.zst" \
@@ -120,6 +130,8 @@ jobs:
             "$input_dir/mingw-w64-cross-cygwinarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst" \
             "$input_dir/mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-1-x86_64.pkg.tar.zst" \
             "$input_dir/mingw-w64-cross-cygwinarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst"
+          '@
+          & $bash --login -lc $script
 
       - name: Move Checkout
         run: |
@@ -128,10 +140,14 @@ jobs:
           Move-Item -Path ".\temp" -Destination "$path"
 
       - name: CI-Build
-        shell: 'C:\msys64\usr\bin\bash.exe --login -eo pipefail -c "{0}"'
+        shell: pwsh
         run: |
+          $bash = 'C:\msys64\usr\bin\bash.exe'
+          $script = @'
           cd "$(cygpath '${{ steps.facts.outputs.drive }}/_')"
           ./.ci/ci-build.sh
+          '@
+          & $bash --login -lc $script
 
       - name: "Upload binaries"
         if: ${{ !cancelled() }}
