@@ -136,6 +136,7 @@ jobs:
       - name: CI-Build
         shell: pwsh
         run: |
+          $env:MSYS2_PATH_TYPE = 'inherit'
           $env:PATH = 'C:\msys64\usr\bin;C:\msys64\mingw64\bin;' + $env:PATH
           $env:GIT_EXEC_PATH = 'C:\msys64\usr\lib\git-core'
           $bash = 'C:\msys64\usr\bin\bash.exe'

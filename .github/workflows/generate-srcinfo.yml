@@ -39,6 +39,7 @@ jobs:
 
       - name: Parse PKGBUILDs and update srcinfo.json.gz
         run: |
+          $env:MSYS2_PATH_TYPE = 'inherit'
           $env:PATH = 'C:\msys64\usr\bin;C:\msys64\mingw64\bin;' + $env:PATH
           msys2-srcinfo-cache --time-limit 19800 msys 'C:\msys64' . srcinfo.json.gz
 
