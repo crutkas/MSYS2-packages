@@ -60,7 +60,7 @@ build() {
     cd "${build_dir}"
     ac_cv_lib_sframe_sframe_decode=no \
       ac_cv_lib_zstd_ZSTD_isError=no \
-      ../configure \
+      "${srcdir}/${_runtime_root}/configure" \
         --target="${_build_target}" \
         --prefix="${build_dir}/install" \
         --disable-doc \
