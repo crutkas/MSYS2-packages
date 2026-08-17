@@ -60,21 +60,16 @@ jobs:
           filter: blob:none
           persist-credentials: false
 
-      - uses: msys2/setup-msys2@v2
-        with:
-          msystem: ${{ matrix.msystem }}
-          install: git python base-devel
-          update: true
-
       - name: Add staging repo
-        shell: msys2 {0}
+        shell: 'C:\msys64\usr\bin\bash.exe --login -eo pipefail -c "{0}"'
         run: |
           sed -i '1s|^|[staging]\nServer = https://repo.msys2.org/staging/\nSigLevel = Never\n|' /etc/pacman.conf
 
       - name: Update using staging
+        shell: 'C:\msys64\usr\bin\bash.exe --login -eo pipefail -c "{0}"'
         run: |
-          msys2 -c 'pacman --noconfirm -Suuy'
-          msys2 -c 'pacman --noconfirm -Suu'
+          pacman --noconfirm -Suuy
+          pacman --noconfirm -Suu
 
       - name: Download fork-local AArch64 Cygwin inputs
         if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
@@ -125,7 +120,7 @@ jobs:
 
       - name: Install fork-local AArch64 Cygwin inputs
         if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
-        shell: msys2 {0}
+        shell: 'C:\msys64\usr\bin\bash.exe --login -eo pipefail -c "{0}"'
         run: |
           input_dir=$(cygpath -u "$RUNNER_TEMP/cygwinarm64-inputs")
           pacman --noconfirm -U \
@@ -144,7 +139,7 @@ jobs:
           Move-Item -Path ".\temp" -Destination "$path"
 
       - name: CI-Build
-        shell: msys2 {0}
+        shell: 'C:\msys64\usr\bin\bash.exe --login -eo pipefail -c "{0}"'
         run: |
           cd "$(cygpath '${{ steps.facts.outputs.drive }}/_')"
           ./.ci/ci-build.sh
