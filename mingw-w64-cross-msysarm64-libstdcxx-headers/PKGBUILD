@@ -147,6 +147,7 @@ _configure_libstdcxx() {
   local _source="${srcdir}/${_gcc_root}"
   local _tool_target=aarch64-pc-cygwin
   local _xgcc="${_builddir}/gcc/xgcc.exe"
+  local _cppflags="-I/opt/lib/gcc/${_target}/${_gcc_version}/include -I/opt/lib/gcc/${_target}/${_gcc_version}/include-fixed -I/opt/${_target}/include -I/opt/${_target}/include/w32api"
   local _target_flags="-B${_builddir}/gcc/ -B/opt/libexec/gcc/${_target}/${_gcc_version}/ -B/opt/${_target}/bin/ -B/opt/${_target}/lib/ -isystem /opt/lib/gcc/${_target}/${_gcc_version}/include -isystem /opt/lib/gcc/${_target}/${_gcc_version}/include-fixed -isystem /opt/${_target}/include --sysroot=/opt/${_target}"
   local _runtime="${srcdir}/${_runtime_root}"
   local -a _args=(
@@ -189,13 +190,14 @@ _configure_libstdcxx() {
   (
     cd "${_libbuild}"
     CONFIG_SITE=no-such-file \
-    CPP="/opt/bin/${_target}-gcc -E" \
+    CPP="${_xgcc} -E -B${_builddir}/gcc/" \
+    CPPFLAGS="${_cppflags}" \
     AR="/opt/bin/${_tool_target}-ar" \
     AS="/opt/bin/${_tool_target}-as" \
     CC="${_xgcc} ${_target_flags}" \
     CFLAGS='-O2 -pipe -D_WIN64' \
     CXX="${_xgcc} -shared-libgcc -nostdinc++ ${_target_flags}" \
-    CXXCPP="/opt/bin/${_target}-g++ -E" \
+    CXXCPP="${_xgcc} -E -x c++ -B${_builddir}/gcc/" \
     CXXFLAGS='-O2 -pipe -D_WIN64' \
     LD="/opt/bin/${_tool_target}-ld" \
     NM="/opt/bin/${_tool_target}-nm" \
