@@ -22,6 +22,7 @@ depends=(
   "mingw-w64-cross-msysarm64-windows-default-manifest=${_sysroot_version}-1"
 )
 makedepends=(
+  'gcc'
   'mingw-w64-cross-cygwinarm64-binutils'
   'mingw-w64-cross-mingwarm64-gcc'
 )

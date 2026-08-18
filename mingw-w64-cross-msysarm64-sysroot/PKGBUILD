@@ -19,7 +19,10 @@ url="https://github.com/crutkas/msys2-runtime"
 msys2_repository_url="https://github.com/crutkas/msys2-runtime"
 license=('GPL' 'LGPL' 'custom')
 groups=('mingw-w64-cross-toolchain' 'mingw-w64-cross')
-makedepends=('mingw-w64-cross-cygwinarm64-binutils')
+makedepends=(
+  'gcc'
+  'mingw-w64-cross-cygwinarm64-binutils'
+)
 options=('!strip' '!buildflags' '!emptydirs')
 source=(
   "msys2-runtime-${_runtime_commit}.tar.gz::https://github.com/crutkas/msys2-runtime/archive/${_runtime_commit}.tar.gz"
