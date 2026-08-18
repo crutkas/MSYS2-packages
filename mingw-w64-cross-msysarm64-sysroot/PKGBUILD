@@ -23,7 +23,7 @@ makedepends=('mingw-w64-cross-cygwinarm64-binutils')
 options=('!strip' '!buildflags' '!emptydirs')
 source=(
   "msys2-runtime-${_runtime_commit}.tar.gz::https://github.com/crutkas/msys2-runtime/archive/${_runtime_commit}.tar.gz"
-  "w32api-headers-${_w32api_version}.tar.zst"
+  "w32api-headers-${_w32api_version}.tar.zst.b64"
   newlib.h
   _newlib_version.h
   cygwin-compile-only.specs
@@ -39,7 +39,7 @@ source=(
   sysroot-probe.s
 )
 sha256sums=('f9a6bd4366802d05d43b7c3876fceb92b93b89b172eebb020d48d2fb36389f89'
-            '48f71ba7e14629455259e4a618c0585f31120f51544b88a39cf60f9e8faa2424'
+            '1ed75e084c2af54e7ee7e0479257cadf43419ec5b1c9e895baac8cb37c482eae'
             'c02f953e73cc63a29799daeee7c06231781ef53f7281209bebd805a30175f6d9'
             'c36e1a0abd196b35c15ef8d3a695a237ae9812f575f99adebe130dff3b7eb56a'
             'a54acb9e36aa625770ceb7c08c7fc2cc7e5de7b5f9e317ae223d5d28617a7b99'
@@ -58,8 +58,15 @@ build() {
   local _headers="${srcdir}/sysroot-headers"
   local _manifest="${srcdir}/sysroot-default-manifest"
   local _prefix="opt/${_target}"
+  local _w32api_archive="${srcdir}/w32api-headers-${_w32api_version}.tar.zst"
 
   rm -rf "${_headers}" "${_manifest}"
+  base64 --decode \
+    "${srcdir}/w32api-headers-${_w32api_version}.tar.zst.b64" \
+    > "${_w32api_archive}"
+  rm -rf "${srcdir}/w32api"
+  tar --zstd -xf "${_w32api_archive}" -C "${srcdir}"
+  rm -f "${_w32api_archive}"
   mkdir -p \
     "${_headers}/${_prefix}/include" \
     "${_headers}/${_prefix}/lib" \
