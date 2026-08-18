@@ -147,8 +147,8 @@ _configure_libstdcxx() {
   local _source="${srcdir}/${_gcc_root}"
   local _tool_target=aarch64-pc-cygwin
   local _xgcc="${_builddir}/gcc/xgcc.exe"
-  local _cppflags="-I/opt/lib/gcc/${_target}/${_gcc_version}/include -I/opt/lib/gcc/${_target}/${_gcc_version}/include-fixed -I/opt/${_target}/include -I/opt/${_target}/include/w32api"
-  local _target_flags="-B${_builddir}/gcc/ -B/opt/libexec/gcc/${_target}/${_gcc_version}/ -B/opt/${_target}/bin/ -B/opt/${_target}/lib/ -isystem /opt/lib/gcc/${_target}/${_gcc_version}/include -isystem /opt/lib/gcc/${_target}/${_gcc_version}/include-fixed -isystem /opt/${_target}/include --sysroot=/opt/${_target}"
+  local _cppflags="-I/opt/lib/gcc/${_target}/${_gcc_version}/include -I/opt/lib/gcc/${_target}/${_gcc_version}/include-fixed -isystem /opt/${_target}/include -idirafter /opt/${_target}/include/w32api"
+  local _target_flags="-B${_builddir}/gcc/ -B/opt/libexec/gcc/${_target}/${_gcc_version}/ -B/opt/${_target}/bin/ -B/opt/${_target}/lib/ -isystem /opt/lib/gcc/${_target}/${_gcc_version}/include -isystem /opt/lib/gcc/${_target}/${_gcc_version}/include-fixed -isystem /opt/${_target}/include -idirafter /opt/${_target}/include/w32api --sysroot=/opt/${_target}"
   local _runtime="${srcdir}/${_runtime_root}"
   local -a _args=(
     '--cache-file=./config.cache'
