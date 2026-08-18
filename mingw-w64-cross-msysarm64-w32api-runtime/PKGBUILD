@@ -26,8 +26,8 @@ makedepends=(
   'mingw-w64-cross-cygwinarm64-binutils'
   'mingw-w64-cross-mingwarm64-gcc'
 )
-provides=("aarch64-pc-msys-w32api-runtime=${pkgver}"
-          "mingw-w64-cross-cygwinarm64-w32api-runtime=${pkgver}")
+provides=("aarch64-pc-msys-w32api-runtime=${pkgver}-${pkgrel}"
+          "mingw-w64-cross-cygwinarm64-w32api-runtime=14.0.0.r0.g9b3dd0125-1")
 replaces=('mingw-w64-cross-cygwinarm64-w32api-runtime')
 conflicts=(
   'aarch64-pc-msys-w32api-runtime'
