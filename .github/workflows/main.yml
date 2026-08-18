@@ -43,6 +43,12 @@ jobs:
           $BUILD_DRIVE = Split-Path $env:GITHUB_WORKSPACE -Qualifier
           echo "drive=$BUILD_DRIVE" >> $env:GITHUB_OUTPUT
 
+      - name: Configure Git line endings
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
       - uses: actions/checkout@v4
         with:
           path: temp
