@@ -18,3 +18,4 @@
 *.lib binary
 *.a binary
 *.ico binary
+mingw-w64-cross-msysarm64-sysroot/w32api-headers-14.0.0.r0.g9b3dd0125.tar.zst binary
