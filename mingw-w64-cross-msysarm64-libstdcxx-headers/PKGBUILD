@@ -189,11 +189,13 @@ _configure_libstdcxx() {
   (
     cd "${_libbuild}"
     CONFIG_SITE=no-such-file \
+    CPP="${_xgcc} -E ${_target_flags}" \
     AR="/opt/bin/${_tool_target}-ar" \
     AS="/opt/bin/${_tool_target}-as" \
     CC="${_xgcc} ${_target_flags}" \
     CFLAGS='-O2 -pipe -D_WIN64' \
     CXX="${_xgcc} -shared-libgcc -nostdinc++ ${_target_flags}" \
+    CXXCPP="${_xgcc} -E ${_target_flags}" \
     CXXFLAGS='-O2 -pipe -D_WIN64' \
     LD="/opt/bin/${_tool_target}-ld" \
     NM="/opt/bin/${_tool_target}-nm" \
