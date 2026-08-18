@@ -190,14 +190,14 @@ _configure_libstdcxx() {
   (
     cd "${_libbuild}"
     CONFIG_SITE=no-such-file \
-    CPP="/opt/bin/aarch64-w64-mingw32-gcc -E" \
+    CPP="/opt/bin/aarch64-pc-cygwin-cpp -E" \
     CPPFLAGS="${_cppflags}" \
     AR="/opt/bin/${_tool_target}-ar" \
     AS="/opt/bin/${_tool_target}-as" \
     CC="${_xgcc} ${_target_flags}" \
     CFLAGS='-O2 -pipe -D_WIN64' \
     CXX="${_xgcc} -shared-libgcc -nostdinc++ ${_target_flags}" \
-    CXXCPP="/opt/bin/aarch64-w64-mingw32-g++ -E" \
+    CXXCPP="/opt/bin/aarch64-pc-cygwin-cpp -E -x c++" \
     CXXFLAGS='-O2 -pipe -D_WIN64' \
     LD="/opt/bin/${_tool_target}-ld" \
     NM="/opt/bin/${_tool_target}-nm" \
