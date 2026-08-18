@@ -231,6 +231,7 @@ build() {
     all-libdecnumber \
     all-libbacktrace
   make -C "${srcdir}/${_gcc_build}/gcc" MAKEINFO=true xgcc.exe
+  make -C "${srcdir}/${_gcc_build}/gcc" MAKEINFO=true cc1.exe cc1plus.exe
   "${srcdir}/${_gcc_build}/gcc/xgcc.exe" \
     -B"${srcdir}/${_gcc_build}/gcc/" \
     -B"/opt/libexec/gcc/${_target}/${_gcc_version}/" \
