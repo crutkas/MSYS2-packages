@@ -130,6 +130,20 @@ jobs:
             "$input_dir\mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-1-x86_64.pkg.tar.zst" `
             "$input_dir\mingw-w64-cross-cygwinarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst"
 
+      - name: Add MSYS tool aliases
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
+        shell: pwsh
+        run: |
+          $binDir = 'C:\msys64\opt\bin'
+          $tools = @('as', 'ld', 'ar', 'nm', 'objcopy', 'objdump', 'ranlib', 'strip', 'windres', 'dlltool', 'readelf', 'size', 'addr2line', 'strings')
+          foreach ($tool in $tools) {
+            $source = Join-Path $binDir "aarch64-pc-cygwin-$tool.exe"
+            $dest = Join-Path $binDir "aarch64-pc-msys-$tool.exe"
+            if ((Test-Path $source) -and -not (Test-Path $dest)) {
+              Copy-Item $source $dest
+            }
+          }
+
       - name: Move Checkout
         run: |
           $path = "${{ steps.facts.outputs.drive }}\_"
