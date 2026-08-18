@@ -189,7 +189,8 @@ check() {
 
 package_mingw-w64-cross-msysarm64-headers() {
   pkgdesc="MSYS, newlib, and w32api headers for aarch64-pc-msys"
-  provides=("aarch64-pc-msys-headers=${pkgver}")
+  provides=("aarch64-pc-msys-headers=${pkgver}"
+            "mingw-w64-cross-cygwinarm64-headers=${pkgver}")
   conflicts=('aarch64-pc-msys-headers'
              'mingw-w64-cross-cygwinarm64-headers')
 
@@ -198,7 +199,8 @@ package_mingw-w64-cross-msysarm64-headers() {
 
 package_mingw-w64-cross-msysarm64-windows-default-manifest() {
   pkgdesc="Default Windows application manifest for aarch64-pc-msys"
-  provides=("aarch64-pc-msys-windows-default-manifest=${pkgver}")
+  provides=("aarch64-pc-msys-windows-default-manifest=${pkgver}"
+            "mingw-w64-cross-cygwinarm64-windows-default-manifest=${pkgver}")
   conflicts=('aarch64-pc-msys-windows-default-manifest'
              'mingw-w64-cross-cygwinarm64-windows-default-manifest')
 
@@ -211,7 +213,8 @@ package_mingw-w64-cross-msysarm64-sysroot() {
     "mingw-w64-cross-msysarm64-headers=${pkgver}-${pkgrel}"
     "mingw-w64-cross-msysarm64-windows-default-manifest=${pkgver}-${pkgrel}"
   )
-  provides=("aarch64-pc-msys-sysroot=${pkgver}")
+  provides=("aarch64-pc-msys-sysroot=${pkgver}"
+            "mingw-w64-cross-cygwinarm64-sysroot=${pkgver}")
   conflicts=('aarch64-pc-msys-sysroot'
              'mingw-w64-cross-cygwinarm64-sysroot')
 
