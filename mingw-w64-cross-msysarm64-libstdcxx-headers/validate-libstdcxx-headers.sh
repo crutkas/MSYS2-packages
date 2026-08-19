@@ -22,6 +22,10 @@ work="$report_dir/work"
 rm -rf "$work"
 mkdir -p "$work"
 rm -rf "$runtime_build"
+mark() {
+  printf '%s\n' "$1" >> "$report_dir/validation-progress.txt"
+}
+mark "start"
 
 copy_failure_logs() {
   local name="$1"
@@ -106,6 +110,7 @@ test -f "${target_include}/bits/gthr-default.h"
 test -f "${target_include}/bits/gthr-posix.h"
 test "$("$cxx" -dumpmachine)" = "$target"
 grep -Fx 'Thread model: posix' <("$cxx" -v 2>&1)
+mark "initial-checks-ok"
 
 "$cxx" "${compile_tool[@]}" \
   -dM -E -x c++ /dev/null \
@@ -114,6 +119,7 @@ if grep -Eq '^#define _WIN64( 1)?$' "$work/compiler-macros.txt"; then
   echo "frozen stage-0 unexpectedly defines _WIN64" >&2
   exit 1
 fi
+mark "compiler-macros-ok"
 
 if ! "$cxx" "${compile_tool[@]}" "${cxx_headers[@]}" \
   -std=gnu++17 -dM -E "$fixtures/header-features.cc" \
@@ -150,6 +156,7 @@ if grep -q '^#define _GLIBCXX_HAVE_TLS' "$work/header-macros.txt"; then
   echo "header stage unexpectedly claims TLS before target link libraries exist" >&2
   exit 1
 fi
+mark "header-macros-ok"
 
 cmp "${target_include}/bits/gthr-default.h" \
   "${target_include}/bits/gthr-posix.h"
@@ -161,6 +168,7 @@ if grep -Eiq 'mingw|aarch64-w64-mingw32|x86_64' \
   echo "foreign target identity found in configured headers" >&2
   exit 1
 fi
+mark "header-identity-ok"
 
 if ! "$cxx" "${compile_tool[@]}" "${cxx_headers[@]}" \
   -std=gnu++17 -E -Wp,-v "$fixtures/header-features.cc" \
@@ -174,6 +182,7 @@ if ! validate_include_paths "$work/include-search.txt"; then
   echo "include-search validation failed" > "$report_dir/validation-failure.txt"
   exit 1
 fi
+mark "include-search-ok"
 
 if ! "$cxx" "${compile_tool[@]}" "${cxx_headers[@]}" \
   -std=gnu++17 -O2 -fexceptions -funwind-tables \
@@ -199,6 +208,7 @@ if ! "$cxx" "${compile_tool[@]}" "${cxx_headers[@]}" \
   echo "atomic compile failed" > "$report_dir/validation-failure.txt"
   exit 1
 fi
+mark "object-compiles-ok"
 
 for object in header-features exceptions atomic; do
   object_path="$work/${object}.o"
@@ -286,6 +296,7 @@ if ! (cd "${runtime_source}/winsup" && ./autogen.sh \
   echo "runtime autogen failed" > "$report_dir/validation-failure.txt"
   exit 1
 fi
+mark "runtime-autogen-ok"
 mkdir -p "$runtime_build"
 (
   cd "$runtime_build"
@@ -305,6 +316,7 @@ mkdir -p "$runtime_build"
       --with-cross-bootstrap \
       > "$report_dir/runtime-configure.log" 2>&1
 )
+mark "runtime-configure-ok"
 
 runtime_cygwin="${runtime_build}/cygwin"
 make -C "$runtime_cygwin" V=1 globals.h \
@@ -338,6 +350,7 @@ grep -F '__cxa_pure_virtual' \
   "$report_dir/runtime-cxx-symbols.txt"
 grep -F "$generic_include" "$report_dir/runtime-objects.log"
 validate_include_paths "$report_dir/runtime-objects.log"
+mark "runtime-objects-ok"
 
 pacman -Q \
   mingw-w64-cross-cygwinarm64-binutils \
@@ -405,6 +418,7 @@ test ! -s "$report_dir/collisions.txt"
   printf 'allowed-prefix\t/opt/%s/include/c++/%s\n' \
     "$target" "$gcc_version"
 } > "$report_dir/ownership-report.txt"
+mark "ownership-ok"
 
 cp \
     "$work/compiler-macros.txt" \
@@ -523,3 +537,4 @@ PY
 
 python -m json.tool "$report_dir/validation-report.json" > /dev/null
 echo "libstdc++ header validation passed: ${report_dir}/validation-report.json"
+mark "report-generated"
