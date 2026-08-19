@@ -403,6 +403,14 @@ build() {
     -e "s#${srcdir}/##" \
     > "${srcdir}/${_report}/configuration-sha256.txt"
 
+  local _validator_cxx="${srcdir}/${_report}/tooling/msys-validate-cxx"
+  mkdir -p "${srcdir}/${_report}/tooling"
+  cat > "${_validator_cxx}" <<EOF
+#!/usr/bin/env bash
+exec "${_xgcc}" -B"${_builddir}/gcc/" -B"/opt/libexec/gcc/${_target}/${_gcc_version}/" "\$@"
+EOF
+  chmod 755 "${_validator_cxx}"
+
   cat > "${srcdir}/${_report}/source-identity.txt" <<EOF
 package-version	${pkgver}-${pkgrel}
 gcc-repository	https://github.com/crutkas/gcc-woarm64
@@ -431,6 +439,7 @@ EOF
     "${srcdir}/${_report}/source-identity.txt" \
     "${_sharedir}/"
 
+  LIBSTDCXX_VALIDATE_CXX="${_validator_cxx}" \
   bash "${srcdir}/validate-libstdcxx-headers.sh" \
     "${srcdir}/${_stage}/opt" \
     "${srcdir}/${_report}" \

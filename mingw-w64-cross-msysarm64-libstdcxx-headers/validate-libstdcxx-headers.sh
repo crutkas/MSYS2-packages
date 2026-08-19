@@ -44,7 +44,7 @@ copy_failure_logs() {
   done
 }
 
-cxx=/opt/bin/${target}-g++
+cxx=${LIBSTDCXX_VALIDATE_CXX:-/opt/bin/${target}-g++}
 objdump=/opt/bin/${target}-objdump
 nm=/opt/bin/${target}-nm
 generic_include="${prefix_root}/${target}/include/c++/${gcc_version}"
@@ -320,8 +320,10 @@ mkdir -p "$runtime_build"
 (
   cd "$runtime_build"
   PATH="/opt/bin:${PATH}" \
-  CC="${target}-gcc" \
-  CXX="${target}-g++" \
+  CC="${cxx}" \
+  CXX="${cxx}" \
+  CPP="${cxx} -E -x c ${_target_flags}" \
+  CXXCPP="${cxx} -E -x c++ ${_target_flags}" \
   CFLAGS='-D_WIN64' \
   CXXFLAGS="-D_WIN64 -I${sysroot}/include -nostdinc++ -isystem ${generic_include} -isystem ${target_include} -isystem ${backward_include}" \
   LDFLAGS="-L${sysroot}/usr/lib" \
