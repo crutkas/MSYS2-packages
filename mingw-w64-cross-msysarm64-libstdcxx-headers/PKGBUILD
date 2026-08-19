@@ -190,7 +190,7 @@ _configure_libstdcxx() {
   (
     cd "${_libbuild}"
     CONFIG_SITE=no-such-file \
-    CPP="${_xgcc} -E -D_WIN64 ${_target_flags}" \
+    CPP="${_xgcc} -E -x c -D_WIN64 ${_target_flags}" \
     CPPFLAGS="${_cppflags}" \
     AR="/opt/bin/${_tool_target}-ar" \
     AS="/opt/bin/${_tool_target}-as" \
