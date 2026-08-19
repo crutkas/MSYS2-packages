@@ -269,7 +269,13 @@ if ! grep -F 'operator delete' <("$nm" -u -C "$work/header-features.o"); then
   echo "header-features object missing operator delete" > "$report_dir/validation-failure.txt"
   exit 1
 fi
-if "$nm" -u "$work/atomic.o" | grep -E '__atomic_|__sync_'; then
+if ! "$nm" -u "$work/atomic.o" \
+  > "$report_dir/atomic-undefined.txt" 2> "$work/atomic-nm.err"; then
+  copy_failure_logs atomic-nm
+  echo "atomic undefined-symbol dump failed" > "$report_dir/validation-failure.txt"
+  exit 1
+fi
+if grep -E '__atomic_|__sync_' "$report_dir/atomic-undefined.txt"; then
   echo "lock-free atomic probe unexpectedly requires an atomic runtime" > "$report_dir/validation-failure.txt"
   exit 1
 fi
