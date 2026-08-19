@@ -311,10 +311,16 @@ _report_build_failure() {
   local _line="${2}"
   local _reportdir="${srcdir}/${_report}"
   mkdir -p "${_reportdir}"
+  if [[ ! -f "${_reportdir}/validation-failure.txt" ]]; then
+    {
+      printf 'command\t%s\n' "${_command}"
+      printf 'line\t%s\n' "${_line}"
+    } > "${_reportdir}/validation-failure.txt"
+  fi
   {
     printf 'command\t%s\n' "${_command}"
     printf 'line\t%s\n' "${_line}"
-  } > "${_reportdir}/validation-failure.txt"
+  } > "${_reportdir}/build-failure.txt"
 }
 
 build() {
