@@ -189,26 +189,37 @@ _configure_libstdcxx() {
 
   (
     cd "${_libbuild}"
-    CONFIG_SITE=no-such-file \
-    CPP="${_xgcc} -E -x c -D_WIN64 ${_target_flags}" \
-    CPPFLAGS="${_cppflags}" \
-    AR="/opt/bin/${_tool_target}-ar" \
-    AS="/opt/bin/${_tool_target}-as" \
-    CC="${_xgcc} ${_target_flags}" \
-    CFLAGS='-O2 -pipe -D_WIN64' \
-    CXX="${_xgcc} -shared-libgcc -nostdinc++ ${_target_flags}" \
-    CXXCPP="${_xgcc} -E -x c++ -D_WIN64 ${_target_flags}" \
-    CXXFLAGS='-O2 -pipe -D_WIN64' \
-    LD="/opt/bin/${_tool_target}-ld" \
-    NM="/opt/bin/${_tool_target}-nm" \
-    OBJCOPY="/opt/bin/${_tool_target}-objcopy" \
-    OBJDUMP="/opt/bin/${_tool_target}-objdump" \
-    RANLIB="/opt/bin/${_tool_target}-ranlib" \
-    READELF="/opt/bin/${_tool_target}-readelf" \
-    STRIP="/opt/bin/${_tool_target}-strip" \
-    WINDMC="/opt/bin/${_tool_target}-windmc" \
-    WINDRES="/opt/bin/${_tool_target}-windres" \
-      "${_source}/libstdc++-v3/configure" "${_args[@]}"
+    if ! env \
+      CONFIG_SITE=no-such-file \
+      CPP="${_xgcc} -E -x c -D_WIN64 ${_target_flags}" \
+      CPPFLAGS="${_cppflags}" \
+      AR="/opt/bin/${_tool_target}-ar" \
+      AS="/opt/bin/${_tool_target}-as" \
+      CC="${_xgcc} ${_target_flags}" \
+      CFLAGS='-O2 -pipe -D_WIN64' \
+      CXX="${_xgcc} -shared-libgcc -nostdinc++ ${_target_flags}" \
+      CXXCPP="${_xgcc} -E -x c++ -D_WIN64 ${_target_flags}" \
+      CXXFLAGS='-O2 -pipe -D_WIN64' \
+      LD="/opt/bin/${_tool_target}-ld" \
+      NM="/opt/bin/${_tool_target}-nm" \
+      OBJCOPY="/opt/bin/${_tool_target}-objcopy" \
+      OBJDUMP="/opt/bin/${_tool_target}-objdump" \
+      RANLIB="/opt/bin/${_tool_target}-ranlib" \
+      READELF="/opt/bin/${_tool_target}-readelf" \
+      STRIP="/opt/bin/${_tool_target}-strip" \
+      WINDMC="/opt/bin/${_tool_target}-windmc" \
+      WINDRES="/opt/bin/${_tool_target}-windres" \
+        "${_source}/libstdc++-v3/configure" "${_args[@]}"; then
+      echo '=== xgcc preprocessor probes ==='
+      "${_xgcc}" -print-prog-name=cc1
+      "${_xgcc}" -print-prog-name=cc1plus
+      "${_xgcc}" -print-prog-name=collect2
+      "${_xgcc}" -print-prog-name=as
+      "${_xgcc}" -print-search-dirs
+      echo '=== config.log excerpt ==='
+      grep -n -A20 -B20 'fails sanity check' config.log || tail -n 120 config.log
+      return 1
+    fi
   )
 
   printf '%s\n' "${_args[@]}" \
