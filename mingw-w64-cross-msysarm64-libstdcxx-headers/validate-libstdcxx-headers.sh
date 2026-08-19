@@ -23,6 +23,15 @@ rm -rf "$work"
 mkdir -p "$work"
 rm -rf "$runtime_build"
 
+copy_failure_logs() {
+  local name="$1"
+  for ext in err txt log; do
+    if [[ -f "$work/${name}.${ext}" ]]; then
+      cp -f "$work/${name}.${ext}" "$report_dir/${name}.${ext}"
+    fi
+  done
+}
+
 cc=/opt/bin/${target}-gcc
 cxx=/opt/bin/${target}-g++
 objdump=/opt/bin/${target}-objdump
@@ -106,9 +115,13 @@ if grep -Eq '^#define _WIN64( 1)?$' "$work/compiler-macros.txt"; then
   exit 1
 fi
 
-"$cxx" "${compile_tool[@]}" "${cxx_headers[@]}" \
+if ! "$cxx" "${compile_tool[@]}" "${cxx_headers[@]}" \
   -std=gnu++17 -dM -E "$fixtures/header-features.cc" \
-  > "$work/header-macros.txt"
+  > "$work/header-macros.txt" 2> "$work/header-features.err"; then
+  copy_failure_logs header-features
+  echo "header-features preprocessor failed" > "$report_dir/validation-failure.txt"
+  exit 1
+fi
 for macro in \
   _GLIBCXX_HAS_GTHREADS \
   _GLIBCXX_USE_WCHAR_T \
@@ -149,20 +162,43 @@ if grep -Eiq 'mingw|aarch64-w64-mingw32|x86_64' \
   exit 1
 fi
 
-"$cxx" "${compile_tool[@]}" "${cxx_headers[@]}" \
+if ! "$cxx" "${compile_tool[@]}" "${cxx_headers[@]}" \
   -std=gnu++17 -E -Wp,-v "$fixtures/header-features.cc" \
-  > /dev/null 2> "$work/include-search.txt"
-validate_include_paths "$work/include-search.txt"
+  > /dev/null 2> "$work/include-search.txt"; then
+  copy_failure_logs include-search
+  echo "include-search preprocessor failed" > "$report_dir/validation-failure.txt"
+  exit 1
+fi
+if ! validate_include_paths "$work/include-search.txt"; then
+  copy_failure_logs include-search
+  echo "include-search validation failed" > "$report_dir/validation-failure.txt"
+  exit 1
+fi
 
-"$cxx" "${compile_tool[@]}" "${cxx_headers[@]}" \
+if ! "$cxx" "${compile_tool[@]}" "${cxx_headers[@]}" \
   -std=gnu++17 -O2 -fexceptions -funwind-tables \
-  -c "$fixtures/header-features.cc" -o "$work/header-features.o"
-"$cxx" "${compile_tool[@]}" "${cxx_headers[@]}" \
+  -c "$fixtures/header-features.cc" -o "$work/header-features.o" \
+  2> "$work/header-features.err"; then
+  copy_failure_logs header-features
+  echo "header-features compile failed" > "$report_dir/validation-failure.txt"
+  exit 1
+fi
+if ! "$cxx" "${compile_tool[@]}" "${cxx_headers[@]}" \
   -std=gnu++17 -O2 -fexceptions -funwind-tables \
-  -c "$fixtures/exceptions.cc" -o "$work/exceptions.o"
-"$cxx" "${compile_tool[@]}" "${cxx_headers[@]}" \
+  -c "$fixtures/exceptions.cc" -o "$work/exceptions.o" \
+  2> "$work/exceptions.err"; then
+  copy_failure_logs exceptions
+  echo "exceptions compile failed" > "$report_dir/validation-failure.txt"
+  exit 1
+fi
+if ! "$cxx" "${compile_tool[@]}" "${cxx_headers[@]}" \
   -std=gnu++17 -O2 \
-  -c "$fixtures/atomic.cc" -o "$work/atomic.o"
+  -c "$fixtures/atomic.cc" -o "$work/atomic.o" \
+  2> "$work/atomic.err"; then
+  copy_failure_logs atomic
+  echo "atomic compile failed" > "$report_dir/validation-failure.txt"
+  exit 1
+fi
 
 for object in header-features exceptions atomic; do
   test "$(od -An -tx2 -N2 "$work/${object}.o" | tr -d '[:space:]')" = aa64
@@ -193,7 +229,12 @@ if "$nm" -u "$work/atomic.o" | grep -E '__atomic_|__sync_'; then
   exit 1
 fi
 
-(cd "${runtime_source}/winsup" && ./autogen.sh)
+if ! (cd "${runtime_source}/winsup" && ./autogen.sh \
+  > "$work/runtime-autogen.log" 2> "$work/runtime-autogen.err"); then
+  copy_failure_logs runtime-autogen
+  echo "runtime autogen failed" > "$report_dir/validation-failure.txt"
+  exit 1
+fi
 mkdir -p "$runtime_build"
 (
   cd "$runtime_build"
