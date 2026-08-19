@@ -44,7 +44,6 @@ copy_failure_logs() {
   done
 }
 
-cc=/opt/bin/${target}-gcc
 cxx=/opt/bin/${target}-g++
 objdump=/opt/bin/${target}-objdump
 nm=/opt/bin/${target}-nm
@@ -108,8 +107,6 @@ cxx_headers=(
   -idirafter "${sysroot}/include/w32api"
 )
 
-current_step="cc-executable"
-test -x "$cc"
 current_step="cxx-executable"
 test -x "$cxx"
 current_step="objdump-executable"
