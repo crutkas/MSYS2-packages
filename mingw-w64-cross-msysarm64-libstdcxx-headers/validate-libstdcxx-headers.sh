@@ -201,31 +201,76 @@ if ! "$cxx" "${compile_tool[@]}" "${cxx_headers[@]}" \
 fi
 
 for object in header-features exceptions atomic; do
-  test "$(od -An -tx2 -N2 "$work/${object}.o" | tr -d '[:space:]')" = aa64
-  "$objdump" -f "$work/${object}.o" \
-    > "$report_dir/${object}-file.txt"
-  grep -F 'file format pe-aarch64-little' \
-    "$report_dir/${object}-file.txt"
+  object_path="$work/${object}.o"
+  if ! test -f "$object_path"; then
+    echo "${object} object missing" > "$report_dir/validation-failure.txt"
+    exit 1
+  fi
+  if ! test "$(od -An -tx2 -N2 "$object_path" | tr -d '[:space:]')" = aa64; then
+    echo "${object} object has unexpected magic" > "$report_dir/validation-failure.txt"
+    exit 1
+  fi
+  if ! "$objdump" -f "$object_path" \
+    > "$report_dir/${object}-file.txt" 2> "$work/${object}-objdump.err"; then
+    copy_failure_logs "${object}-objdump"
+    echo "${object} objdump failed" > "$report_dir/validation-failure.txt"
+    exit 1
+  fi
+  if ! grep -F 'file format pe-aarch64-little' \
+    "$report_dir/${object}-file.txt"; then
+    echo "${object} object has unexpected file format" > "$report_dir/validation-failure.txt"
+    exit 1
+  fi
 done
 
-"$objdump" -h "$work/exceptions.o" \
-  > "$report_dir/exceptions-sections.txt"
-"$nm" -u "$work/exceptions.o" \
-  > "$report_dir/exceptions-undefined.txt"
-grep -Eq '[[:space:]]\.pdata[[:space:]]' \
-  "$report_dir/exceptions-sections.txt"
-grep -Eq '[[:space:]]\.xdata[[:space:]]' \
-  "$report_dir/exceptions-sections.txt"
-grep -F '__cxa_throw' "$report_dir/exceptions-undefined.txt"
-grep -E '__gxx_personality|_Unwind_Resume' \
-  "$report_dir/exceptions-undefined.txt"
+if ! "$objdump" -h "$work/exceptions.o" \
+  > "$report_dir/exceptions-sections.txt" 2> "$work/exceptions-sections.err"; then
+  copy_failure_logs exceptions-sections
+  echo "exceptions section dump failed" > "$report_dir/validation-failure.txt"
+  exit 1
+fi
+if ! "$nm" -u "$work/exceptions.o" \
+  > "$report_dir/exceptions-undefined.txt" 2> "$work/exceptions-nm.err"; then
+  copy_failure_logs exceptions-nm
+  echo "exceptions undefined-symbol dump failed" > "$report_dir/validation-failure.txt"
+  exit 1
+fi
+if ! grep -Eq '[[:space:]]\.pdata[[:space:]]' \
+  "$report_dir/exceptions-sections.txt"; then
+  echo "exceptions sections missing .pdata" > "$report_dir/validation-failure.txt"
+  exit 1
+fi
+if ! grep -Eq '[[:space:]]\.xdata[[:space:]]' \
+  "$report_dir/exceptions-sections.txt"; then
+  echo "exceptions sections missing .xdata" > "$report_dir/validation-failure.txt"
+  exit 1
+fi
+if ! grep -F '__cxa_throw' "$report_dir/exceptions-undefined.txt"; then
+  echo "exceptions object missing __cxa_throw" > "$report_dir/validation-failure.txt"
+  exit 1
+fi
+if ! grep -E '__gxx_personality|_Unwind_Resume' \
+  "$report_dir/exceptions-undefined.txt"; then
+  echo "exceptions object missing unwind support" > "$report_dir/validation-failure.txt"
+  exit 1
+fi
 
-"$nm" -u "$work/header-features.o" \
-  > "$report_dir/header-features-undefined.txt"
-grep -F 'operator new' <("$nm" -u -C "$work/header-features.o")
-grep -F 'operator delete' <("$nm" -u -C "$work/header-features.o")
+if ! "$nm" -u "$work/header-features.o" \
+  > "$report_dir/header-features-undefined.txt" 2> "$work/header-features-nm.err"; then
+  copy_failure_logs header-features-nm
+  echo "header-features undefined-symbol dump failed" > "$report_dir/validation-failure.txt"
+  exit 1
+fi
+if ! grep -F 'operator new' <("$nm" -u -C "$work/header-features.o"); then
+  echo "header-features object missing operator new" > "$report_dir/validation-failure.txt"
+  exit 1
+fi
+if ! grep -F 'operator delete' <("$nm" -u -C "$work/header-features.o"); then
+  echo "header-features object missing operator delete" > "$report_dir/validation-failure.txt"
+  exit 1
+fi
 if "$nm" -u "$work/atomic.o" | grep -E '__atomic_|__sync_'; then
-  echo "lock-free atomic probe unexpectedly requires an atomic runtime" >&2
+  echo "lock-free atomic probe unexpectedly requires an atomic runtime" > "$report_dir/validation-failure.txt"
   exit 1
 fi
 
