@@ -25,6 +25,14 @@ rm -rf "$runtime_build"
 mark() {
   printf '%s\n' "$1" >> "$report_dir/validation-progress.txt"
 }
+fail() {
+  {
+    printf 'step\t%s\n' "${current_step:-unknown}"
+    printf 'line\t%s\n' "$1"
+    printf 'command\t%s\n' "$2"
+  } > "$report_dir/validation-failure.txt"
+}
+trap 'fail "$LINENO" "$BASH_COMMAND"' ERR
 mark "start"
 
 copy_failure_logs() {
@@ -100,18 +108,28 @@ cxx_headers=(
   -idirafter "${sysroot}/include/w32api"
 )
 
+current_step="cc-executable"
 test -x "$cc"
+current_step="cxx-executable"
 test -x "$cxx"
+current_step="objdump-executable"
 test -x "$objdump"
+current_step="nm-executable"
 test -x "$nm"
 mark "executables-ok"
+current_step="spec-file"
 test -f "$specs"
+current_step="c++config"
 test -f "${target_include}/bits/c++config.h"
+current_step="gthr-default"
 test -f "${target_include}/bits/gthr-default.h"
+current_step="gthr-posix"
 test -f "${target_include}/bits/gthr-posix.h"
 mark "header-files-ok"
+current_step="dumpmachine"
 test "$("$cxx" -dumpmachine)" = "$target"
 mark "dumpmachine-ok"
+current_step="thread-model"
 grep -Fx 'Thread model: posix' <("$cxx" -v 2>&1)
 mark "thread-model-ok"
 mark "initial-checks-ok"
