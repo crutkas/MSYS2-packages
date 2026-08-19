@@ -108,8 +108,11 @@ test -f "$specs"
 test -f "${target_include}/bits/c++config.h"
 test -f "${target_include}/bits/gthr-default.h"
 test -f "${target_include}/bits/gthr-posix.h"
+mark "files-ok"
 test "$("$cxx" -dumpmachine)" = "$target"
+mark "dumpmachine-ok"
 grep -Fx 'Thread model: posix' <("$cxx" -v 2>&1)
+mark "thread-model-ok"
 mark "initial-checks-ok"
 
 "$cxx" "${compile_tool[@]}" \
