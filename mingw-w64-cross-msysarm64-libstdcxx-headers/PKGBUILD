@@ -217,6 +217,7 @@ _configure_libstdcxx() {
       "${_xgcc}" -print-prog-name=as
       "${_xgcc}" -print-search-dirs
       echo '=== config.log excerpt ==='
+      sed -n '836,846p' config.log
       grep -n -A20 -B20 'fails sanity check' config.log || tail -n 120 config.log
       return 1
     fi
