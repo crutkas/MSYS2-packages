@@ -173,6 +173,13 @@ jobs:
           name: ${{ matrix.msystem }}-packages
           path: ${{ steps.facts.outputs.drive }}/_/artifacts/*.pkg.tar.*
 
+      - name: "Upload debug logs"
+        if: ${{ failure() && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.msystem }}-libstdcxx-debug
+          path: ${{ steps.facts.outputs.drive }}/_/mingw-w64-cross-msysarm64-libstdcxx-headers/src/libstdcxx-headers-report/*
+
   package-grokker:
     if: ${{ !(github.repository == 'crutkas/MSYS2-packages' && github.head_ref == 'crutkas-package-aarch64-static-libgcc') }}
     runs-on: ubuntu-latest

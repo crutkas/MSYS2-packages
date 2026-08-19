@@ -141,14 +141,105 @@ _configure_bootstrap_compiler() {
     > "${srcdir}/${_report}/gcc-configure-args.txt"
 }
 
+_prepare_gcc_private_headers() {
+  local _builddir="${srcdir}/${_gcc_build}"
+  local _private_include="${_builddir}/gcc/include"
+  local _private_include_fixed="${_builddir}/gcc/include-fixed"
+
+  if ! make -C "${_builddir}/gcc" MAKEINFO=true stmp-int-hdrs; then
+    make -C "${_builddir}" MAKEINFO=true all-gcc
+  fi
+
+  test -d "${_private_include}"
+  test -d "${_private_include_fixed}"
+  test -f "${_private_include}/limits.h" || test -f "${_private_include_fixed}/limits.h"
+  test -f "${_private_include}/stddef.h" || test -f "${_private_include_fixed}/stddef.h"
+
+  {
+    printf 'private-include\t%s\n' "${_private_include}"
+    printf 'private-include-fixed\t%s\n' "${_private_include_fixed}"
+    find "${_private_include}" -maxdepth 1 -type f \
+      \( -name 'limits.h' -o -name 'stddef.h' -o -name 'stdint.h' -o -name 'syslimits.h' \) \
+      | LC_ALL=C sort
+    find "${_private_include_fixed}" -maxdepth 1 -type f \
+      \( -name 'limits.h' -o -name 'stddef.h' -o -name 'stdint.h' -o -name 'syslimits.h' \) \
+      | LC_ALL=C sort
+  } > "${srcdir}/${_report}/gcc-private-headers.txt"
+}
+
+_probe_libstdcxx_preprocessor() {
+  local _builddir="${srcdir}/${_gcc_build}"
+  local _probe_dir="${srcdir}/${_report}/preprocessor-probes"
+  local _xgcc="${_builddir}/gcc/xgcc.exe"
+  local _private_include="${_builddir}/gcc/include"
+  local _private_include_fixed="${_builddir}/gcc/include-fixed"
+  local _cppflags="-isystem ${_private_include} -isystem ${_private_include_fixed} -isystem /opt/${_target}/include -idirafter /opt/${_target}/include/w32api"
+  local _target_flags="-B${_builddir}/gcc/ -B/opt/libexec/gcc/${_target}/${_gcc_version}/ -B/opt/${_target}/bin/ -B/opt/${_target}/lib/ ${_cppflags} --sysroot=/opt/${_target}"
+  mkdir -p "${_probe_dir}"
+
+  printf '/* confdefs.h */\n#include <limits.h>\n' \
+    > "${_probe_dir}/conftest-limits.c"
+  if ! env \
+    CPPFLAGS="${_cppflags}" \
+      "${_xgcc}" -E -x c ${_target_flags} "${_probe_dir}/conftest-limits.c" \
+      > "${_probe_dir}/conftest-limits.i" \
+      2> "${_probe_dir}/conftest-limits.err"; then
+    {
+      printf 'limits.h sanity\tfailed\n'
+      cat "${_probe_dir}/conftest-limits.err"
+    } > "${srcdir}/${_report}/preprocessor-sanity.txt"
+    return 1
+  fi
+
+  printf '/* confdefs.h */\n#include <ac_nonexistent.h>\n' \
+    > "${_probe_dir}/conftest-nonexistent.c"
+  if env \
+    CPPFLAGS="${_cppflags}" \
+      "${_xgcc}" -E -x c ${_target_flags} "${_probe_dir}/conftest-nonexistent.c" \
+      > "${_probe_dir}/conftest-nonexistent.i" \
+      2> "${_probe_dir}/conftest-nonexistent.err"; then
+    {
+      printf 'limits.h sanity\tok\n'
+      printf 'ac_nonexistent.h sanity\tunexpected-success\n'
+      cat "${_probe_dir}/conftest-nonexistent.err"
+    } > "${srcdir}/${_report}/preprocessor-sanity.txt"
+    return 1
+  fi
+
+  {
+    printf 'limits.h sanity\tok\n'
+    printf 'ac_nonexistent.h sanity\texpected-failure\n'
+    "${_xgcc}" -print-prog-name=cc1
+    "${_xgcc}" -print-prog-name=cc1plus
+    "${_xgcc}" -print-prog-name=collect2
+    "${_xgcc}" -print-prog-name=as
+    "${_xgcc}" -print-search-dirs
+  } > "${srcdir}/${_report}/preprocessor-sanity.txt"
+}
+
+_dump_libstdcxx_config_failure() {
+  local _libbuild="${srcdir}/${_libstdcxx_build}"
+  local _reportdir="${srcdir}/${_report}"
+  cp -f "${_libbuild}/config.log" "${_reportdir}/config.log"
+  if [[ -f "${_libbuild}/config.err" ]]; then
+    cp -f "${_libbuild}/config.err" "${_reportdir}/config.err"
+  fi
+  {
+    printf '=== ac_fn_c_try_cpp / config.log context ===\n'
+    grep -n -A20 -B20 -E 'ac_fn_c_try_cpp|ac_nonexistent.h|limits.h|conftest.err|fails sanity check' "${_libbuild}/config.log"
+  } > "${_reportdir}/config-log-context.txt" 2>&1 || true
+}
+
 _configure_libstdcxx() {
   local _builddir="${srcdir}/${_gcc_build}"
   local _libbuild="${srcdir}/${_libstdcxx_build}"
   local _source="${srcdir}/${_gcc_root}"
   local _tool_target=aarch64-pc-cygwin
   local _xgcc="${_builddir}/gcc/xgcc.exe"
-  local _cppflags="-isystem ${_source}/gcc/include -isystem /opt/${_target}/include -idirafter /opt/${_target}/include/w32api"
-  local _target_flags="-B${_builddir}/gcc/ -B/opt/libexec/gcc/${_target}/${_gcc_version}/ -B/opt/${_target}/bin/ -B/opt/${_target}/lib/ -isystem ${_source}/gcc/include -isystem /opt/${_target}/include -idirafter /opt/${_target}/include/w32api --sysroot=/opt/${_target}"
+  local _private_include="${_builddir}/gcc/include"
+  local _private_include_fixed="${_builddir}/gcc/include-fixed"
+  local _cppflags="-isystem ${_private_include} -isystem ${_private_include_fixed} -isystem /opt/${_target}/include -idirafter /opt/${_target}/include/w32api"
+  local _target_flags="-B${_builddir}/gcc/ -B/opt/libexec/gcc/${_target}/${_gcc_version}/ -B/opt/${_target}/bin/ -B/opt/${_target}/lib/ ${_cppflags} --sysroot=/opt/${_target}"
   local _runtime="${srcdir}/${_runtime_root}"
   local -a _args=(
     '--cache-file=./config.cache'
@@ -210,6 +301,7 @@ _configure_libstdcxx() {
       WINDMC="/opt/bin/${_tool_target}-windmc" \
       WINDRES="/opt/bin/${_tool_target}-windres" \
         "${_source}/libstdc++-v3/configure" "${_args[@]}"; then
+      _dump_libstdcxx_config_failure
       echo '=== xgcc preprocessor probes ==='
       "${_xgcc}" -print-prog-name=cc1
       "${_xgcc}" -print-prog-name=cc1plus
@@ -249,6 +341,7 @@ build() {
   make -C "${srcdir}/${_gcc_build}/gcc" MAKEINFO=true xgcc.exe
   make -C "${srcdir}/${_gcc_build}" MAKEINFO=true all-libcody
   make -C "${srcdir}/${_gcc_build}/gcc" MAKEINFO=true cc1.exe cc1plus.exe
+  _prepare_gcc_private_headers
   "${srcdir}/${_gcc_build}/gcc/xgcc.exe" \
     -B"${srcdir}/${_gcc_build}/gcc/" \
     -B"/opt/libexec/gcc/${_target}/${_gcc_version}/" \
@@ -256,6 +349,7 @@ build() {
     | tee "${srcdir}/${_report}/bootstrap-compiler.txt"
   grep -Fx 'Thread model: posix' \
     "${srcdir}/${_report}/bootstrap-compiler.txt"
+  _probe_libstdcxx_preprocessor
 
   _configure_libstdcxx
   make -C "${srcdir}/${_libstdcxx_build}/include" all-local
