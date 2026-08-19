@@ -306,6 +306,17 @@ _configure_libstdcxx() {
     > "${srcdir}/${_report}/libstdcxx-configure-args.txt"
 }
 
+_report_build_failure() {
+  local _command="${1}"
+  local _line="${2}"
+  local _reportdir="${srcdir}/${_report}"
+  mkdir -p "${_reportdir}"
+  {
+    printf 'command\t%s\n' "${_command}"
+    printf 'line\t%s\n' "${_line}"
+  } > "${_reportdir}/validation-failure.txt"
+}
+
 build() {
   rm -rf \
     "${srcdir:?}/${_gcc_build}" \
@@ -315,6 +326,8 @@ build() {
 
   export MSYSTEM=MSYS
   export lt_cv_deplibs_check_method=pass_all
+  set -E
+  trap '_report_build_failure "$BASH_COMMAND" "$LINENO"' ERR
 
   _configure_bootstrap_compiler
   make -C "${srcdir}/${_gcc_build}" MAKEINFO=true \
