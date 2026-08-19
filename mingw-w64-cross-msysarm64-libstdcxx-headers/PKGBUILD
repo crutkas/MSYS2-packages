@@ -350,16 +350,22 @@ build() {
   local _sharedir="${srcdir}/${_stage}/opt/${_target}/share/msys-sysroot/libstdcxx-headers"
   mkdir -p "${_sharedir}"
 
-  (
+  if ! (
     cd "${srcdir}/${_stage}"
     find "opt/${_target}/include/c++/${_gcc_version}" \
       -type f -print0 \
       | LC_ALL=C sort -z \
       | xargs -0 sha256sum
-  ) > "${_sharedir}/header-manifest.sha256"
-  sed 's/^[[:xdigit:]]\{64\} [* ]//' \
+  ) > "${_sharedir}/header-manifest.sha256" 2> "${srcdir}/${_report}/header-manifest.err"; then
+    echo "header manifest generation failed" > "${srcdir}/${_report}/validation-failure.txt"
+    return 1
+  fi
+  if ! sed 's/^[[:xdigit:]]\{64\} [* ]//' \
     "${_sharedir}/header-manifest.sha256" \
-    > "${_sharedir}/header-manifest.txt"
+    > "${_sharedir}/header-manifest.txt"; then
+    echo "header manifest normalization failed" > "${srcdir}/${_report}/validation-failure.txt"
+    return 1
+  fi
 
   {
     sha256sum \
