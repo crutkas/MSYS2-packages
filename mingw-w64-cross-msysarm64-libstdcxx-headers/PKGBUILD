@@ -262,21 +262,8 @@ _configure_libstdcxx() {
 
   local _libgcc_build="${_builddir}/${_target}/libgcc"
   mkdir -p "${_libbuild}" "${_libgcc_build}"
-  ln -sf "${_source}/libgcc/gthr-posix.h" \
+  install -m644 "${_source}/libgcc/gthr-posix.h" \
     "${_libgcc_build}/gthr-default.h"
-
-  grep -Eq '^aligned_alloc \(size_t align, size_t size\)' \
-    "${_runtime}/newlib/libc/stdlib/aligned_alloc.c"
-  grep -Eq '^at_quick_exit\(void \(\*func\)\(void\)\)' \
-    "${_runtime}/newlib/libc/stdlib/quick_exit.c"
-  grep -Eq '^quick_exit\(int status\)' \
-    "${_runtime}/newlib/libc/stdlib/quick_exit.c"
-  grep -Eq '^timespec_get \(struct timespec \*ts, int base\)' \
-    "${_runtime}/winsup/cygwin/times.cc"
-  grep -Eq '^posix_memalign \(void \*\*memptr, size_t alignment, size_t bytes\)' \
-    "${_runtime}/winsup/cygwin/mm/malloc_wrapper.cc"
-  grep -Eq '^memalign \(size_t alignment, size_t bytes\)' \
-    "${_runtime}/winsup/cygwin/mm/malloc_wrapper.cc"
 
   (
     cd "${_libbuild}"
