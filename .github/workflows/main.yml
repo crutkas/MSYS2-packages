@@ -139,7 +139,7 @@ jobs:
         shell: pwsh
         run: |
           $binDir = 'C:\msys64\opt\bin'
-          $tools = @('as', 'ld', 'ar', 'nm', 'objcopy', 'objdump', 'ranlib', 'strip', 'windres', 'dlltool', 'readelf', 'size', 'addr2line', 'strings')
+          $tools = @('as', 'ld', 'ar', 'nm', 'objcopy', 'objdump', 'ranlib', 'strip', 'windres', 'dlltool', 'readelf', 'size', 'addr2line', 'strings', 'gcc', 'g++', 'cpp', 'c++', 'cc')
           foreach ($tool in $tools) {
             $source = Join-Path $binDir "aarch64-pc-cygwin-$tool.exe"
             $dest = Join-Path $binDir "aarch64-pc-msys-$tool.exe"
