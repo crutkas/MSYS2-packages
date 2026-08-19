@@ -62,7 +62,7 @@ sha256sums=('3ab5b2a037d027ab4e69b5597f2a82e77e87bca79ee764381a717b2e8328d060'
             'f76d8b6988bf512429efff8454cbc505369138ff6ba1efbb34ef5a2648487452'
             '70c412971f56b717f536ac575e7b39fa65873ad6e43f671af1acc940b0c7e0f8'
             '45d9adfc3996fa36726c1182cc80e7126f2f988c060bc8d38cf7f3903a18a660'
-            'e02042bf92b14728ae277e4886eba5e88aef4292e92754d2e7974bf31a55291a')
+            '84f1b20f678dcbe31f66f6b2f1d717923dbd8211b7ade3abefd202ed99667ccf')
 
 _gcc_build=build-${_target}-libstdcxx-headers
 _libstdcxx_build=${_gcc_build}/${_target}/libstdc++-v3

@@ -105,7 +105,7 @@ test -f "${target_include}/bits/c++config.h"
 test -f "${target_include}/bits/gthr-default.h"
 test -f "${target_include}/bits/gthr-posix.h"
 test "$("$cxx" -dumpmachine)" = "$target"
-grep -Fx 'Thread model: single' <("$cxx" -v 2>&1)
+grep -Fx 'Thread model: posix' <("$cxx" -v 2>&1)
 
 "$cxx" "${compile_tool[@]}" \
   -dM -E -x c++ /dev/null \
@@ -455,7 +455,7 @@ report = {
         "os": "msys/newlib",
         "cpu": "aarch64",
         "thread_model": "posix",
-        "stage0_reported_thread_model": "single",
+        "stage0_reported_thread_model": "posix",
         "stage0_predefines_win64": False,
         "controlled_win64_define": True,
         "libstdcxx_tls": False,
