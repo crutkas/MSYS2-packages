@@ -322,8 +322,8 @@ mkdir -p "$runtime_build"
   PATH="/opt/bin:${PATH}" \
   CC="${cxx}" \
   CXX="${cxx}" \
-  CPP="${cxx} -E -x c ${_target_flags}" \
-  CXXCPP="${cxx} -E -x c++ ${_target_flags}" \
+  CPP="${cxx} -E -x c" \
+  CXXCPP="${cxx} -E -x c++" \
   CFLAGS='-D_WIN64' \
   CXXFLAGS="-D_WIN64 -I${sysroot}/include -nostdinc++ -isystem ${generic_include} -isystem ${target_include} -isystem ${backward_include}" \
   LDFLAGS="-L${sysroot}/usr/lib" \
