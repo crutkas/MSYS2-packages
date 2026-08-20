@@ -30,7 +30,7 @@ makedepends=(
   'libiconv-devel'
   'mingw-w64-cross-cygwinarm64-binutils'
   'mingw-w64-cross-cygwinarm64-gcc-stage1'
-  'mingw-w64-cross-cygwinarm64-libstdc++-headers'
+  'mingw-w64-cross-msysarm64-libstdc++-headers'
   'mingw-w64-cross-msysarm64-sysroot'
   'mingw-w64-cross-msysarm64-w32api-runtime'
   'perl'
