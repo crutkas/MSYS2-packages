@@ -20,17 +20,17 @@ jobs:
       }}
     env:
       CI_BASE_REPOSITORY: https://github.com/${{ github.repository }}.git
-      CI_BASE_REF: ${{ github.event.pull_request.base.ref || (github.ref_name == 'crutkas-congenial-system' && 'crutkas-package-aarch64-static-libgcc' || 'master') }}
-      CI_PACKAGE_PREFIXES: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system')) && 'mingw-w64-cross-cygwinarm64- mingw-w64-cross-msysarm64-' || '' }}
-      CI_RUN_CHECK: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system')) && '1' || '0' }}
-      CI_CANONICALIZE_PACKAGES: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system')) && '1' || '0' }}
+      CI_BASE_REF: ${{ github.event.pull_request.base.ref || (github.ref_name == 'crutkas-arm64-msys-perl' && 'crutkas-congenial-system' || github.ref_name == 'crutkas-congenial-system' && 'crutkas-package-aarch64-static-libgcc' || 'master') }}
+      CI_PACKAGE_PREFIXES: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-arm64-msys-perl' || github.head_ref == 'crutkas-arm64-msys-perl')) && 'perl' || (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system')) && 'mingw-w64-cross-cygwinarm64- mingw-w64-cross-msysarm64-' || '' }}
+      CI_RUN_CHECK: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-arm64-msys-perl' || github.head_ref == 'crutkas-arm64-msys-perl' || github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system')) && '1' || '0' }}
+      CI_CANONICALIZE_PACKAGES: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-arm64-msys-perl' || github.head_ref == 'crutkas-arm64-msys-perl' || github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system')) && '1' || '0' }}
       SOURCE_DATE_EPOCH: 1786817435
     strategy:
       fail-fast: false
       matrix:
-        include: [
-          { msystem: MSYS, runner: windows-2025 },
-        ]
+        include:
+          - msystem: MSYS
+            runner: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-arm64-msys-perl' || github.head_ref == 'crutkas-arm64-msys-perl')) && 'windows-11-arm' || 'windows-2025' }}
     name: ${{ matrix.msystem }}
     runs-on: ${{ matrix.runner }}
 
