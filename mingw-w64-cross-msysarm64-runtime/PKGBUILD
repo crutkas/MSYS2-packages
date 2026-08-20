@@ -51,6 +51,8 @@ build() {
   local build_dir="${srcdir}/build-${_build_target}"
   export PATH="/opt/bin:${PATH}"
   export SOURCE_DATE_EPOCH="$(git -C "${startdir}" show -s --format=%ct HEAD)"
+  export ac_cv_lib_sframe_sframe_decode=no
+  export ac_cv_lib_zstd_ZSTD_isError=no
 
   (cd "${srcdir}/${_runtime_root}/winsup" && ./autogen.sh)
 
@@ -58,9 +60,7 @@ build() {
   mkdir -p "${build_dir}"
   (
     cd "${build_dir}"
-    ac_cv_lib_sframe_sframe_decode=no \
-      ac_cv_lib_zstd_ZSTD_isError=no \
-      "${srcdir}/${_runtime_root}/configure" \
+    "${srcdir}/${_runtime_root}/configure" \
         --target="${_build_target}" \
         --prefix="${build_dir}/install" \
         --disable-doc \
