@@ -96,7 +96,10 @@ for package in "${packages[@]}"; do
     echo "::group::[build] ${package}"
     execute 'Clear cache' pacman -Scc --noconfirm
     execute 'Fetch keys' "$DIR/fetch-validpgpkeys.sh"
-    makepkg_args=(--noconfirm --noprogressbar --syncdeps --rmdeps --cleanbuild)
+    makepkg_args=(--noconfirm --noprogressbar --syncdeps --cleanbuild)
+    if [[ "${CI_RMDEPS:-1}" == 1 ]]; then
+        makepkg_args+=(--rmdeps)
+    fi
     if [[ "${CI_RUN_CHECK:-0}" != 1 ]]; then
         makepkg_args+=(--nocheck)
     fi
