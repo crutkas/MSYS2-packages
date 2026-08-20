@@ -429,10 +429,18 @@ pacman -Ql \
   | grep -v '/$' \
   | LC_ALL=C sort -u \
   > "$work/input-owned-files.txt"
-comm -12 \
-  "$report_dir/owned-headers.txt" \
-  "$work/input-owned-files.txt" \
-  > "$report_dir/collisions.txt"
+python - "$report_dir/owned-headers.txt" "$work/input-owned-files.txt" "$report_dir/collisions.txt" <<'PY'
+from pathlib import Path
+import sys
+
+owned = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace").splitlines()
+inputs = Path(sys.argv[2]).read_text(encoding="utf-8", errors="replace").splitlines()
+collisions = sorted(set(owned) & set(inputs))
+Path(sys.argv[3]).write_text(
+    "\n".join(collisions) + ("\n" if collisions else ""),
+    encoding="utf-8",
+)
+PY
 test ! -s "$report_dir/collisions.txt"
 {
   printf 'owned-headers\t%s\n' "$header_count"
