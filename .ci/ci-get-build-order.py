@@ -54,6 +54,23 @@ def list_packages():
     ]
 
 
+def list_package_dirs():
+    prefixes = tuple(
+        prefix for prefix in os.environ.get("CI_PACKAGE_PREFIXES", "").split() if prefix
+    )
+    out = run("git", "ls-files", "*/PKGBUILD").splitlines()
+    packages = [
+        x.rsplit("/", 1)[0]
+        for x in out
+        if os.path.exists(x)
+        and (
+            not prefixes
+            or any(x.split("/")[0].startswith(prefix) for prefix in prefixes)
+        )
+    ]
+    return list(dict.fromkeys(packages))
+
+
 def get_pkginfo(package, packageset):
     props = ["depends", "makedepends", "pkgname", "provides"]
     script = f'source "{package}/PKGBUILD"\n'
@@ -102,5 +119,8 @@ def get_build_order(packages, toadd=None, ordered=None):
 
 if __name__ == "__main__":
     os.chdir(get_toplevel())
-    packages = "\n".join(get_build_order(list_packages()))
+    packageset = {}
+    all_packages = list_package_dirs()
+    ThreadPool(os.cpu_count()).map(lambda x: get_pkginfo(x, packageset), all_packages)
+    packages = "\n".join(get_build_order(list_packages(), packageset))
     sys.stdout.buffer.write(packages.encode("utf-8"))  # Prevent CRLF newlines
