@@ -57,6 +57,7 @@ jobs:
           persist-credentials: false
 
       - name: Init MSYS2
+        id: msys2
         if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-arm64-msys-perl' || github.head_ref == 'crutkas-arm64-msys-perl') }}
         uses: msys2/setup-msys2@v2
         with:
@@ -68,7 +69,8 @@ jobs:
         shell: pwsh
         run: |
           $repoRoot = Join-Path $env:GITHUB_WORKSPACE 'temp'
-          $etcDir = 'C:\msys64\etc'
+          $msys2Root = '${{ steps.msys2.outputs.msys2-location }}'
+          $etcDir = Join-Path $msys2Root 'etc'
           $pacmanDir = Join-Path $etcDir 'pacman.d'
           New-Item -ItemType Directory -Force -Path $pacmanDir | Out-Null
           Copy-Item (Join-Path $repoRoot 'pacman\pacman.conf') (Join-Path $etcDir 'pacman.conf') -Force
@@ -99,9 +101,11 @@ jobs:
       - name: Update using staging
         shell: pwsh
         run: |
-          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -Suuy
-          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -Suu
-          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm --needed -S git python base-devel
+          $msys2Root = '${{ steps.msys2.outputs.msys2-location }}'
+          $pacman = Join-Path $msys2Root 'usr\bin\pacman.exe'
+          & $pacman --noconfirm -Suuy
+          & $pacman --noconfirm -Suu
+          & $pacman --noconfirm --needed -S git python base-devel
 
       - name: Download fork-local AArch64 Cygwin inputs
         if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
@@ -155,7 +159,9 @@ jobs:
         shell: pwsh
         run: |
           $input_dir = Join-Path $env:RUNNER_TEMP 'cygwinarm64-inputs'
-          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -U `
+          $msys2Root = '${{ steps.msys2.outputs.msys2-location }}'
+          $pacman = Join-Path $msys2Root 'usr\bin\pacman.exe'
+          & $pacman --noconfirm -U `
             "$input_dir\mingw-w64-cross-cygwinarm64-binutils-2.44.50-1-x86_64.pkg.tar.zst" `
             "$input_dir\mingw-w64-cross-cygwinarm64-headers-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst" `
             "$input_dir\mingw-w64-cross-cygwinarm64-windows-default-manifest-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst" `
@@ -168,7 +174,8 @@ jobs:
         if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
         shell: pwsh
         run: |
-          $binDir = 'C:\msys64\opt\bin'
+          $msys2Root = '${{ steps.msys2.outputs.msys2-location }}'
+          $binDir = Join-Path $msys2Root 'opt\bin'
           $tools = @('as', 'ld', 'ar', 'nm', 'objcopy', 'objdump', 'ranlib', 'strip', 'windres', 'dlltool', 'readelf', 'size', 'addr2line', 'strings')
           foreach ($tool in $tools) {
             $source = Join-Path $binDir "aarch64-pc-cygwin-$tool.exe"
@@ -187,12 +194,13 @@ jobs:
       - name: CI-Build
         shell: pwsh
         run: |
+          $msys2Root = '${{ steps.msys2.outputs.msys2-location }}'
           $env:MSYS2_PATH_TYPE = 'inherit'
-          $env:PATH = 'C:\msys64\usr\bin;C:\msys64\mingw64\bin;' + $env:PATH
-          $env:GIT_EXEC_PATH = 'C:\msys64\usr\lib\git-core'
-          $bash = 'C:\msys64\usr\bin\bash.exe'
+          $env:PATH = (Join-Path $msys2Root 'usr\bin') + ';' + (Join-Path $msys2Root 'mingw64\bin') + ';' + $env:PATH
+          $env:GIT_EXEC_PATH = Join-Path $msys2Root 'usr\lib\git-core'
+          $bash = Join-Path $msys2Root 'usr\bin\bash.exe'
           $buildRoot = '${{ steps.facts.outputs.drive }}\_'
-          $buildRoot = & 'C:\msys64\usr\bin\cygpath.exe' -u $buildRoot
+          $buildRoot = & (Join-Path $msys2Root 'usr\bin\cygpath.exe') -u $buildRoot
           $script = "cd '$buildRoot' && ./.ci/ci-build.sh"
           & $bash --login -lc $script
 
