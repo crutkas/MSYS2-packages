@@ -29,7 +29,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - msystem: MSYS
+          - msystem: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-arm64-msys-perl' || github.head_ref == 'crutkas-arm64-msys-perl')) && 'CLANGARM64' || 'MSYS' }}
             runner: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-arm64-msys-perl' || github.head_ref == 'crutkas-arm64-msys-perl')) && 'windows-11-arm' || 'windows-2025' }}
     name: ${{ matrix.msystem }}
     runs-on: ${{ matrix.runner }}
@@ -195,8 +195,13 @@ jobs:
         shell: pwsh
         run: |
           $msys2Root = '${{ steps.msys2.outputs.msys2-location }}'
+          $toolBin = if ('${{ matrix.msystem }}' -eq 'CLANGARM64') {
+            Join-Path $msys2Root 'clangarm64\bin'
+          } else {
+            Join-Path $msys2Root 'mingw64\bin'
+          }
           $env:MSYS2_PATH_TYPE = 'inherit'
-          $env:PATH = (Join-Path $msys2Root 'usr\bin') + ';' + (Join-Path $msys2Root 'mingw64\bin') + ';' + $env:PATH
+          $env:PATH = (Join-Path $msys2Root 'usr\bin') + ';' + $toolBin + ';' + $env:PATH
           $env:GIT_EXEC_PATH = Join-Path $msys2Root 'usr\lib\git-core'
           $bash = Join-Path $msys2Root 'usr\bin\bash.exe'
           $buildRoot = '${{ steps.facts.outputs.drive }}\_'
