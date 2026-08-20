@@ -30,6 +30,7 @@ makedepends=(
   'libiconv-devel'
   'mingw-w64-cross-cygwinarm64-binutils'
   'mingw-w64-cross-cygwinarm64-gcc-stage1'
+  'mingw-w64-cross-cygwinarm64-gcc-libs-stage1'
   'mingw-w64-cross-msysarm64-libstdc++-headers'
   'mingw-w64-cross-msysarm64-sysroot'
   'mingw-w64-cross-msysarm64-w32api-runtime'
@@ -54,10 +55,43 @@ build() {
   local _target_cxx_include="${_target_include}/c++/15.0.1"
   local _target_cxx_specific="${_target_cxx_include}/${_install_target}"
   local _target_cxx_backward="${_target_cxx_include}/backward"
+  local _runtime_source_include="-I${srcdir}/${_runtime_root}/winsup/cygwin/include"
   local _target_cppflags="-D_WIN64"
   local _runtime_cppflags="${_target_cppflags} -isystem ${_target_include} -idirafter ${_target_w32api}"
-  local _runtime_cflags="-O2 -g -D__MSYS__ ${_runtime_cppflags}"
+  local _runtime_cflags="-O2 -g -D__MSYS__ ${_runtime_cppflags} ${_runtime_source_include}"
   local _runtime_cxxflags="${_runtime_cflags} -nostdinc++ -isystem ${_target_cxx_include} -isystem ${_target_cxx_specific} -isystem ${_target_cxx_backward}"
+  local _runtime_library_path="/opt/lib/gcc/aarch64-pc-cygwin/15.0.1:/opt/aarch64-pc-msys/lib"
+  local _runtime_link_library_path="${LIBRARY_PATH:+${LIBRARY_PATH}:}${_runtime_library_path}"
+  local _default_manifest="/opt/${_install_target}/lib/default-manifest.o"
+  local _cc_default_manifest
+  local _cc_libgcc _cc_kernel32 _cc_ntdll
+  _cc_default_manifest="$(LIBRARY_PATH="${_runtime_link_library_path}" aarch64-pc-cygwin-gcc -print-file-name=default-manifest.o)"
+  _cc_libgcc="$(LIBRARY_PATH="${_runtime_link_library_path}" aarch64-pc-cygwin-gcc -print-file-name=libgcc.a)"
+  _cc_kernel32="$(LIBRARY_PATH="${_runtime_link_library_path}" aarch64-pc-cygwin-gcc -print-file-name=libkernel32.a)"
+  _cc_ntdll="$(LIBRARY_PATH="${_runtime_link_library_path}" aarch64-pc-cygwin-gcc -print-file-name=libntdll.a)"
+  printf 'gcc default-manifest.o => %s\n' "${_cc_default_manifest}"
+  printf 'explicit default-manifest => %s\n' "${_default_manifest}"
+  printf 'gcc libgcc.a => %s\n' "${_cc_libgcc}"
+  printf 'gcc libkernel32.a => %s\n' "${_cc_kernel32}"
+  printf 'gcc libntdll.a => %s\n' "${_cc_ntdll}"
+  test -f "${_default_manifest}"
+  test -f "${_cc_libgcc}"
+  test -f "${_cc_kernel32}"
+  test -f "${_cc_ntdll}"
+  aarch64-pc-cygwin-objdump -f "${_default_manifest}" | grep -F "file format pe-aarch64-little"
+  aarch64-pc-cygwin-objdump -f "${_cc_libgcc}" | grep -F "architecture: aarch64"
+  aarch64-pc-cygwin-objdump -f "${_cc_kernel32}" | grep -F "architecture: aarch64"
+  aarch64-pc-cygwin-objdump -f "${_cc_ntdll}" | grep -F "architecture: aarch64"
+  if [[ "${_cc_default_manifest}" != "${_default_manifest}" ]]; then
+    printf 'using explicit manifest override because compiler lookup returned %s\n' "${_cc_default_manifest}"
+  fi
+  local -a _runtime_make_vars=(
+    "CPPFLAGS=${_runtime_cppflags}"
+    "CFLAGS=${_runtime_cflags}"
+    "CXXFLAGS=${_runtime_cxxflags}"
+    "DEFAULT_MANIFEST=${_default_manifest}"
+    "V=1"
+  )
   local _newlib_cflags="-O2 -g -D__MSYS__ ${_target_cppflags}"
   local -a _newlib_env=(
    env
@@ -77,6 +111,7 @@ build() {
    "CPPFLAGS=${CPPFLAGS:-} ${_runtime_cppflags}"
    "CFLAGS=${CFLAGS:-} ${_runtime_cflags}"
    "CXXFLAGS=${CXXFLAGS:-} ${_runtime_cxxflags}"
+   "LIBRARY_PATH=${_runtime_link_library_path}"
    "CPPFLAGS_FOR_BUILD=${CPPFLAGS_FOR_BUILD:-} ${_runtime_cppflags}"
    "CFLAGS_FOR_BUILD=${CFLAGS_FOR_BUILD:-} ${_runtime_cflags}"
    "CXXFLAGS_FOR_BUILD=${CXXFLAGS_FOR_BUILD:-} ${_runtime_cxxflags}"
@@ -122,12 +157,18 @@ _Static_assert(sizeof(void*) == 8, "void* must be 8 bytes");
 _Static_assert(sizeof(UINT_PTR) == 8, "UINT_PTR must be 8 bytes");
 int main(void) { return 0; }
 EOF
+  test -f "${srcdir}/${_runtime_root}/winsup/cygwin/include/cygwin/version.h"
+  cat > "${build_dir}/probe/runtime-version-header.c" <<'EOF'
+#include <cygwin/version.h>
+int main(void) { return 0; }
+EOF
   aarch64-pc-cygwin-gcc ${_runtime_cflags} -c "${build_dir}/probe/runtime-personality.c" -o "${build_dir}/probe/runtime-personality-c.o"
   aarch64-pc-cygwin-g++ ${_runtime_cxxflags} -c "${build_dir}/probe/runtime-personality.cc" -o "${build_dir}/probe/runtime-personality-cxx.o"
+  aarch64-pc-cygwin-gcc ${_runtime_cflags} -c "${build_dir}/probe/runtime-version-header.c" -o "${build_dir}/probe/runtime-version-header.o"
 
   "${_newlib_env[@]}" make -C "${build_dir}" -j"$(nproc)" all-target-newlib
-  "${_runtime_env[@]}" make -C "${build_dir}" configure-target-winsup
-  "${_runtime_env[@]}" make -C "${build_dir}/${_build_target}/winsup/cygwin" -j"$(nproc)"
+  "${_runtime_env[@]}" make -C "${build_dir}" configure-target-winsup "${_runtime_make_vars[@]}"
+  "${_runtime_env[@]}" make -C "${build_dir}/${_build_target}/winsup/cygwin" -j"$(nproc)" "${_runtime_make_vars[@]}"
 }
 
 check() {
