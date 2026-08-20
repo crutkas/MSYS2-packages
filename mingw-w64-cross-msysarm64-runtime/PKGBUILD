@@ -52,9 +52,9 @@ build() {
   local _w32api_include="-I/opt/${_install_target}/include/w32api"
   export PATH="/opt/bin:${PATH}"
   export SOURCE_DATE_EPOCH="$(git -C "${startdir}" show -s --format=%ct HEAD)"
-  export CPPFLAGS="${CPPFLAGS} ${_w32api_include}"
-  export CFLAGS="${CFLAGS} ${_w32api_include}"
-  export CXXFLAGS="${CXXFLAGS} ${_w32api_include}"
+  export CPPFLAGS_FOR_TARGET="${CPPFLAGS_FOR_TARGET} ${_w32api_include}"
+  export CFLAGS_FOR_TARGET="${CFLAGS_FOR_TARGET} ${_w32api_include}"
+  export CXXFLAGS_FOR_TARGET="${CXXFLAGS_FOR_TARGET} ${_w32api_include}"
   export ac_cv_lib_sframe_sframe_decode=no
   export ac_cv_lib_zstd_ZSTD_isError=no
 
