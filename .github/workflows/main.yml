@@ -56,6 +56,14 @@ jobs:
           filter: blob:none
           persist-credentials: false
 
+      - name: Init MSYS2
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-arm64-msys-perl' || github.head_ref == 'crutkas-arm64-msys-perl') }}
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          update: true
+          install: git python base-devel
+
       - name: Add staging repo
         shell: pwsh
         run: |
