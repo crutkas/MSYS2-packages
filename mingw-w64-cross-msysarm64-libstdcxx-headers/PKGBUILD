@@ -2,7 +2,7 @@
 
 _target=aarch64-pc-msys
 _host=x86_64-pc-msys
-_gcc_commit=bd1d77ba35e2820df5387cca5213925adb07a0ee
+_gcc_commit=e1a057af466f066d86b20270fb7864764951420d
 _gcc_root=gcc-woarm64-${_gcc_commit}
 _gcc_version=15.0.1
 _runtime_commit=6922c388be93e423c1186f0b58c39380a5ee9e2d
@@ -55,14 +55,14 @@ source=(
   header-features.cc
   validate-libstdcxx-headers.sh
 )
-sha256sums=('3ab5b2a037d027ab4e69b5597f2a82e77e87bca79ee764381a717b2e8328d060'
+sha256sums=('8194893d7093f3cadedc2ec42375ffbbc02a22e30d943e5f1c1aefa273af8122'
             'f9a6bd4366802d05d43b7c3876fceb92b93b89b172eebb020d48d2fb36389f89'
             '58bbd49450bcfd01be5feb42df19125630314177a022607f1c278e4ac0d374eb'
-            'd9f6bcc6cd9657961f9a52be456a04e25df01700a6f20c8450b4aee882023c54'
+            'a594c99b53ad3b8e94c2c9a989ddf44d257d946f06dee1e24e8289bcde29637e'
             'f76d8b6988bf512429efff8454cbc505369138ff6ba1efbb34ef5a2648487452'
             '70c412971f56b717f536ac575e7b39fa65873ad6e43f671af1acc940b0c7e0f8'
             '45d9adfc3996fa36726c1182cc80e7126f2f988c060bc8d38cf7f3903a18a660'
-            '8825d6a710c53702e1b6945b14b52ca61a85b2c53dee303b8ddad0592c69b6a3')
+            '64934b64b1d8e5443783833f2feca3283cc0f8cbd55661a16835e46aa235ad4b')
 
 _gcc_build=build-${_target}-libstdcxx-headers
 _libstdcxx_build=${_gcc_build}/${_target}/libstdc++-v3
@@ -418,7 +418,7 @@ EOF
 package-version	${pkgver}-${pkgrel}
 gcc-repository	https://github.com/crutkas/gcc-woarm64
 gcc-commit	${_gcc_commit}
-gcc-archive-sha256	3ab5b2a037d027ab4e69b5597f2a82e77e87bca79ee764381a717b2e8328d060
+gcc-archive-sha256	8194893d7093f3cadedc2ec42375ffbbc02a22e30d943e5f1c1aefa273af8122
 runtime-validation-repository	https://github.com/crutkas/msys2-runtime
 runtime-validation-commit	${_runtime_commit}
 runtime-validation-archive-sha256	f9a6bd4366802d05d43b7c3876fceb92b93b89b172eebb020d48d2fb36389f89

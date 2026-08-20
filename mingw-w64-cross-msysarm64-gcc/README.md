@@ -1,8 +1,8 @@
 # AArch64 MSYS GCC layer
 
 This package split provides the production `aarch64-pc-msys` GCC toolchain
-layer built from the fork-local `gcc-woarm64` source pin
-`crutkas/gcc-woarm64@bd1d77ba35e2820df5387cca5213925adb07a0ee`.
+layer built from the final linear fork-local `gcc-woarm64` source pin
+`crutkas/gcc-woarm64@e1a057af466f066d86b20270fb7864764951420d`.
 
 ## Package split
 
@@ -31,9 +31,10 @@ runtime archives under `/opt/aarch64-pc-msys/lib/gcc/15.0.1/`.
 
 The shipped compiler personality is `aarch64-pc-msys`, not the stage-0
 `aarch64-pc-cygwin` bootstrap personality used by earlier layers. The final
-compiler links `msys-2.0.dll`/`libmsys-2.0.a`, defines `__MSYS__`, preserves
-LP64, and consumes the real runtime/newlib/w32api sysroot from the previous
-stack.
+compiler source pin carries the fork-local `_WIN64`, SEH, `__cxa_atexit`, and
+`crtbegin`/`crtend` ordering fixes, links `msys-2.0.dll`/`libmsys-2.0.a`,
+defines `__MSYS__`, preserves LP64, and consumes the real runtime/newlib/w32api
+sysroot from the previous stack.
 
 The compiler package does not ship target C++ headers. Those remain in the
 separate `mingw-w64-cross-msysarm64-libstdc++-headers` package so the compiler

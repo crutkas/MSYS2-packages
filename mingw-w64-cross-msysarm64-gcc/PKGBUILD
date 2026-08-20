@@ -3,9 +3,9 @@
 _realname=gcc
 _target=aarch64-pc-msys
 _host=x86_64-pc-msys
-_gcc_commit=bd1d77ba35e2820df5387cca5213925adb07a0ee
+_gcc_commit=e1a057af466f066d86b20270fb7864764951420d
 _gcc_root=gcc-woarm64-${_gcc_commit}
-_gcc_archive_sha256=3ab5b2a037d027ab4e69b5597f2a82e77e87bca79ee764381a717b2e8328d060
+_gcc_archive_sha256=8194893d7093f3cadedc2ec42375ffbbc02a22e30d943e5f1c1aefa273af8122
 _gcc_version=15.0.1
 _runtime_version=3.6.10.r0.g6922c388b
 _runtime_pkgrel=1
@@ -56,8 +56,8 @@ source=(
 )
 sha256sums=(
   "${_gcc_archive_sha256}"
-  'e6e8efb5407e924938243e1798fde22fd8b3244559a1b4c113b5233615ad6ab8'
-  'a003ba19229f9b97b253e61772874382742c171614c229bb9749d63e7c12465d'
+  '88b0301f34e3929c488b5bd43131c74d7a3a6ef042bcbc4d0e2b3afc6a7928ac'
+  '17d1031627da0c6ed77ae90171c607c8d16e43eebffa7738dde884e9cf23a97f'
 )
 
 _build_dir="${srcdir}/build-${_target}"
@@ -186,8 +186,9 @@ build() {
   {
     printf 'package-version\t%s-%s\n' "${pkgver}" "${pkgrel}"
     printf 'gcc-repository\t%s\n' "${msys2_repository_url}"
-    printf 'gcc-commit\t%s\n' "${_gcc_commit}"
-    printf 'gcc-archive-sha256\t%s\n' "${_gcc_archive_sha256}"
+    printf 'gcc-commit\te1a057af466f066d86b20270fb7864764951420d\n'
+    printf 'gcc-archive-sha256\t8194893d7093f3cadedc2ec42375ffbbc02a22e30d943e5f1c1aefa273af8122\n'
+    printf 'gcc-source-chain\t%s\n' '9b0c288d8f337d685017621b2e9d84579f8aa391,3053d5071151031574f9ea272031d1dcba053f62,626c500b14b8eac6754b80b3a175acc305426c06,e1a057af466f066d86b20270fb7864764951420d'
     printf 'runtime-version\t%s-%s\n' "${_runtime_version}" "${_runtime_pkgrel}"
     printf 'sysroot-version\t%s-1\n' "${_sysroot_version}"
     printf 'w32api-version\t%s-1\n' "${_w32api_version}"
