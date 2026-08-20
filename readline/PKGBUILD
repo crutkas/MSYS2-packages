@@ -5,9 +5,9 @@ pkgname=('libreadline' 'libreadline-devel')
 _basever=8.3
 _patchlevel=001 #prepare for some patches
 pkgver=${_basever}.${_patchlevel}
-pkgrel=1
+pkgrel=2
 pkgdesc="GNU readline library"
-arch=('i686' 'x86_64')
+arch=('i686' 'x86_64' 'aarch64')
 url="https://tiswww.case.edu/php/chet/readline/rltop.html"
 msys2_repository_url="https://git.savannah.gnu.org/cgit/readline.git"
 msys2_references=(
@@ -52,6 +52,9 @@ prepare() {
 }
 
 build() {
+  # Build against the native MSYS triplet; CI seeds aarch64-pc-cygwin aliases
+  # so the configure step resolves the aarch64-pc-msys tools.
+  local CHOST="${CHOST/-cygwin/-msys}"
   CFLAGS+=" -Wno-error=incompatible-pointer-types"
 
   mkdir -p ${srcdir}/build-static-${MSYSTEM} && cd ${srcdir}/build-static-${MSYSTEM}
