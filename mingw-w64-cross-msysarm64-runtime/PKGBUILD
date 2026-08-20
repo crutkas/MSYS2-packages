@@ -49,7 +49,7 @@ sha256sums=(
 
 build() {
   local build_dir="${srcdir}/build-${_build_target}"
-  local _w32api_include="-I/opt/${_install_target}/include/w32api"
+  local _w32api_include="-isystem /opt/${_install_target}/include -isystem /opt/${_install_target}/include/w32api"
   export PATH="/opt/bin:${PATH}"
   export SOURCE_DATE_EPOCH="$(git -C "${startdir}" show -s --format=%ct HEAD)"
   export CPPFLAGS_FOR_TARGET="${CPPFLAGS_FOR_TARGET} ${_w32api_include}"
