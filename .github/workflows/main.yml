@@ -59,7 +59,29 @@ jobs:
       - name: Add staging repo
         shell: pwsh
         run: |
-          $pacmanConf = 'C:\msys64\etc\pacman.conf'
+          $repoRoot = Join-Path $env:GITHUB_WORKSPACE 'temp'
+          $etcDir = 'C:\msys64\etc'
+          $pacmanDir = Join-Path $etcDir 'pacman.d'
+          New-Item -ItemType Directory -Force -Path $pacmanDir | Out-Null
+          Copy-Item (Join-Path $repoRoot 'pacman\pacman.conf') (Join-Path $etcDir 'pacman.conf') -Force
+          Copy-Item (Join-Path $repoRoot 'pacman-mirrors\mirrorlist.msys') (Join-Path $pacmanDir 'mirrorlist.msys') -Force
+          Copy-Item (Join-Path $repoRoot 'pacman-mirrors\mirrorlist.mingw') (Join-Path $pacmanDir 'mirrorlist.mingw') -Force
+
+          $carch = switch ($env:PROCESSOR_ARCHITECTURE) {
+            'ARM64' { 'aarch64' }
+            'AMD64' { 'x86_64' }
+            default { 'x86_64' }
+          }
+          $chost = switch ($carch) {
+            'aarch64' { 'aarch64-pc-msys' }
+            'x86_64' { 'x86_64-pc-msys' }
+            default { "$carch-pc-msys" }
+          }
+          $makepkgConf = Get-Content (Join-Path $repoRoot 'pacman\makepkg.conf') -Raw
+          $makepkgConf = $makepkgConf.Replace('@CARCH@', $carch).Replace('@CHOST@', $chost).Replace('@CARCHFLAGS@', '')
+          Set-Content (Join-Path $etcDir 'makepkg.conf') -Value $makepkgConf -NoNewline
+
+          $pacmanConf = Join-Path $etcDir 'pacman.conf'
           $contents = Get-Content $pacmanConf -Raw
           if ($contents -notmatch '^\[staging\]') {
             $contents = "[staging]`nServer = https://repo.msys2.org/staging/`nSigLevel = Never`n$contents"
