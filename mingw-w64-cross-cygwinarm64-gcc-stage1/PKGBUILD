@@ -78,6 +78,7 @@ build() {
   export CXXFLAGS_FOR_BUILD="${CXXFLAGS}"
   export CFLAGS_FOR_TARGET="-O2 -pipe ${_prefix_map}"
   export CXXFLAGS_FOR_TARGET="${CFLAGS_FOR_TARGET}"
+  export CPP='/usr/bin/cpp'
 
   "../${_source_dir}/configure" \
     --build="${_host}" \
