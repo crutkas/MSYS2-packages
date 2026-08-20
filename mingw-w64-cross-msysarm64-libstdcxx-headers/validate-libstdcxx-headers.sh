@@ -324,6 +324,7 @@ mkdir -p "$runtime_build"
   CXX="${cxx}" \
   CPP="${cxx} -E -x c" \
   CXXCPP="${cxx} -E -x c++" \
+  CPPFLAGS="-D_WIN64 -I${sysroot}/include -isystem ${generic_include} -isystem ${target_include} -isystem ${backward_include} -idirafter ${sysroot}/include/w32api" \
   CFLAGS='-D_WIN64' \
   CXXFLAGS="-D_WIN64 -I${sysroot}/include -nostdinc++ -isystem ${generic_include} -isystem ${target_include} -isystem ${backward_include}" \
   LDFLAGS="-L${sysroot}/usr/lib" \
