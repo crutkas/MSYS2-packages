@@ -456,6 +456,7 @@ cp \
     "$work/include-search.txt" \
     "$report_dir/"
 for report_file in "$report_dir"/*; do
+    [[ -f "$report_file" ]] || continue
     sed -i \
       -e "s#${prefix_root}#/opt#g" \
       -e "s#${runtime_source}#<runtime-source>#g" \
