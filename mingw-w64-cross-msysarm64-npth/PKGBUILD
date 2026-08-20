@@ -1,0 +1,206 @@
+# Maintainer: Chris Reddington <crutkas@microsoft.com>
+
+pkgbase=mingw-w64-cross-msysarm64-npth
+pkgname=(
+  mingw-w64-cross-msysarm64-npth
+  mingw-w64-cross-msysarm64-npth-devel
+)
+pkgver=1.8
+pkgrel=1
+pkgdesc="nPth library for aarch64-pc-msys"
+arch=('x86_64')
+url="https://gnupg.org/software/npth/index.html"
+msys2_repository_url="https://git.gnupg.org/cgi-bin/gitweb.cgi?p=npth.git"
+license=('LGPL')
+groups=('mingw-w64-cross-toolchain' 'mingw-w64-cross')
+depends=()
+makedepends=(
+  'autotools'
+  'gcc'
+  'mingw-w64-cross-cygwinarm64-binutils'
+  'mingw-w64-cross-cygwinarm64-gcc-stage1=15.0.1dev-2'
+  'mingw-w64-cross-msysarm64-runtime=3.6.10.r0.g6922c388b-1'
+  'mingw-w64-cross-msysarm64-sysroot=3.6.10.r0.g6922c388b-1'
+)
+options=('!strip' '!buildflags' '!emptydirs')
+validpgpkeys=(
+  '5B80C5754298F0CB55D8ED6ABCEF7E294B092E28' # Andre Heinecke (Release Signing Key)
+  '6DAA6E64A76D2840571B4902528897B826403ADA' # Werner Koch (dist signing 2020)
+  'AC8E115BF73E2D8D47FA9908E98E9B2D19C6C8BD' # Niibe Yutaka (GnuPG Release Key)
+  '02F38DFF731FF97CB039A1DA549E695E905BA208' # GnuPG.com (Release Signing Key 2021)
+)
+source=(
+  "npth-${pkgver}.tar.bz2::https://gnupg.org/ftp/gcrypt/npth/npth-${pkgver}.tar.bz2"
+  "npth-${pkgver}.tar.bz2.sig::https://gnupg.org/ftp/gcrypt/npth/npth-${pkgver}.tar.bz2.sig"
+)
+sha256sums=(
+  '8bd24b4f23a3065d6e5b26e98aba9ce783ea4fd781069c1b35d149694e90ca3e'
+  'SKIP'
+)
+
+_target=aarch64-pc-msys
+_prefix="/opt/${_target}"
+
+prepare() {
+  cd "${srcdir}/npth-${pkgver}"
+
+  autoreconf -fiv
+}
+
+build() {
+  local build_dir="${srcdir}/build-${_target}"
+  local _sysroot_include="-isystem ${_prefix}/include"
+  local _sysroot_lib="-L${_prefix}/lib"
+
+  rm -rf "${build_dir}" "${srcdir}/dest"
+  mkdir -p "${build_dir}" "${srcdir}/dest"
+
+  export PATH="/opt/bin:${PATH}"
+  export CC='aarch64-pc-cygwin-gcc'
+  export CXX='aarch64-pc-cygwin-g++'
+  export AR='aarch64-pc-cygwin-ar'
+  export AS='aarch64-pc-cygwin-as'
+  export NM='aarch64-pc-cygwin-nm'
+  export RANLIB='aarch64-pc-cygwin-ranlib'
+  export STRIP='aarch64-pc-cygwin-strip'
+  export CPPFLAGS="${CPPFLAGS:-} ${_sysroot_include}"
+  export CFLAGS="${CFLAGS:-} -O2 -pipe ${_sysroot_include}"
+  export CXXFLAGS="${CXXFLAGS:-} -O2 -pipe ${_sysroot_include}"
+  export LDFLAGS="${LDFLAGS:-} ${_sysroot_lib}"
+
+  (
+    cd "${build_dir}"
+    "${srcdir}/npth-${pkgver}/configure" \
+      --build="${CHOST}" \
+      --host="${_target}" \
+      --target="${_target}" \
+      --prefix="${_prefix}" \
+      --enable-shared \
+      --enable-static \
+      --enable-install-npth-config
+  )
+
+  make -C "${build_dir}" no_undefined=-no-undefined
+  make -C "${build_dir}" DESTDIR="${srcdir}/dest" install
+}
+
+check() {
+  local pkgroot="${srcdir}/dest${_prefix}"
+  local config_script="${pkgroot}/bin/npth-config"
+  local pcdir="${pkgroot}/lib/pkgconfig"
+  local smoke_c="${srcdir}/npth-smoke.c"
+  local smoke_o="${srcdir}/npth-smoke.o"
+  local cfg_flags pc_flags
+
+  test -x "${config_script}"
+  test -f "${pcdir}/npth.pc"
+  test -f "${pkgroot}/share/aclocal/npth.m4"
+  test -f "${pkgroot}/include/npth.h"
+  test -f "${pkgroot}/lib/libnpth.a"
+  test -f "${pkgroot}/lib/libnpth.dll.a"
+  test -n "$(find "${pkgroot}/bin" -maxdepth 1 -type f -name '*.dll' -print -quit)"
+
+  grep -Fq "${_prefix}" "${config_script}"
+  grep -Fq "prefix=${_prefix}" "${pcdir}/npth.pc"
+  grep -Fq "libdir=\${prefix}/lib" "${pcdir}/npth.pc"
+  grep -Fq "includedir=\${prefix}/include" "${pcdir}/npth.pc"
+
+  cfg_flags="$("${config_script}" --cflags --libs)"
+  case "${cfg_flags}" in
+    *"${_prefix}/include"* ) ;;
+    *)
+      printf 'ERROR: npth-config missing include flags: %s\n' "${cfg_flags}" >&2
+      return 1
+      ;;
+  esac
+  case "${cfg_flags}" in
+    *"${_prefix}/lib"* ) ;;
+    *)
+      printf 'ERROR: npth-config missing library flags: %s\n' "${cfg_flags}" >&2
+      return 1
+      ;;
+  esac
+
+  pc_flags="$(PKG_CONFIG_PATH="${pcdir}" \
+    PKG_CONFIG_SYSROOT_DIR="${srcdir}/dest" \
+    pkg-config --cflags --libs npth)"
+  case "${pc_flags}" in
+    *"${srcdir}/dest${_prefix}/include"* ) ;;
+    *)
+      printf 'ERROR: pkg-config missing sysrooted include flags: %s\n' "${pc_flags}" >&2
+      return 1
+      ;;
+  esac
+  case "${pc_flags}" in
+    *"${srcdir}/dest${_prefix}/lib"* ) ;;
+    *)
+      printf 'ERROR: pkg-config missing sysrooted library flags: %s\n' "${pc_flags}" >&2
+      return 1
+      ;;
+  esac
+
+  cat > "${smoke_c}" <<'EOF'
+#include <npth.h>
+
+int main(void) {
+  npth_init();
+  return 0;
+}
+EOF
+
+  aarch64-pc-cygwin-gcc -c \
+    $(PKG_CONFIG_PATH="${pcdir}" \
+      PKG_CONFIG_SYSROOT_DIR="${srcdir}/dest" \
+      pkg-config --cflags npth) \
+    "${smoke_c}" \
+    -o "${smoke_o}"
+
+  aarch64-pc-cygwin-objdump -f "${pkgroot}/bin/"*.dll \
+    | grep -F "file format pe-aarch64-little"
+  aarch64-pc-cygwin-objdump -p "${pkgroot}/bin/"*.dll \
+    | grep -F "DLL Name: msys-2.0.dll"
+  if aarch64-pc-cygwin-objdump -p "${pkgroot}/bin/"*.dll \
+      | grep -Ei 'DLL Name: cygwin1\.dll'; then
+    printf 'ERROR: npth DLL imports cygwin1.dll\n' >&2
+    return 1
+  fi
+
+  test -n "$(aarch64-pc-cygwin-ar t "${pkgroot}/lib/libnpth.dll.a")"
+}
+
+package_mingw-w64-cross-msysarm64-npth() {
+  local pkgroot="${srcdir}/dest${_prefix}"
+  local license_dir="${pkgdir}/usr/share/licenses/${pkgname}"
+
+  pkgdesc="nPth runtime library for aarch64-pc-msys"
+  depends=("mingw-w64-cross-msysarm64-runtime=3.6.10.r0.g6922c388b-1")
+  provides=("libnpth=${pkgver}")
+
+  install -d "${pkgdir}/opt/${_target}/bin"
+  cp -a "${pkgroot}/bin/"*.dll "${pkgdir}/opt/${_target}/bin/"
+  install -Dm644 "${srcdir}/npth-${pkgver}/COPYING" \
+    "${license_dir}/COPYING"
+}
+
+package_mingw-w64-cross-msysarm64-npth-devel() {
+  local pkgroot="${srcdir}/dest${_prefix}"
+  local license_dir="${pkgdir}/usr/share/licenses/${pkgname}"
+
+  pkgdesc="nPth headers, config script, and libraries for aarch64-pc-msys"
+  depends=(
+    "mingw-w64-cross-msysarm64-npth=${pkgver}-${pkgrel}"
+    "mingw-w64-cross-msysarm64-runtime=3.6.10.r0.g6922c388b-1"
+    "mingw-w64-cross-msysarm64-sysroot=3.6.10.r0.g6922c388b-1"
+  )
+  provides=("libnpth-devel=${pkgver}")
+  options=('staticlibs')
+
+  install -d "${pkgdir}/opt/${_target}"
+  cp -a "${pkgroot}/include" "${pkgdir}/opt/${_target}/"
+  cp -a "${pkgroot}/lib" "${pkgdir}/opt/${_target}/"
+  cp -a "${pkgroot}/share" "${pkgdir}/opt/${_target}/"
+  install -Dm755 "${pkgroot}/bin/npth-config" \
+    "${pkgdir}/opt/${_target}/bin/npth-config"
+  install -Dm644 "${srcdir}/npth-${pkgver}/COPYING" \
+    "${license_dir}/COPYING"
+}
