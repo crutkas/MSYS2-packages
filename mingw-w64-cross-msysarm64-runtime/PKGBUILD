@@ -49,31 +49,41 @@ sha256sums=(
 
 build() {
   local build_dir="${srcdir}/build-${_build_target}"
-  local _w32api_include="-isystem /opt/${_install_target}/include -isystem /opt/${_install_target}/include/w32api"
+  local _target_include="/opt/${_install_target}/include"
+  local _target_w32api="${_target_include}/w32api"
+  local _target_cxx_include="${_target_include}/c++/15.0.1"
+  local _target_cxx_specific="${_target_cxx_include}/${_install_target}"
+  local _target_cxx_backward="${_target_cxx_include}/backward"
+  local _target_cppflags="-D_WIN64 -I${_target_include} -idirafter ${_target_w32api}"
+  local _target_cxxflags="${_target_cppflags} -nostdinc++ -isystem ${_target_cxx_include} -isystem ${_target_cxx_specific} -isystem ${_target_cxx_backward}"
+  local _runtime_cflags="-O2 -g -D__MSYS__ ${_target_cppflags}"
+  local _runtime_cxxflags="-O2 -g -D__MSYS__ ${_target_cxxflags}"
   local -a _w32api_make_args=(
-    "CPPFLAGS=${CPPFLAGS:-} ${_w32api_include}"
-    "CFLAGS=${CFLAGS:-} ${_w32api_include}"
-    "CXXFLAGS=${CXXFLAGS:-} ${_w32api_include}"
-    "CPPFLAGS_FOR_BUILD=${CPPFLAGS_FOR_BUILD:-} ${_w32api_include}"
-    "CFLAGS_FOR_BUILD=${CFLAGS_FOR_BUILD:-} ${_w32api_include}"
-    "CXXFLAGS_FOR_BUILD=${CXXFLAGS_FOR_BUILD:-} ${_w32api_include}"
-    "LIBCFLAGS=${LIBCFLAGS:-} ${_w32api_include}"
-    "LIBCFLAGS_FOR_TARGET=${LIBCFLAGS_FOR_TARGET:-} ${_w32api_include}"
-    "CFLAGS_FOR_TARGET=${CFLAGS_FOR_TARGET:-} ${_w32api_include}"
-    "CXXFLAGS_FOR_TARGET=${CXXFLAGS_FOR_TARGET:-} ${_w32api_include}"
+    "CPPFLAGS=${CPPFLAGS:-} ${_target_cppflags}"
+    "CFLAGS=${CFLAGS:-} ${_runtime_cflags}"
+    "CXXFLAGS=${CXXFLAGS:-} ${_runtime_cxxflags}"
+    "CPPFLAGS_FOR_BUILD=${CPPFLAGS_FOR_BUILD:-} ${_target_cppflags}"
+    "CFLAGS_FOR_BUILD=${CFLAGS_FOR_BUILD:-} ${_runtime_cflags}"
+    "CXXFLAGS_FOR_BUILD=${CXXFLAGS_FOR_BUILD:-} ${_runtime_cxxflags}"
+    "LIBCFLAGS=${LIBCFLAGS:-} ${_runtime_cflags}"
+    "LIBCFLAGS_FOR_TARGET=${LIBCFLAGS_FOR_TARGET:-} ${_runtime_cflags}"
+    "CPPFLAGS_FOR_TARGET=${CPPFLAGS_FOR_TARGET:-} ${_target_cppflags}"
+    "CFLAGS_FOR_TARGET=${CFLAGS_FOR_TARGET:-} ${_runtime_cflags}"
+    "CXXFLAGS_FOR_TARGET=${CXXFLAGS_FOR_TARGET:-} ${_runtime_cxxflags}"
   )
   export PATH="/opt/bin:${PATH}"
   export SOURCE_DATE_EPOCH="$(git -C "${startdir}" show -s --format=%ct HEAD)"
-  export CPPFLAGS="${CPPFLAGS:-} ${_w32api_include}"
-  export CFLAGS="${CFLAGS:-} ${_w32api_include}"
-  export CXXFLAGS="${CXXFLAGS:-} ${_w32api_include}"
-  export CPPFLAGS_FOR_BUILD="${CPPFLAGS_FOR_BUILD:-} ${_w32api_include}"
-  export CFLAGS_FOR_BUILD="${CFLAGS_FOR_BUILD:-} ${_w32api_include}"
-  export CXXFLAGS_FOR_BUILD="${CXXFLAGS_FOR_BUILD:-} ${_w32api_include}"
-  export LIBCFLAGS="${LIBCFLAGS:-} ${_w32api_include}"
-  export LIBCFLAGS_FOR_TARGET="${LIBCFLAGS_FOR_TARGET:-} ${_w32api_include}"
-  export CFLAGS_FOR_TARGET="${CFLAGS_FOR_TARGET:-} ${_w32api_include}"
-  export CXXFLAGS_FOR_TARGET="${CXXFLAGS_FOR_TARGET:-} ${_w32api_include}"
+  export CPPFLAGS="${CPPFLAGS:-} ${_target_cppflags}"
+  export CFLAGS="${CFLAGS:-} ${_runtime_cflags}"
+  export CXXFLAGS="${CXXFLAGS:-} ${_runtime_cxxflags}"
+  export CPPFLAGS_FOR_BUILD="${CPPFLAGS_FOR_BUILD:-} ${_target_cppflags}"
+  export CFLAGS_FOR_BUILD="${CFLAGS_FOR_BUILD:-} ${_runtime_cflags}"
+  export CXXFLAGS_FOR_BUILD="${CXXFLAGS_FOR_BUILD:-} ${_runtime_cxxflags}"
+  export LIBCFLAGS="${LIBCFLAGS:-} ${_runtime_cflags}"
+  export LIBCFLAGS_FOR_TARGET="${LIBCFLAGS_FOR_TARGET:-} ${_runtime_cflags}"
+  export CPPFLAGS_FOR_TARGET="${CPPFLAGS_FOR_TARGET:-} ${_target_cppflags}"
+  export CFLAGS_FOR_TARGET="${CFLAGS_FOR_TARGET:-} ${_runtime_cflags}"
+  export CXXFLAGS_FOR_TARGET="${CXXFLAGS_FOR_TARGET:-} ${_runtime_cxxflags}"
   export ac_cv_lib_sframe_sframe_decode=no
   export ac_cv_lib_zstd_ZSTD_isError=no
 
@@ -83,15 +93,43 @@ build() {
   mkdir -p "${build_dir}"
   (
     cd "${build_dir}"
+    CPPFLAGS="${_target_cppflags}" \
+    CFLAGS="${_runtime_cflags}" \
+    CXXFLAGS="${_runtime_cxxflags}" \
+    CPPFLAGS_FOR_BUILD="${_target_cppflags}" \
+    CFLAGS_FOR_BUILD="${_runtime_cflags}" \
+    CXXFLAGS_FOR_BUILD="${_runtime_cxxflags}" \
+    CPPFLAGS_FOR_TARGET="${_target_cppflags}" \
+    CFLAGS_FOR_TARGET="${_runtime_cflags}" \
+    CXXFLAGS_FOR_TARGET="${_runtime_cxxflags}" \
+    LIBCFLAGS="${_runtime_cflags}" \
+    LIBCFLAGS_FOR_TARGET="${_runtime_cflags}" \
     "${srcdir}/${_runtime_root}/configure" \
         --target="${_build_target}" \
         --prefix="${build_dir}/install" \
         --disable-doc \
         --with-cross-bootstrap \
         --with-msys2-runtime-commit="${_runtime_commit}" \
-        CFLAGS_FOR_TARGET='-O2 -g -D__MSYS__' \
-        CXXFLAGS_FOR_TARGET='-O2 -g -D__MSYS__'
+        CFLAGS_FOR_TARGET="${_runtime_cflags}" \
+        CXXFLAGS_FOR_TARGET="${_runtime_cxxflags}"
   )
+
+  mkdir -p "${build_dir}/probe"
+  cat > "${build_dir}/probe/runtime-personality.cc" <<'EOF'
+#include <basetsd.h>
+#include <new>
+static_assert(sizeof(void*) == 8, "void* must be 8 bytes");
+static_assert(sizeof(UINT_PTR) == 8, "UINT_PTR must be 8 bytes");
+int main() { return 0; }
+EOF
+  cat > "${build_dir}/probe/runtime-personality.c" <<'EOF'
+#include <basetsd.h>
+_Static_assert(sizeof(void*) == 8, "void* must be 8 bytes");
+_Static_assert(sizeof(UINT_PTR) == 8, "UINT_PTR must be 8 bytes");
+int main(void) { return 0; }
+EOF
+  aarch64-pc-cygwin-gcc ${_runtime_cflags} -c "${build_dir}/probe/runtime-personality.c" -o "${build_dir}/probe/runtime-personality-c.o"
+  aarch64-pc-cygwin-g++ ${_runtime_cxxflags} -c "${build_dir}/probe/runtime-personality.cc" -o "${build_dir}/probe/runtime-personality-cxx.o"
 
   make -C "${build_dir}" "${_w32api_make_args[@]}" -j"$(nproc)" all-target-newlib
   make -C "${build_dir}" "${_w32api_make_args[@]}" configure-target-winsup
