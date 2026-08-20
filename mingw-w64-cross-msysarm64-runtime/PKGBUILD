@@ -50,17 +50,15 @@ sha256sums=(
 build() {
   local build_dir="${srcdir}/build-${_build_target}"
   local _w32api_include="-isystem /opt/${_install_target}/include -isystem /opt/${_install_target}/include/w32api"
-  local -a _w32api_env=(
-    "CPPFLAGS=${_w32api_include}"
-    "CFLAGS=${_w32api_include}"
-    "CXXFLAGS=${_w32api_include}"
-    "LIBCFLAGS=${_w32api_include}"
-    "LIBCFLAGS_FOR_TARGET=${_w32api_include}"
-    "CFLAGS_FOR_TARGET=${_w32api_include}"
-    "CXXFLAGS_FOR_TARGET=${_w32api_include}"
-  )
   export PATH="/opt/bin:${PATH}"
   export SOURCE_DATE_EPOCH="$(git -C "${startdir}" show -s --format=%ct HEAD)"
+  export CPPFLAGS="${CPPFLAGS:-} ${_w32api_include}"
+  export CFLAGS="${CFLAGS:-} ${_w32api_include}"
+  export CXXFLAGS="${CXXFLAGS:-} ${_w32api_include}"
+  export LIBCFLAGS="${LIBCFLAGS:-} ${_w32api_include}"
+  export LIBCFLAGS_FOR_TARGET="${LIBCFLAGS_FOR_TARGET:-} ${_w32api_include}"
+  export CFLAGS_FOR_TARGET="${CFLAGS_FOR_TARGET:-} ${_w32api_include}"
+  export CXXFLAGS_FOR_TARGET="${CXXFLAGS_FOR_TARGET:-} ${_w32api_include}"
   export ac_cv_lib_sframe_sframe_decode=no
   export ac_cv_lib_zstd_ZSTD_isError=no
 
@@ -80,9 +78,9 @@ build() {
         CXXFLAGS_FOR_TARGET='-O2 -g -D__MSYS__'
   )
 
-  "${_w32api_env[@]}" make -C "${build_dir}" -j"$(nproc)" all-target-newlib
-  "${_w32api_env[@]}" make -C "${build_dir}" configure-target-winsup
-  "${_w32api_env[@]}" make -C "${build_dir}/${_build_target}/winsup/cygwin" -j"$(nproc)"
+  make -C "${build_dir}" -j"$(nproc)" all-target-newlib
+  make -C "${build_dir}" configure-target-winsup
+  make -C "${build_dir}/${_build_target}/winsup/cygwin" -j"$(nproc)"
 }
 
 check() {
