@@ -21,6 +21,7 @@ makedepends=(
   'mingw-w64-cross-cygwinarm64-gcc-stage1=15.0.1dev-2'
   'mingw-w64-cross-msysarm64-runtime=3.6.10.r0.g6922c388b-1'
   'mingw-w64-cross-msysarm64-sysroot=3.6.10.r0.g6922c388b-1'
+  'pkgconf'
 )
 options=('!strip' '!buildflags' '!emptydirs')
 validpgpkeys=(
@@ -63,9 +64,9 @@ build() {
   export NM='aarch64-pc-cygwin-nm'
   export RANLIB='aarch64-pc-cygwin-ranlib'
   export STRIP='aarch64-pc-cygwin-strip'
-  export CPPFLAGS="${CPPFLAGS:-} ${_sysroot_include}"
-  export CFLAGS="${CFLAGS:-} -O2 -pipe ${_sysroot_include}"
-  export CXXFLAGS="${CXXFLAGS:-} -O2 -pipe ${_sysroot_include}"
+  export CPPFLAGS="${CPPFLAGS:-} -D__MSYS__ ${_sysroot_include}"
+  export CFLAGS="${CFLAGS:-} -O2 -pipe -D__MSYS__ ${_sysroot_include}"
+  export CXXFLAGS="${CXXFLAGS:-} -O2 -pipe -D__MSYS__ ${_sysroot_include}"
   export LDFLAGS="${LDFLAGS:-} ${_sysroot_lib}"
 
   (
@@ -149,6 +150,7 @@ int main(void) {
 EOF
 
   aarch64-pc-cygwin-gcc -c \
+    -D__MSYS__ \
     $(PKG_CONFIG_PATH="${pcdir}" \
       PKG_CONFIG_SYSROOT_DIR="${srcdir}/dest" \
       pkg-config --cflags npth) \
@@ -174,7 +176,8 @@ package_mingw-w64-cross-msysarm64-npth() {
 
   pkgdesc="nPth runtime library for aarch64-pc-msys"
   depends=("mingw-w64-cross-msysarm64-runtime=3.6.10.r0.g6922c388b-1")
-  provides=("libnpth=${pkgver}")
+  provides=("aarch64-pc-msys-npth=${pkgver}")
+  conflicts=("aarch64-pc-msys-npth")
 
   install -d "${pkgdir}/opt/${_target}/bin"
   cp -a "${pkgroot}/bin/"*.dll "${pkgdir}/opt/${_target}/bin/"
@@ -192,7 +195,8 @@ package_mingw-w64-cross-msysarm64-npth-devel() {
     "mingw-w64-cross-msysarm64-runtime=3.6.10.r0.g6922c388b-1"
     "mingw-w64-cross-msysarm64-sysroot=3.6.10.r0.g6922c388b-1"
   )
-  provides=("libnpth-devel=${pkgver}")
+  provides=("aarch64-pc-msys-npth-devel=${pkgver}")
+  conflicts=("aarch64-pc-msys-npth-devel")
   options=('staticlibs')
 
   install -d "${pkgdir}/opt/${_target}"
