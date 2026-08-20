@@ -20,10 +20,10 @@ jobs:
       }}
     env:
       CI_BASE_REPOSITORY: https://github.com/${{ github.repository }}.git
-      CI_BASE_REF: ${{ github.event.pull_request.base.ref || (github.ref_name == 'crutkas-congenial-system' && 'crutkas-package-aarch64-static-libgcc' || 'master') }}
-      CI_PACKAGE_PREFIXES: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system')) && 'mingw-w64-cross-cygwinarm64- mingw-w64-cross-msysarm64-' || '' }}
-      CI_RUN_CHECK: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system')) && '1' || '0' }}
-      CI_CANONICALIZE_PACKAGES: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system')) && '1' || '0' }}
+      CI_BASE_REF: ${{ github.event.pull_request.base.ref || ((github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-arm64-libgpg-error') && 'crutkas-congenial-system' || 'master') }}
+      CI_PACKAGE_PREFIXES: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-arm64-libgpg-error' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-arm64-libgpg-error')) && 'mingw-w64-cross-cygwinarm64- mingw-w64-cross-msysarm64-' || '' }}
+      CI_RUN_CHECK: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-arm64-libgpg-error' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-arm64-libgpg-error')) && '1' || '0' }}
+      CI_CANONICALIZE_PACKAGES: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-arm64-libgpg-error' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-arm64-libgpg-error')) && '1' || '0' }}
       SOURCE_DATE_EPOCH: 1786817435
     strategy:
       fail-fast: false
@@ -74,7 +74,7 @@ jobs:
           & 'C:\msys64\usr\bin\pacman.exe' --noconfirm --needed -S git python base-devel
 
       - name: Download fork-local AArch64 Cygwin inputs
-        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-arm64-libgpg-error' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-arm64-libgpg-error') }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -123,7 +123,7 @@ jobs:
           }
 
       - name: Install fork-local AArch64 Cygwin inputs
-        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-arm64-libgpg-error' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-arm64-libgpg-error') }}
         shell: pwsh
         run: |
           $input_dir = Join-Path $env:RUNNER_TEMP 'cygwinarm64-inputs'
@@ -165,7 +165,7 @@ jobs:
           & $bash --login -lc $script
 
       - name: Add MSYS tool aliases
-        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-arm64-libgpg-error' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-arm64-libgpg-error') }}
         shell: pwsh
         run: |
           $binDir = 'C:\msys64\opt\bin'
