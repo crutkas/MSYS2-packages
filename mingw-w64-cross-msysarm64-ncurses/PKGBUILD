@@ -1,0 +1,329 @@
+# Maintainer: Chris Reddington <crutkas@microsoft.com>
+
+_sourcepkg=ncurses
+_base_ver=6.5
+_date_rev=20240831
+_source_root=${_sourcepkg}-${_base_ver}-${_date_rev}
+_runtime_pkgver=3.6.10.r0.g6922c388b
+_runtime_pkgrel=1
+_sysroot_pkgver=3.6.10.r0.g6922c388b
+_sysroot_pkgrel=1
+_target=aarch64-pc-msys
+
+pkgbase=mingw-w64-cross-msysarm64-ncurses
+pkgname=(
+  mingw-w64-cross-msysarm64-ncurses
+  mingw-w64-cross-msysarm64-ncurses-devel
+)
+pkgver=${_base_ver}.${_date_rev}
+pkgrel=1
+pkgdesc="Source-built ARM64 MSYS ncurses for aarch64-pc-msys"
+arch=('x86_64')
+url="https://www.gnu.org/software/ncurses/"
+msys2_repository_url="https://github.com/ThomasDickey/ncurses-snapshots"
+msys2_references=(
+  "cpe: cpe:/a:gnu:ncurses"
+  "cpe: cpe:/a:ncurses_project:ncurses"
+)
+license=('spdx:MIT')
+groups=('mingw-w64-cross-toolchain' 'mingw-w64-cross')
+makedepends=(
+  'autotools'
+  'gcc'
+  'mingw-w64-cross-cygwinarm64-binutils'
+  'mingw-w64-cross-cygwinarm64-gcc-stage1'
+  'mingw-w64-cross-msysarm64-runtime-devel=3.6.10.r0.g6922c388b-1'
+  'mingw-w64-cross-msysarm64-w32api-runtime=14.0.0.r0.g9b3dd0125-1'
+)
+depends=(
+  "mingw-w64-cross-msysarm64-runtime=${_runtime_pkgver}-${_runtime_pkgrel}"
+  "mingw-w64-cross-msysarm64-sysroot=${_sysroot_pkgver}-${_sysroot_pkgrel}"
+)
+options=('!strip' '!buildflags' '!emptydirs')
+source=(
+  "${_sourcepkg}-${_base_ver}-${_date_rev}.tgz::https://invisible-island.net/archives/ncurses/current/${_sourcepkg}-${_base_ver}-${_date_rev}.tgz"
+  "${_sourcepkg}-${_base_ver}-${_date_rev}.tgz.asc::https://invisible-island.net/archives/ncurses/current/${_sourcepkg}-${_base_ver}-${_date_rev}.tgz.asc"
+  ncurses-6.3-pkgconfig.patch
+  ncurses-6.3-cflags-private.patch
+)
+sha256sums=(
+  '685161fec9c20c0896f6d7569f8d1cba9124a1884d3d8be527253a773b787577'
+  'SKIP'
+  'b8544a607dfbeffaba2b087f03b57ed1fa81286afca25df65f61b04b5f3b3738'
+  '3107029dfb807e338d34641d78329cd6725c58e6b873352621f4b9611a8380bf'
+)
+validpgpkeys=(
+  '19882D92DDA4C400C22C0D56CC2AF4472167BE03' # Thomas E. Dickey
+)
+
+prepare() {
+  cd "${srcdir}/${_source_root}"
+
+  patch -p1 -i "${srcdir}/ncurses-6.3-pkgconfig.patch"
+  patch -p1 -i "${srcdir}/ncurses-6.3-cflags-private.patch"
+}
+
+_common_configure_args=(
+  --without-ada
+  --with-shared
+  --with-cxx-shared
+  --with-normal
+  --without-debug
+  --disable-relink
+  --disable-rpath
+  --with-ticlib
+  --without-termlib
+  --enable-widec
+  --enable-ext-colors
+  --enable-ext-mouse
+  --enable-sp-funcs
+  --with-wrap-prefix=ncwrap_
+  --enable-sigwinch
+  --disable-term-driver
+  --enable-colorfgbg
+  --enable-tcap-names
+  --disable-termcap
+  --disable-mixed-case
+  --with-pkg-config
+  --enable-pc-files
+  --with-manpage-format=normal
+  --with-manpage-aliases
+  --enable-echo
+  --disable-stripping
+)
+
+build() {
+  local helper_build="${srcdir}/build-host"
+  local target_build="${srcdir}/build-target"
+  local helper_prefix="/usr"
+  local target_prefix="/opt/${_target}"
+
+  export PATH="/opt/bin:${PATH}"
+  export SOURCE_DATE_EPOCH=1725062400
+
+  rm -rf "${helper_build}" "${target_build}" "${srcdir}/dest"
+  mkdir -p "${helper_build}" "${target_build}"
+
+  (
+    cd "${helper_build}"
+    "${srcdir}/${_source_root}/configure" \
+      --build="${CHOST}" \
+      --host="${CHOST}" \
+      --prefix="${helper_prefix}" \
+      --includedir="${helper_prefix}/include/ncursesw" \
+      --with-default-terminfo-dir="${helper_prefix}/share/terminfo" \
+      --with-pkg-config-libdir="${helper_prefix}/lib/pkgconfig" \
+      "${_common_configure_args[@]}"
+  )
+  make -C "${helper_build}" -j"$(nproc)"
+
+  (
+    cd "${target_build}"
+    CC="${_target}-gcc" \
+    CXX="${_target}-g++" \
+    AR="${_target}-ar" \
+    RANLIB="${_target}-ranlib" \
+    STRIP="${_target}-strip" \
+    BUILD_CC=gcc \
+    BUILD_CFLAGS="${BUILD_CFLAGS:-${CFLAGS:-}}" \
+    BUILD_CPPFLAGS="${BUILD_CPPFLAGS:-${CPPFLAGS:-}}" \
+    BUILD_LDFLAGS="${BUILD_LDFLAGS:-${LDFLAGS:-}}" \
+    CPPFLAGS="${CPPFLAGS:-} -isystem ${target_prefix}/include -isystem ${target_prefix}/include/w32api" \
+    CFLAGS="${CFLAGS:-} --sysroot=${target_prefix}" \
+    CXXFLAGS="${CXXFLAGS:-} --sysroot=${target_prefix}" \
+    LDFLAGS="${LDFLAGS:-} --sysroot=${target_prefix} -specs=${target_prefix}/lib/cygwin-compile-only.specs" \
+      "${srcdir}/${_source_root}/configure" \
+      --build="${CHOST}" \
+      --host="${_target}" \
+      --prefix="${target_prefix}" \
+      --includedir="${target_prefix}/include/ncursesw" \
+      --with-default-terminfo-dir="${target_prefix}/share/terminfo" \
+      --with-pkg-config-libdir="${target_prefix}/lib/pkgconfig" \
+      --with-build-cc=gcc \
+      "${_common_configure_args[@]}"
+  )
+  make -C "${target_build}" -j"$(nproc)"
+  make -C "${target_build}" DESTDIR="${srcdir}/dest" TIC_PATH="${helper_build}/progs/tic.exe" install
+}
+
+check() {
+  local target_prefix="${srcdir}/dest/opt/${_target}"
+  local helper_build="${srcdir}/build-host"
+  local target_build="${srcdir}/build-target"
+  local workdir="${srcdir}/ncurses-check"
+  local objdump="${_target}-objdump"
+  local ar="${_target}-ar"
+
+  export PATH="/opt/bin:${PATH}"
+
+  rm -rf "${workdir}"
+  mkdir -p "${workdir}"
+
+  test -x "${helper_build}/progs/tic.exe"
+  test -x "${target_build}/progs/tic.exe"
+  test -f "${target_prefix}/bin/tic.exe"
+  test -f "${target_prefix}/lib/libncursesw.dll.a"
+  test -f "${target_prefix}/lib/pkgconfig/ncursesw.pc"
+
+  cat > "${workdir}/smoke.c" <<'EOF'
+#define _XOPEN_SOURCE_EXTENDED 1
+#include <locale.h>
+#include <wchar.h>
+#include <menu.h>
+#include <panel.h>
+#include <curses.h>
+
+int main(void)
+{
+  ITEM *items[2];
+  MENU *menu;
+  PANEL *panel;
+  WINDOW *window;
+  wchar_t symbol = L'X';
+  cchar_t cch;
+
+  setlocale(LC_ALL, "");
+  window = initscr();
+  if (window == NULL)
+    return 1;
+  set_escdelay(25);
+  set_tabsize(8);
+  setcchar(&cch, &symbol, A_NORMAL, 0, NULL);
+  items[0] = new_item("one", "one");
+  items[1] = NULL;
+  menu = new_menu(items);
+  panel = new_panel(window);
+  if (menu != NULL)
+    free_menu(menu);
+  if (items[0] != NULL)
+    free_item(items[0]);
+  if (panel != NULL)
+    del_panel(panel);
+  endwin();
+  return 0;
+}
+EOF
+
+  "${_target}-gcc" \
+    --sysroot="${target_prefix}" \
+    -specs="${target_prefix}/lib/cygwin-compile-only.specs" \
+    -I"${target_prefix}/include" \
+    -I"${target_prefix}/include/ncursesw" \
+    "${workdir}/smoke.c" \
+    -L"${target_prefix}/lib" \
+    -lpanelw \
+    -lmenuw \
+    -lncursesw \
+    -o "${workdir}/smoke.exe"
+
+  "${objdump}" -f "${workdir}/smoke.exe" | grep -F "file format pe-aarch64-little"
+  "${objdump}" -p "${workdir}/smoke.exe" | grep -F "msys-2.0.dll"
+  ! "${objdump}" -p "${workdir}/smoke.exe" | grep -qi "cygwin1.dll"
+
+  find "${target_prefix}" -type f \( -name '*.exe' -o -name '*.dll' -o -name '*.o' -o -name '*.a' -o -name '*.dll.a' \) -print0 \
+    | while IFS= read -r -d '' file; do
+        case "${file}" in
+          *.a|*.dll.a)
+            "${ar}" t "${file}" | while IFS= read -r member; do
+              case "${member}" in
+                ''|'/'*|'__.SYMDEF'*)
+                  continue
+                  ;;
+              esac
+              "${ar}" p "${file}" "${member}" > "${workdir}/member.o"
+              "${objdump}" -f "${workdir}/member.o" | grep -F "architecture: aarch64" >/dev/null
+              "${objdump}" -f "${workdir}/member.o" | grep -F "file format pe-aarch64-little" >/dev/null
+            done
+            ;;
+          *)
+            "${objdump}" -f "${file}" | grep -F "architecture: aarch64" >/dev/null
+            "${objdump}" -f "${file}" | grep -F "file format pe-aarch64-little" >/dev/null
+            "${objdump}" -p "${file}" | grep -F "msys-2.0.dll" >/dev/null
+            ! "${objdump}" -p "${file}" | grep -qi "cygwin1.dll"
+            ;;
+        esac
+      done
+
+  find "${target_prefix}/lib/pkgconfig" -name '*.pc' -print0 \
+    | while IFS= read -r -d '' pc; do
+        grep -Fq "prefix=${target_prefix}" "${pc}"
+        ! grep -Eq 'x86_64|mingw|cygwin1\.dll' "${pc}"
+      done
+
+  find "${target_prefix}/bin" -name '*config' -print0 \
+    | while IFS= read -r -d '' config; do
+        grep -Fq "${target_prefix}" "${config}"
+        ! grep -Eq 'x86_64|mingw|cygwin1\.dll' "${config}"
+      done
+
+  {
+    cd "${target_prefix}"
+    find . -type f -print0 | sort -z | xargs -0 sha256sum
+  } > "${workdir}/package-manifest.sha256"
+}
+
+package_mingw-w64-cross-msysarm64-ncurses() {
+  local target_prefix="${srcdir}/dest/opt/${_target}"
+  local license_dir="${pkgdir}/usr/share/licenses/${pkgname}"
+
+  pkgdesc="ARM64 MSYS ncurses runtime for aarch64-pc-msys"
+  provides=("aarch64-pc-msys-ncurses=${pkgver}")
+  conflicts=('aarch64-pc-msys-ncurses')
+
+  mkdir -p "${pkgdir}/opt/${_target}"
+  cp -a "${target_prefix}/bin" "${pkgdir}/opt/${_target}/"
+  cp -a "${target_prefix}/share" "${pkgdir}/opt/${_target}/"
+  if [[ -d "${target_prefix}/lib/terminfo" ]]; then
+    mkdir -p "${pkgdir}/opt/${_target}/lib"
+    cp -a "${target_prefix}/lib/terminfo" "${pkgdir}/opt/${_target}/lib/"
+  fi
+  rm -f "${pkgdir}/opt/${_target}/bin"/*-config
+
+  install -dm755 "${license_dir}"
+  grep -B 100 '\$Id' "${srcdir}/${_source_root}/README" > "${license_dir}/license.txt"
+}
+
+package_mingw-w64-cross-msysarm64-ncurses-devel() {
+  local target_prefix="${srcdir}/dest/opt/${_target}"
+  local pkgroot="${pkgdir}/opt/${_target}"
+  local license_dir="${pkgdir}/usr/share/licenses/${pkgname}"
+
+  pkgdesc="ARM64 MSYS ncurses headers and libraries for aarch64-pc-msys"
+  depends=(
+    "mingw-w64-cross-msysarm64-ncurses=${pkgver}-${pkgrel}"
+    "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_pkgver}-${_runtime_pkgrel}"
+  )
+  options=('staticlibs')
+  provides=("aarch64-pc-msys-ncurses-devel=${pkgver}")
+  conflicts=('aarch64-pc-msys-ncurses-devel')
+
+  mkdir -p "${pkgroot}/bin"
+  cp -a "${target_prefix}/include" "${pkgroot}/"
+  cp -a "${target_prefix}/lib" "${pkgroot}/"
+  rm -rf "${pkgroot}/lib/terminfo"
+  cp -f "${target_prefix}/bin"/*-config "${pkgroot}/bin/"
+
+  cp -a "${pkgroot}/include/ncursesw" "${pkgroot}/include/ncurses"
+  cp -f "${pkgroot}/include/ncursesw"/*.h "${pkgroot}/include/"
+
+  cp -f "${pkgroot}/lib/libncursesw.a" "${pkgroot}/lib/libncurses.a"
+  cp -f "${pkgroot}/lib/libncursesw.dll.a" "${pkgroot}/lib/libncurses.dll.a"
+  cp -f "${pkgroot}/lib/libncursesw.a" "${pkgroot}/lib/libcurses.a"
+  cp -f "${pkgroot}/lib/libncursesw.dll.a" "${pkgroot}/lib/libcurses.dll.a"
+
+  cp -f "${pkgroot}/lib/libpanelw.a" "${pkgroot}/lib/libpanel.a"
+  cp -f "${pkgroot}/lib/libpanelw.dll.a" "${pkgroot}/lib/libpanel.dll.a"
+
+  cp -f "${pkgroot}/lib/libmenuw.a" "${pkgroot}/lib/libmenu.a"
+  cp -f "${pkgroot}/lib/libmenuw.dll.a" "${pkgroot}/lib/libmenu.dll.a"
+
+  cp -f "${pkgroot}/lib/pkgconfig/formw.pc" "${pkgroot}/lib/pkgconfig/form.pc"
+  cp -f "${pkgroot}/lib/pkgconfig/menuw.pc" "${pkgroot}/lib/pkgconfig/menu.pc"
+  cp -f "${pkgroot}/lib/pkgconfig/ncurses++w.pc" "${pkgroot}/lib/pkgconfig/ncurses++.pc"
+  cp -f "${pkgroot}/lib/pkgconfig/ncursesw.pc" "${pkgroot}/lib/pkgconfig/ncurses.pc"
+  cp -f "${pkgroot}/lib/pkgconfig/panelw.pc" "${pkgroot}/lib/pkgconfig/panel.pc"
+  cp -f "${pkgroot}/lib/pkgconfig/ticw.pc" "${pkgroot}/lib/pkgconfig/tic.pc"
+
+  install -dm755 "${license_dir}"
+  grep -B 100 '\$Id' "${srcdir}/${_source_root}/README" > "${license_dir}/license.txt"
+}
