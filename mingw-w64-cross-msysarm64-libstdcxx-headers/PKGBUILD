@@ -330,6 +330,9 @@ build() {
     "${srcdir:?}/${_report}"
   mkdir -p "${srcdir}/${_stage}" "${srcdir}/${_report}"
 
+  local _builddir="${srcdir}/${_gcc_build}"
+  local _xgcc="${_builddir}/gcc/xgcc.exe"
+
   export MSYSTEM=MSYS
   export lt_cv_deplibs_check_method=pass_all
   set -E
