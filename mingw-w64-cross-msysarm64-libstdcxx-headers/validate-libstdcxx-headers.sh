@@ -326,7 +326,7 @@ mkdir -p "$runtime_build"
   CXXCPP="${cxx} -E -x c++" \
   CPPFLAGS="-D_WIN64 -I${sysroot}/include -isystem ${generic_include} -isystem ${target_include} -isystem ${backward_include} -idirafter ${sysroot}/include/w32api" \
   CFLAGS='-D_WIN64' \
-  CXXFLAGS="-D_WIN64 -I${sysroot}/include -nostdinc++ -isystem ${generic_include} -isystem ${target_include} -isystem ${backward_include}" \
+  CXXFLAGS="-D_WIN64 -I${sysroot}/include -nostdinc++ -isystem ${generic_include} -isystem ${target_include} -isystem ${backward_include} -Wno-error=register -Wno-error=sign-compare -Wno-error=c++20-compat -Wno-error=comment" \
   LDFLAGS="-L${sysroot}/usr/lib" \
   ac_cv_lib_sframe_sframe_decode=no \
   ac_cv_lib_zstd_ZSTD_isError=no \
