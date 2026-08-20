@@ -450,7 +450,10 @@ EOF
     "${srcdir}/runtime-build-${_target}" \
     "${srcdir}"
 
-  cp "${srcdir}/${_report}/"* "${_sharedir}/"
+  for report_file in "${srcdir}/${_report}"/*; do
+    [[ -f "${report_file}" ]] || continue
+    cp "${report_file}" "${_sharedir}/"
+  done
   install -m644 \
     "${srcdir}/0001-libstdcxx-cygwin-bootstrap-features.patch" \
     "${srcdir}/README.md" \
