@@ -5,7 +5,7 @@ _build_target=aarch64-w64-mingw32
 _source_commit=9b3dd0125792fe94d16cacdc596dbd42fca1b369
 _source_tree=a6a6250b1b40b74c27aa797c2d5325c03b8c7610
 _source_root=mingw-w64-${_source_commit}
-_sysroot_version=3.6.10.r0.g6922c388b
+_sysroot_version=3.6.10.r0.gc7932d64f
 export SOURCE_DATE_EPOCH=1774351580
 
 pkgname=mingw-w64-cross-msysarm64-w32api-runtime

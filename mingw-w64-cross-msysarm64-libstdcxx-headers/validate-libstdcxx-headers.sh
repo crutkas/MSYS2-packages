@@ -324,9 +324,9 @@ mkdir -p "$runtime_build"
   CXX="${cxx}" \
   CPP="${cxx} -E -x c" \
   CXXCPP="${cxx} -E -x c++" \
-  CPPFLAGS="-D_WIN64 -I${sysroot}/include -isystem ${generic_include} -isystem ${target_include} -isystem ${backward_include} -idirafter ${sysroot}/include/w32api" \
+  CPPFLAGS="-D_WIN64 -isystem ${sysroot}/include -isystem ${generic_include} -isystem ${target_include} -isystem ${backward_include} -idirafter ${sysroot}/include/w32api" \
   CFLAGS='-D_WIN64' \
-  CXXFLAGS="-D_WIN64 -I${sysroot}/include -nostdinc++ -isystem ${generic_include} -isystem ${target_include} -isystem ${backward_include} -Wno-error=register -Wno-error=sign-compare -Wno-error=c++20-compat -Wno-error=comment -Wno-error" \
+  CXXFLAGS="-D_WIN64 -isystem ${sysroot}/include -nostdinc++ -isystem ${generic_include} -isystem ${target_include} -isystem ${backward_include} -Wno-error=register -Wno-error=sign-compare -Wno-error=c++20-compat -Wno-error=comment -Wno-error" \
   LDFLAGS="-L${sysroot}/usr/lib" \
   ac_cv_lib_sframe_sframe_decode=no \
   ac_cv_lib_zstd_ZSTD_isError=no \
@@ -492,7 +492,7 @@ report = {
     "package": "mingw-w64-cross-msysarm64-libstdc++-headers",
     "target": "aarch64-pc-msys",
     "gcc_source_commit": "bd1d77ba35e2820df5387cca5213925adb07a0ee",
-    "runtime_validation_commit": "6922c388be93e423c1186f0b58c39380a5ee9e2d",
+    "runtime_validation_commit": "c7932d64f13d51deacdcbfdab8df79bcb35ebd92",
     "header_count": header_count,
     "installed_target_libraries": 0,
     "configuration": {

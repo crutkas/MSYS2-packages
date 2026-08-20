@@ -1,10 +1,10 @@
 # Maintainer: Chris Reddington <crutkas@microsoft.com>
 
-_runtime_commit=6922c388be93e423c1186f0b58c39380a5ee9e2d
+_runtime_commit=c7932d64f13d51deacdcbfdab8df79bcb35ebd92
 _runtime_root=msys2-runtime-${_runtime_commit}
 _build_target=aarch64-pc-cygwin
 _install_target=aarch64-pc-msys
-_sysroot_version=3.6.10.r0.g6922c388b
+_sysroot_version=3.6.10.r0.gc7932d64f
 _sysroot_pkgrel=1
 
 pkgbase=mingw-w64-cross-msysarm64-runtime
@@ -12,7 +12,7 @@ pkgname=(
   mingw-w64-cross-msysarm64-runtime
   mingw-w64-cross-msysarm64-runtime-devel
 )
-pkgver=3.6.10.r0.g6922c388b
+pkgver=3.6.10.r0.gc7932d64f
 pkgrel=1
 pkgdesc="Source-built ARM64 MSYS runtime for aarch64-pc-msys"
 arch=('x86_64')
@@ -43,7 +43,7 @@ source=(
   'README.md'
 )
 sha256sums=(
-  'f9a6bd4366802d05d43b7c3876fceb92b93b89b172eebb020d48d2fb36389f89'
+  'a21c55ad56fd60e24739497cbcfbce0ca77094c0f42b35818ee43e886c093e0c'
   'a7cf07ea3326026eebdd5091cea25ac6a89f607e43afe623594cf22c6faa8794'
 )
 
