@@ -31,8 +31,8 @@ validpgpkeys=(
   '02F38DFF731FF97CB039A1DA549E695E905BA208' # GnuPG.com (Release Signing Key 2021)
 )
 source=(
-  "npth-${pkgver}.tar.bz2::https://gnupg.org/ftp/gcrypt/npth/npth-${pkgver}.tar.bz2"
-  "npth-${pkgver}.tar.bz2.sig::https://gnupg.org/ftp/gcrypt/npth/npth-${pkgver}.tar.bz2.sig"
+  "npth-${pkgver}.tar.bz2::https://github.com/crutkas/MSYS2-packages/releases/download/npth-1.8-source/npth-${pkgver}.tar.bz2"
+  "npth-${pkgver}.tar.bz2.sig::https://github.com/crutkas/MSYS2-packages/releases/download/npth-1.8-source/npth-${pkgver}.tar.bz2.sig"
 )
 sha256sums=(
   '8bd24b4f23a3065d6e5b26e98aba9ce783ea4fd781069c1b35d149694e90ca3e'
