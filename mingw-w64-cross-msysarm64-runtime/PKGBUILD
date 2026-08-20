@@ -51,6 +51,7 @@ build() {
   local build_dir="${srcdir}/build-${_build_target}"
   export PATH="/opt/bin:${PATH}"
   export SOURCE_DATE_EPOCH="$(git -C "${startdir}" show -s --format=%ct HEAD)"
+  export CPPFLAGS="${CPPFLAGS} -I/opt/${_install_target}/include/w32api"
   export ac_cv_lib_sframe_sframe_decode=no
   export ac_cv_lib_zstd_ZSTD_isError=no
 
