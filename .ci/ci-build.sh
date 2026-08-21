@@ -113,7 +113,7 @@ for package in "${packages[@]}"; do
     cp $PWD/$package/*.pkg.tar.* $PWD/artifacts
     sync
     repo-add $PWD/artifacts/ci.db.tar.gz $PWD/artifacts/*.pkg.tar.*
-    pacman "${pacman_local_arch_args[@]}" -Sy
+    pacman -Sy
     echo "::endgroup::"
 
     cd "$package"
