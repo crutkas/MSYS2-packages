@@ -67,6 +67,44 @@ install_packages() {
     pacman "${pacman_local_arch_args[@]}" --noprogressbar --upgrade --noconfirm *.pkg.tar.*
 }
 
+validate_package_payload() {
+    if [[ -z "${CI_PACKAGE_ARCH:-}" ]]; then
+        return 0
+    fi
+
+    local pkgname="${1}"
+    local pkgfile="${2}"
+    local -a installed_files pe_files header_files lib_files
+
+    mapfile -t installed_files < <(pacman "${pacman_local_arch_args[@]}" -Qql "${pkgname}")
+
+    mapfile -t header_files < <(
+        printf '%s\n' "${installed_files[@]}" | grep -E '^/usr/lib/perl5/core_perl/CORE/.*\.h$' || true
+    )
+    mapfile -t lib_files < <(
+        printf '%s\n' "${installed_files[@]}" | grep -E '^/usr/lib/perl5/core_perl/.*\.(a|dll\.a)$' || true
+    )
+    mapfile -t pe_files < <(
+        printf '%s\n' "${installed_files[@]}" | grep -E '\.(dll|exe|pyd)$' || true
+    )
+
+    if [[ "${pkgname}" == "perl-devel" ]]; then
+        if (( ${#header_files[@]} == 0 || ${#lib_files[@]} == 0 )); then
+            failure "perl-devel missing expected headers/libs in ${pkgfile}"
+        fi
+    fi
+
+    if [[ "${pkgname}" == "perl" && "${#pe_files[@]}" -eq 0 ]]; then
+        failure "perl package has no PE payload in ${pkgfile}"
+    fi
+
+    if [[ "${#pe_files[@]}" -eq 0 ]]; then
+        return 0
+    fi
+
+    python "$DIR/validate-package-payload.py" "${pkgname}" "${pkgfile}" "${pe_files[@]}"
+}
+
 # Status functions
 failure() { local status="${1}"; local items=("${@:2}"); _status failure "${status}." "${items[@]}"; exit 1; }
 success() { local status="${1}"; local items=("${@:2}"); _status success "${status}." "${items[@]}"; exit 0; }
@@ -124,6 +162,7 @@ for package in "${packages[@]}"; do
         if [[ -n "${CI_PACKAGE_ARCH:-}" ]]; then
             pacman --arch "${CI_PACKAGE_ARCH}" -Qip "${pkg}" | grep -q '^Architecture[[:space:]]*:[[:space:]]*aarch64$'
         fi
+        validate_package_payload "${pkgname}" "${pkg}"
         echo "::endgroup::"
 
         echo "::group::[meta-diff] ${pkgname}"
