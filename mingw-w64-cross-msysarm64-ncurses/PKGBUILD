@@ -49,8 +49,8 @@ source=(
 sha256sums=(
   '685161fec9c20c0896f6d7569f8d1cba9124a1884d3d8be527253a773b787577'
   'SKIP'
-  'b8544a607dfbeffaba2b087f03b57ed1fa81286afca25df65f61b04b5f3b3738'
-  '3107029dfb807e338d34641d78329cd6725c58e6b873352621f4b9611a8380bf'
+  'a7ac1e511ccde63272574d811c92bc8a1788454bbbf2a4cecd333c639b803313'
+  '54ee123e619d76a2b00353e31432142dca1baed0f54e4f092f7c19dee9132b5b'
 )
 validpgpkeys=(
   '19882D92DDA4C400C22C0D56CC2AF4472167BE03' # Thomas E. Dickey
@@ -95,6 +95,7 @@ _common_configure_args=(
 build() {
   local helper_build="${srcdir}/build-host"
   local target_build="${srcdir}/build-target"
+  local source_prefix="/opt/${_target}"
   local helper_prefix="/usr"
   local target_prefix="/opt/${_target}"
 
@@ -135,10 +136,10 @@ build() {
       "${srcdir}/${_source_root}/configure" \
       --build="${CHOST}" \
       --host="${_target}" \
-      --prefix="${target_prefix}" \
-      --includedir="${target_prefix}/include/ncursesw" \
-      --with-default-terminfo-dir="${target_prefix}/share/terminfo" \
-      --with-pkg-config-libdir="${target_prefix}/lib/pkgconfig" \
+      --prefix="${source_prefix}" \
+      --includedir="${source_prefix}/include/ncursesw" \
+      --with-default-terminfo-dir="${source_prefix}/share/terminfo" \
+      --with-pkg-config-libdir="${source_prefix}/lib/pkgconfig" \
       --with-build-cc=gcc \
       "${_common_configure_args[@]}"
   )
@@ -148,6 +149,7 @@ build() {
 
 check() {
   local target_prefix="${srcdir}/dest/opt/${_target}"
+  local source_prefix="/opt/${_target}"
   local helper_build="${srcdir}/build-host"
   local target_build="${srcdir}/build-target"
   local workdir="${srcdir}/ncurses-check"
@@ -164,6 +166,8 @@ check() {
   test -f "${target_prefix}/bin/tic.exe"
   test -f "${target_prefix}/lib/libncursesw.dll.a"
   test -f "${target_prefix}/lib/pkgconfig/ncursesw.pc"
+  grep -Fq "prefix=${source_prefix}" "${target_prefix}/lib/pkgconfig/ncursesw.pc"
+  grep -Fq "prefix=${source_prefix}" "${target_prefix}/bin/ncursesw-config"
 
   cat > "${workdir}/smoke.c" <<'EOF'
 #define _XOPEN_SOURCE_EXTENDED 1
@@ -246,13 +250,13 @@ EOF
 
   find "${target_prefix}/lib/pkgconfig" -name '*.pc' -print0 \
     | while IFS= read -r -d '' pc; do
-        grep -Fq "prefix=${target_prefix}" "${pc}"
+        grep -Fq "prefix=${source_prefix}" "${pc}"
         ! grep -Eq 'x86_64|mingw|cygwin1\.dll' "${pc}"
       done
 
   find "${target_prefix}/bin" -name '*config' -print0 \
     | while IFS= read -r -d '' config; do
-        grep -Fq "${target_prefix}" "${config}"
+        grep -Fq "${source_prefix}" "${config}"
         ! grep -Eq 'x86_64|mingw|cygwin1\.dll' "${config}"
       done
 
@@ -293,7 +297,7 @@ package_mingw-w64-cross-msysarm64-ncurses-devel() {
     "mingw-w64-cross-msysarm64-ncurses=${pkgver}-${pkgrel}"
     "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_pkgver}-${_runtime_pkgrel}"
   )
-  options=('staticlibs')
+  options=('staticlibs' '!strip' '!buildflags' '!emptydirs')
   provides=("aarch64-pc-msys-ncurses-devel=${pkgver}")
   conflicts=('aarch64-pc-msys-ncurses-devel')
 

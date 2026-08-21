@@ -74,7 +74,7 @@ jobs:
           & 'C:\msys64\usr\bin\pacman.exe' --noconfirm --needed -S git python base-devel
 
       - name: Download fork-local AArch64 Cygwin inputs
-        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-native-arm64-ncurses') }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -123,7 +123,7 @@ jobs:
           }
 
       - name: Install fork-local AArch64 Cygwin inputs
-        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-native-arm64-ncurses') }}
         shell: pwsh
         run: |
           $input_dir = Join-Path $env:RUNNER_TEMP 'cygwinarm64-inputs'
@@ -165,7 +165,7 @@ jobs:
           & $bash --login -lc $script
 
       - name: Add MSYS tool aliases
-        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-native-arm64-ncurses') }}
         shell: pwsh
         run: |
           $binDir = 'C:\msys64\opt\bin'
