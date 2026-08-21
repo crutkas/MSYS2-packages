@@ -181,8 +181,8 @@ package_mingw-w64-cross-msysarm64-npth() {
 
   install -d "${pkgdir}/opt/${_target}/bin"
   cp -a "${pkgroot}/bin/"*.dll "${pkgdir}/opt/${_target}/bin/"
-  install -Dm644 "${srcdir}/npth-${pkgver}/COPYING" \
-    "${license_dir}/COPYING"
+  install -Dm644 "${srcdir}/npth-${pkgver}/COPYING.LIB" \
+    "${license_dir}/COPYING.LIB"
 }
 
 package_mingw-w64-cross-msysarm64-npth-devel() {
@@ -205,6 +205,6 @@ package_mingw-w64-cross-msysarm64-npth-devel() {
   cp -a "${pkgroot}/share" "${pkgdir}/opt/${_target}/"
   install -Dm755 "${pkgroot}/bin/npth-config" \
     "${pkgdir}/opt/${_target}/bin/npth-config"
-  install -Dm644 "${srcdir}/npth-${pkgver}/COPYING" \
-    "${license_dir}/COPYING"
+  install -Dm644 "${srcdir}/npth-${pkgver}/COPYING.LIB" \
+    "${license_dir}/COPYING.LIB"
 }

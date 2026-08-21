@@ -121,8 +121,14 @@ def get_build_order(packages, toadd=None, ordered=None):
 
 if __name__ == "__main__":
     os.chdir(get_toplevel())
-    packageset = {}
-    all_packages = list_package_dirs()
-    ThreadPool(os.cpu_count()).map(lambda x: get_pkginfo(x, packageset), all_packages)
-    packages = "\n".join(get_build_order(list_packages(), packageset))
+    prefixes = tuple(
+        prefix for prefix in os.environ.get("CI_PACKAGE_PREFIXES", "").split() if prefix
+    )
+    if prefixes:
+        packageset = {}
+        all_packages = list_package_dirs()
+        ThreadPool(os.cpu_count()).map(lambda x: get_pkginfo(x, packageset), all_packages)
+        packages = "\n".join(get_build_order(list_packages(), packageset))
+    else:
+        packages = "\n".join(get_build_order(list_packages()))
     sys.stdout.buffer.write(packages.encode("utf-8"))  # Prevent CRLF newlines
