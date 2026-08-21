@@ -98,9 +98,6 @@ jobs:
 
           $pacmanConf = Join-Path $etcDir 'pacman.conf'
           $contents = Get-Content $pacmanConf -Raw
-          if ($env:GITHUB_REF_NAME -eq 'crutkas-arm64-msys-perl' -or $env:GITHUB_HEAD_REF -eq 'crutkas-arm64-msys-perl') {
-            $contents = $contents -replace '^Architecture = auto$', 'Architecture = aarch64'
-          }
           if ($contents -notmatch '^\[staging\]') {
             $contents = "[staging]`nServer = https://repo.msys2.org/staging/`nSigLevel = Never`n$contents"
           }
@@ -207,6 +204,9 @@ jobs:
             Join-Path $msys2Root 'clangarm64\bin'
           } else {
             Join-Path $msys2Root 'mingw64\bin'
+          }
+          if ('${{ matrix.msystem }}' -eq 'CLANGARM64') {
+            $env:CI_PACKAGE_ARCH = 'aarch64'
           }
           $env:MSYS2_PATH_TYPE = 'inherit'
           $env:PATH = $toolBin + ';' + (Join-Path $msys2Root 'usr\bin') + ';' + $env:PATH

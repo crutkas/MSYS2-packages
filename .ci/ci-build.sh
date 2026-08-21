@@ -64,7 +64,7 @@ list_packages() {
 }
 
 install_packages() {
-    pacman --noprogressbar --upgrade --noconfirm *.pkg.tar.*
+    pacman "${pacman_arch_args[@]}" --noprogressbar --upgrade --noconfirm *.pkg.tar.*
 }
 
 # Status functions
@@ -79,11 +79,15 @@ test -z "${packages}" && success 'No changes in package recipes'
 
 # Build
 message 'Building packages' "${packages[@]}"
+pacman_arch_args=()
+if [[ -n "${CI_PACKAGE_ARCH:-}" ]]; then
+    pacman_arch_args=(--arch "${CI_PACKAGE_ARCH}")
+fi
 
 message 'Adding an empty local repository'
 repo-add $PWD/artifacts/ci.db.tar.gz
 sed -i '1s|^|[ci]\nServer = file://'"$PWD"'/artifacts/\nSigLevel = Never\n|' /etc/pacman.conf
-pacman -Sy
+pacman "${pacman_arch_args[@]}" -Sy
 
 # Remove git and python
 pacman -R --recursive --unneeded --noconfirm --noprogressbar git python
@@ -108,28 +112,31 @@ for package in "${packages[@]}"; do
     cp $PWD/$package/*.pkg.tar.* $PWD/artifacts
     sync
     repo-add $PWD/artifacts/ci.db.tar.gz $PWD/artifacts/*.pkg.tar.*
-    pacman -Sy
+    pacman "${pacman_arch_args[@]}" -Sy
     echo "::endgroup::"
 
     cd "$package"
     for pkg in *.pkg.tar.*; do
         pkgname="$(echo "$pkg" | rev | cut -d- -f4- | rev)"
         echo "::group::[install] ${pkgname}"
-        grep -qFx "${package}" "$DIR/ci-dont-install-list.txt" || pacman --noprogressbar --upgrade --noconfirm $pkg
+        grep -qFx "${package}" "$DIR/ci-dont-install-list.txt" || pacman "${pacman_arch_args[@]}" --noprogressbar --upgrade --noconfirm $pkg
+        if [[ -n "${CI_PACKAGE_ARCH:-}" ]]; then
+            pacman --arch "${CI_PACKAGE_ARCH}" -Qip "${pkg}" | grep -q '^Architecture[[:space:]]*:[[:space:]]*aarch64$'
+        fi
         echo "::endgroup::"
 
         echo "::group::[meta-diff] ${pkgname}"
         message "Package info diff for ${pkgname}"
-        diff -Nur <(pacman -Si ${MSYSTEM,,}/"${pkgname}") <(pacman -Qip "${pkg}") || true
+        diff -Nur <(pacman "${pacman_arch_args[@]}" -Si ${MSYSTEM,,}/"${pkgname}") <(pacman -Qip "${pkg}") || true
         echo "::endgroup::"
 
         echo "::group::[file-diff] ${pkgname}"
         message "File listing diff for ${pkgname}"
-        diff -Nur <(pacman -Fl ${MSYSTEM,,}/"$pkgname" | sed -e 's|^[^ ]* |/|' | sort) <(pacman -Ql "$pkgname" | sed -e 's|^[^/]*||' | sort) || true
+        diff -Nur <(pacman "${pacman_arch_args[@]}" -Fl ${MSYSTEM,,}/"$pkgname" | sed -e 's|^[^ ]* |/|' | sort) <(pacman "${pacman_arch_args[@]}" -Ql "$pkgname" | sed -e 's|^[^/]*||' | sort) || true
         echo "::endgroup::"
 
         echo "::group::[dll check] ${pkgname}"
-        declare -a binaries=($(pacman -Qlq $pkgname | grep -E ${MINGW_PREFIX}/.+\.\(dll\|exe\|pyd\)$))
+        declare -a binaries=($(pacman "${pacman_arch_args[@]}" -Qlq $pkgname | grep -E ${MINGW_PREFIX}/.+\.\(dll\|exe\|pyd\)$))
         if [ "${#binaries[@]}" -ne 0 ]; then
             message "Runtime dependencies for ${pkgname}"
             for binary in ${binaries[@]}; do
@@ -145,7 +152,7 @@ for package in "${packages[@]}"; do
 
         echo "::group::[uninstall] ${pkgname}"
         message "Uninstalling $pkgname"
-        grep -qFx "${package}" "$DIR/ci-dont-install-list.txt" || pacman -R --recursive --unneeded --noconfirm --noprogressbar "$pkgname"
+        grep -qFx "${package}" "$DIR/ci-dont-install-list.txt" || pacman "${pacman_arch_args[@]}" -R --recursive --unneeded --noconfirm --noprogressbar "$pkgname"
         echo "::endgroup::"
     done
     cd - > /dev/null
