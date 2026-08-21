@@ -5,7 +5,7 @@ pkgname=('perl' 'perl-doc' 'perl-devel')
 pkgver=5.38.4
 pkgrel=3
 pkgdesc="A highly capable, feature-rich programming language"
-arch=(i686 x86_64)
+arch=(i686 x86_64 aarch64)
 license=('GPL')
 url="https://www.perl.org/"
 msys2_references=(
@@ -64,7 +64,11 @@ _EOF
 build() {
   cd ${srcdir}/${pkgname}-${pkgver}
 
-  CFLAGS+=" -Wno-int-conversion"
+  if [[ ${CARCH} == aarch64 ]]; then
+    # Native ARM64 Configure still emits this warning in the generated probe;
+    # keep the existing x86 builds strict.
+    CFLAGS+=" -Wno-int-conversion"
+  fi
 
   export MSYSTEM=CYGWIN
   ./Configure -des -Dusethreads \

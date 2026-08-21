@@ -63,7 +63,7 @@ jobs:
 
       - name: Init MSYS2
         id: msys2
-        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-arm64-msys-perl' || github.head_ref == 'crutkas-arm64-msys-perl') }}
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-arm64-msys-perl' || github.head_ref == 'crutkas-arm64-msys-perl' || github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-congenial-system') }}
         uses: msys2/setup-msys2@v2
         with:
           msystem: MSYS
