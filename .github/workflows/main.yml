@@ -98,6 +98,9 @@ jobs:
 
           $pacmanConf = Join-Path $etcDir 'pacman.conf'
           $contents = Get-Content $pacmanConf -Raw
+          if ($env:GITHUB_REF_NAME -eq 'crutkas-arm64-msys-perl' -or $env:GITHUB_HEAD_REF -eq 'crutkas-arm64-msys-perl') {
+            $contents = $contents -replace '^Architecture = auto$', 'Architecture = aarch64'
+          }
           if ($contents -notmatch '^\[staging\]') {
             $contents = "[staging]`nServer = https://repo.msys2.org/staging/`nSigLevel = Never`n$contents"
           }
