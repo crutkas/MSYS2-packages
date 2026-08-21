@@ -182,6 +182,8 @@ check() {
   rm -rf "${report_dir}"
   mkdir -p "${report_dir}"
 
+  CC="aarch64-pc-cygwin-gcc" \
+  CXX="aarch64-pc-cygwin-g++" \
   "${srcdir}/${_runtime_root}/.github/checks/validate-aarch64-runtime.sh" \
     "${build_dir}" \
     "${report_dir}"
