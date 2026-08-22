@@ -19,7 +19,6 @@ makedepends=(
   'gcc'
   'mingw-w64-cross-cygwinarm64-binutils'
   'mingw-w64-cross-cygwinarm64-gcc-stage1=15.0.1dev-2'
-  'mingw-w64-cross-msysarm64-runtime=3.6.10.r0.g6922c388b-1'
   'mingw-w64-cross-msysarm64-sysroot=3.6.10.r0.g6922c388b-1'
   'pkgconf'
 )
@@ -175,7 +174,7 @@ package_mingw-w64-cross-msysarm64-npth() {
   local license_dir="${pkgdir}/usr/share/licenses/${pkgname}"
 
   pkgdesc="nPth runtime library for aarch64-pc-msys"
-  depends=("mingw-w64-cross-msysarm64-runtime=3.6.10.r0.g6922c388b-1")
+  depends=("mingw-w64-cross-msysarm64-runtime=3.6.10.r0.gc7932d64f-1")
   provides=("aarch64-pc-msys-npth=${pkgver}")
   conflicts=("aarch64-pc-msys-npth")
 
@@ -192,7 +191,7 @@ package_mingw-w64-cross-msysarm64-npth-devel() {
   pkgdesc="nPth headers, config script, and libraries for aarch64-pc-msys"
   depends=(
     "mingw-w64-cross-msysarm64-npth=${pkgver}-${pkgrel}"
-    "mingw-w64-cross-msysarm64-runtime=3.6.10.r0.g6922c388b-1"
+    "mingw-w64-cross-msysarm64-runtime=3.6.10.r0.gc7932d64f-1"
     "mingw-w64-cross-msysarm64-sysroot=3.6.10.r0.g6922c388b-1"
   )
   provides=("aarch64-pc-msys-npth-devel=${pkgver}")
