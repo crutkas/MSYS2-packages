@@ -50,14 +50,15 @@ sha256sums=(
 
 build() {
   local build_dir="${srcdir}/build-${_build_target}"
+  local _target_sysroot="/opt/${_install_target}"
   local _target_include="/opt/${_install_target}/include"
   local _target_w32api="${_target_include}/w32api"
   local _target_cxx_include="${_target_include}/c++/15.0.1"
-  local _target_cxx_specific="${_target_cxx_include}/aarch64-pc-cygwin"
+  local _target_cxx_specific="${_target_cxx_include}/${_install_target}"
   local _target_cxx_backward="${_target_cxx_include}/backward"
   local _runtime_source_include="-I${srcdir}/${_runtime_root}/winsup/cygwin/include"
   local _target_cppflags="-D_WIN64"
-  local _runtime_cppflags="${_target_cppflags} -isystem ${_target_include} -idirafter ${_target_w32api}"
+  local _runtime_cppflags="--sysroot=${_target_sysroot} ${_target_cppflags} -isystem ${_target_include} -idirafter ${_target_w32api}"
   local _runtime_cflags="-O2 -g -D__MSYS__ ${_runtime_cppflags} ${_runtime_source_include}"
   local _runtime_cxxflags="${_runtime_cflags} -nostdinc++ -isystem ${_target_cxx_include} -isystem ${_target_cxx_specific} -isystem ${_target_cxx_backward}"
   local _runtime_library_path="/opt/lib/gcc/aarch64-pc-cygwin/15.0.1:/opt/aarch64-pc-msys/lib"
@@ -65,10 +66,10 @@ build() {
   local _default_manifest="/opt/${_install_target}/lib/default-manifest.o"
   local _cc_default_manifest
   local _cc_libgcc _cc_kernel32 _cc_ntdll
-  _cc_default_manifest="$(LIBRARY_PATH="${_runtime_link_library_path}" aarch64-pc-cygwin-gcc -print-file-name=default-manifest.o)"
-  _cc_libgcc="$(LIBRARY_PATH="${_runtime_link_library_path}" aarch64-pc-cygwin-gcc -print-file-name=libgcc.a)"
-  _cc_kernel32="$(LIBRARY_PATH="${_runtime_link_library_path}" aarch64-pc-cygwin-gcc -print-file-name=libkernel32.a)"
-  _cc_ntdll="$(LIBRARY_PATH="${_runtime_link_library_path}" aarch64-pc-cygwin-gcc -print-file-name=libntdll.a)"
+  _cc_default_manifest="$(LIBRARY_PATH="${_runtime_link_library_path}" aarch64-pc-cygwin-gcc --sysroot="${_target_sysroot}" -print-file-name=default-manifest.o)"
+  _cc_libgcc="$(LIBRARY_PATH="${_runtime_link_library_path}" aarch64-pc-cygwin-gcc --sysroot="${_target_sysroot}" -print-file-name=libgcc.a)"
+  _cc_kernel32="$(LIBRARY_PATH="${_runtime_link_library_path}" aarch64-pc-cygwin-gcc --sysroot="${_target_sysroot}" -print-file-name=libkernel32.a)"
+  _cc_ntdll="$(LIBRARY_PATH="${_runtime_link_library_path}" aarch64-pc-cygwin-gcc --sysroot="${_target_sysroot}" -print-file-name=libntdll.a)"
   printf 'gcc default-manifest.o => %s\n' "${_cc_default_manifest}"
   printf 'explicit default-manifest => %s\n' "${_default_manifest}"
   printf 'gcc libgcc.a => %s\n' "${_cc_libgcc}"
