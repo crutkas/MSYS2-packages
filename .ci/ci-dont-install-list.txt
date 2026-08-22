@@ -5,3 +5,6 @@ msys2-runtime-3.5
 msys2-runtime-3.6
 bash
 mingw-w64-cross-cygwinarm64-gcc-stage1
+mingw-w64-cross-msysarm64-headers
+mingw-w64-cross-msysarm64-sysroot
+mingw-w64-cross-msysarm64-windows-default-manifest
