@@ -2,9 +2,10 @@
 
 _realname=libgpg-error
 _target=aarch64-pc-msys
-_runtime_version=3.6.10.r0.g6922c388b
+_runtime_release_tag=msysarm64-runtime-pr10-20260822
+_runtime_version=3.6.10.r0.gc7932d64f
 _runtime_pkgrel=1
-_sysroot_version=3.6.10.r0.g6922c388b
+_sysroot_version=3.6.10.r0.gc7932d64f
 _sysroot_pkgrel=1
 
 pkgbase=mingw-w64-cross-msysarm64-libgpg-error
@@ -22,7 +23,7 @@ msys2_references=(
   "cpe: cpe:/a:gnupg:libgpg-error"
 )
 license=('spdx:LGPL-2.1-or-later')
-depends=('aarch64-pc-msys-runtime')
+depends=("aarch64-pc-msys-runtime=${_runtime_version}")
 makedepends=(
   'autotools'
   'gcc'
@@ -30,9 +31,9 @@ makedepends=(
   'libiconv-devel'
   'mingw-w64-cross-cygwinarm64-binutils'
   'mingw-w64-cross-cygwinarm64-gcc-stage1'
-  'mingw-w64-cross-msysarm64-runtime-devel'
-  'mingw-w64-cross-msysarm64-sysroot'
-  'mingw-w64-cross-msysarm64-w32api-runtime'
+  "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
+  "mingw-w64-cross-msysarm64-sysroot=${_sysroot_version}-${_sysroot_pkgrel}"
+  'mingw-w64-cross-msysarm64-w32api-runtime=14.0.0.r0.g9b3dd0125-1'
 )
 options=('!strip' '!buildflags' '!emptydirs')
 source=(
@@ -128,7 +129,7 @@ check() {
 
 package_mingw-w64-cross-msysarm64-libgpg-error() {
   pkgdesc="ARM64 MSYS runtime library for GnuPG"
-  depends=('aarch64-pc-msys-runtime')
+  depends=("aarch64-pc-msys-runtime=${_runtime_version}")
   provides=("aarch64-pc-msys-libgpg-error=${pkgver}")
   conflicts=('aarch64-pc-msys-libgpg-error')
 
@@ -143,7 +144,7 @@ package_mingw-w64-cross-msysarm64-libgpg-error() {
 package_mingw-w64-cross-msysarm64-libgpg-error-devel() {
   pkgdesc="ARM64 MSYS libgpg-error headers and libraries"
   groups=('development')
-  depends=("aarch64-pc-msys-libgpg-error=${pkgver}" 'aarch64-pc-msys-runtime')
+  depends=("aarch64-pc-msys-libgpg-error=${pkgver}" "aarch64-pc-msys-runtime=${_runtime_version}")
   provides=("aarch64-pc-msys-libgpg-error-devel=${pkgver}")
   conflicts=('aarch64-pc-msys-libgpg-error-devel')
   options=('staticlibs')
