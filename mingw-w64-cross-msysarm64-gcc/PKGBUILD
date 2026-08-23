@@ -134,10 +134,7 @@ build() {
       --with-gnu-ld
   )
 
-  make -C "${_build_dir}" MAKEINFO=true \
-    all-gcc \
-    all-target-libgcc \
-    all-target-libstdc++-v3
+  make -C "${_build_dir}" MAKEINFO=true all-gcc
 
   cat > "${_build_dir}/windows-header-check.c" <<'EOF'
 #include <windows.h>
@@ -150,24 +147,31 @@ EOF
     _stage_xgcc="${_build_dir}/gcc/xgcc"
   fi
   local _tool_target=aarch64-pc-cygwin
-  local _selected_as
-  _selected_as="$("${_stage_xgcc}" -print-prog-name=as)"
-  printf 'stage-xgcc-as\t%s\n' "${_selected_as}"
-  printf 'expected-as\t%s\n' "/opt/bin/${_tool_target}-as"
-  if [[ "${_selected_as}" != "/opt/bin/${_tool_target}-as" ]]; then
-    printf 'stage-xgcc-as-mismatch\t%s\n' "${_selected_as}" >&2
-    return 1
-  fi
-  original="/opt/bin/${_tool_target}-as" \
-  "${_stage_xgcc}" \
+  if ! env \
+    original="/opt/bin/${_tool_target}-as" \
+    "${_stage_xgcc}" \
     -B"/opt/bin/" \
     -B"${_build_dir}/gcc/" \
     -B"${_build_dir}/${_target}/libgcc/" \
     -B"${_build_dir}/${_target}/libstdc++-v3/src/" \
     --sysroot="/opt/${_target}" \
     -specs="/opt/${_target}/lib/cygwin-compile-only.specs" \
+    -v \
     -c "${_build_dir}/windows-header-check.c" \
-    -o "${_build_dir}/windows-header-check.o"
+    -o "${_build_dir}/windows-header-check.o" \
+    > "${_build_dir}/windows-header-check.out" \
+    2> "${_build_dir}/windows-header-check.err"; then
+    return 1
+  fi
+  grep -Fq "/opt/bin/${_tool_target}-as" "${_build_dir}/windows-header-check.err" || {
+    printf 'stage-xgcc-as-mismatch\t%s\n' \
+      "$(grep -oE '/opt/bin/[[:alnum:]_-]+-as(\.exe)?' "${_build_dir}/windows-header-check.err" | tail -n 1)"
+    return 1
+  }
+
+  make -C "${_build_dir}" MAKEINFO=true \
+    all-target-libgcc \
+    all-target-libstdc++-v3
 
   make -C "${_build_dir}/gcc" MAKEINFO=true xgcc.exe cc1.exe cc1plus.exe
 

@@ -39,3 +39,11 @@ sysroot from the previous stack.
 The compiler package does not ship target C++ headers. Those remain in the
 separate `mingw-w64-cross-msysarm64-libstdc++-headers` package so the compiler
 layer stays reproducible and the install boundary remains explicit.
+
+## Local static checks
+
+Use this exact bounded shell invocation for local proof steps:
+
+```text
+C:\msys64\usr\bin\bash.exe --noprofile --norc -c 'export PATH=/usr/bin:/opt/bin:/mingw64/bin:$PATH; cd /c/Users/crutkas/source/scripts/copilot-worktrees/MSYS2-packages/crutkas-cautious-guide; CI_BASE_REV=origin/crutkas-package-aarch64-static-libgcc CI_PACKAGE_PREFIXES="mingw-w64-cross-cygwinarm64- mingw-w64-cross-msysarm64-" python3 .ci/ci-get-build-order.py'
+```

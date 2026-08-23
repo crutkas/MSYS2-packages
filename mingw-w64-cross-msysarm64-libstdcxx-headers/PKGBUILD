@@ -7,7 +7,7 @@ _gcc_root=gcc-woarm64-${_gcc_commit}
 _gcc_version=15.0.1
 _runtime_commit=c7932d64f13d51deacdcbfdab8df79bcb35ebd92
 _runtime_root=msys2-runtime-${_runtime_commit}
-_sysroot_version=3.6.10.r0.g6922c388b
+_sysroot_version=3.6.10.r0.gc7932d64f
 export SOURCE_DATE_EPOCH=1786669894
 
 pkgname=mingw-w64-cross-msysarm64-libstdc++-headers
@@ -58,11 +58,11 @@ source=(
 sha256sums=('8194893d7093f3cadedc2ec42375ffbbc02a22e30d943e5f1c1aefa273af8122'
             'a21c55ad56fd60e24739497cbcfbce0ca77094c0f42b35818ee43e886c093e0c'
             '58bbd49450bcfd01be5feb42df19125630314177a022607f1c278e4ac0d374eb'
-            '7593cc8869e369a812abd0f2cb6cc453b09224cb3465ca966dfd76c6406dfabc'
+            '4430625eda117c96b29bab5ad07cf3b4aefc3de098aef33333a7b29ecd39df9c'
             'f76d8b6988bf512429efff8454cbc505369138ff6ba1efbb34ef5a2648487452'
             '70c412971f56b717f536ac575e7b39fa65873ad6e43f671af1acc940b0c7e0f8'
             '45d9adfc3996fa36726c1182cc80e7126f2f988c060bc8d38cf7f3903a18a660'
-            '4430625eda117c96b29bab5ad07cf3b4aefc3de098aef33333a7b29ecd39df9c')
+            '7593cc8869e369a812abd0f2cb6cc453b09224cb3465ca966dfd76c6406dfabc')
 
 _gcc_build=build-${_target}-libstdcxx-headers
 _libstdcxx_build=${_gcc_build}/${_target}/libstdc++-v3
@@ -212,14 +212,26 @@ _probe_libstdcxx_preprocessor() {
   {
     printf 'limits.h sanity\tok\n'
     printf 'ac_nonexistent.h sanity\texpected-failure\n'
-    local _selected_as
-    _selected_as="$("${_xgcc}" -print-prog-name=as)"
-    printf 'selected-as\t%s\n' "${_selected_as}"
-    printf 'expected-as\t%s\n' "/opt/bin/${_tool_target}-as"
-    if [[ "${_selected_as}" != "/opt/bin/${_tool_target}-as" ]]; then
-      printf 'selected-as-mismatch\t%s\n' "${_selected_as}"
+    printf 'assembler-trace-command\t%s\n' \
+      "env original=/opt/bin/${_tool_target}-as ${_xgcc} -B/opt/bin/ -B${_builddir}/gcc/ -B/opt/libexec/gcc/${_target}/${_gcc_version}/ -B/opt/${_target}/bin/ -B/opt/${_target}/lib/ ${_cppflags} --sysroot=/opt/${_target} -v -c ${_probe_dir}/conftest-assembler.c -o ${_probe_dir}/conftest-assembler.o"
+    printf 'int main(void) { return 0; }\n' > "${_probe_dir}/conftest-assembler.c"
+    if ! env \
+      original="/opt/bin/${_tool_target}-as" \
+      CPPFLAGS="${_cppflags}" \
+      "${_xgcc}" -B/opt/bin/ -B${_builddir}/gcc/ -B/opt/libexec/gcc/${_target}/${_gcc_version}/ -B/opt/${_target}/bin/ -B/opt/${_target}/lib/ ${_cppflags} --sysroot=/opt/${_target} \
+      -v -c "${_probe_dir}/conftest-assembler.c" \
+      -o "${_probe_dir}/conftest-assembler.o" \
+      > "${_probe_dir}/conftest-assembler.out" \
+      2> "${_probe_dir}/conftest-assembler.err"; then
+      printf 'assembler-trace\tfailed\n' > "${srcdir}/${_report}/preprocessor-sanity.txt"
       return 1
     fi
+    if ! grep -Fq "/opt/bin/${_tool_target}-as" "${_probe_dir}/conftest-assembler.err"; then
+      printf 'assembler-trace\tmissing-delegated-as\n' > "${srcdir}/${_report}/preprocessor-sanity.txt"
+      cat "${_probe_dir}/conftest-assembler.err" >> "${srcdir}/${_report}/preprocessor-sanity.txt"
+      return 1
+    fi
+    printf 'assembler-trace\tok\n'
     "${_xgcc}" -print-prog-name=cc1
     "${_xgcc}" -print-prog-name=cc1plus
     "${_xgcc}" -print-prog-name=collect2
@@ -434,8 +446,8 @@ runtime-validation-repository	https://github.com/crutkas/msys2-runtime
 runtime-validation-commit	${_runtime_commit}
 runtime-validation-archive-sha256	a21c55ad56fd60e24739497cbcfbce0ca77094c0f42b35818ee43e886c093e0c
 stage0-package-base	389051fb5aab566707a95fd69d73f5659e02c696
-sysroot-runtime-commit	6922c388be93e423c1186f0b58c39380a5ee9e2d
-sysroot-runtime-archive-sha256	f9a6bd4366802d05d43b7c3876fceb92b93b89b172eebb020d48d2fb36389f89
+sysroot-runtime-commit	c7932d64f13d51deacdcbfdab8df79bcb35ebd92
+sysroot-runtime-archive-sha256	a21c55ad56fd60e24739497cbcfbce0ca77094c0f42b35818ee43e886c093e0c
 sysroot-w32api-snapshot-sha256	48f71ba7e14629455259e4a618c0585f31120f51544b88a39cf60f9e8faa2424
 w32api-runtime-commit	9b3dd0125792fe94d16cacdc596dbd42fca1b369
 w32api-runtime-archive-sha256	a538427786ab530b253c8350a9b4c14e511032f8900366336b29065ad23de129
