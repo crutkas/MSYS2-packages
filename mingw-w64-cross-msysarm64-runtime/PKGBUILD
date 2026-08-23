@@ -1,10 +1,10 @@
 # Maintainer: Chris Reddington <crutkas@microsoft.com>
 
-_runtime_commit=6922c388be93e423c1186f0b58c39380a5ee9e2d
+_runtime_commit=c7932d64f13d51deacdcbfdab8df79bcb35ebd92
 _runtime_root=msys2-runtime-${_runtime_commit}
 _build_target=aarch64-pc-cygwin
 _install_target=aarch64-pc-msys
-_sysroot_version=3.6.10.r0.g6922c388b
+_sysroot_version=3.6.10.r0.gc7932d64f
 _sysroot_pkgrel=1
 
 pkgbase=mingw-w64-cross-msysarm64-runtime
@@ -12,7 +12,7 @@ pkgname=(
   mingw-w64-cross-msysarm64-runtime
   mingw-w64-cross-msysarm64-runtime-devel
 )
-pkgver=3.6.10.r0.g6922c388b
+pkgver=3.6.10.r0.gc7932d64f
 pkgrel=1
 pkgdesc="Source-built ARM64 MSYS runtime for aarch64-pc-msys"
 arch=('x86_64')
@@ -30,6 +30,7 @@ makedepends=(
   'libiconv-devel'
   'mingw-w64-cross-cygwinarm64-binutils'
   'mingw-w64-cross-cygwinarm64-gcc-stage1'
+  'mingw-w64-cross-cygwinarm64-gcc-libs-stage1'
   'mingw-w64-cross-msysarm64-libstdc++-headers'
   'mingw-w64-cross-msysarm64-sysroot'
   'mingw-w64-cross-msysarm64-w32api-runtime'
@@ -43,37 +44,86 @@ source=(
   'README.md'
 )
 sha256sums=(
-  'f9a6bd4366802d05d43b7c3876fceb92b93b89b172eebb020d48d2fb36389f89'
+  'a21c55ad56fd60e24739497cbcfbce0ca77094c0f42b35818ee43e886c093e0c'
   'a7cf07ea3326026eebdd5091cea25ac6a89f607e43afe623594cf22c6faa8794'
 )
 
 build() {
   local build_dir="${srcdir}/build-${_build_target}"
-  local _w32api_include="-isystem /opt/${_install_target}/include -isystem /opt/${_install_target}/include/w32api"
-  local -a _w32api_make_args=(
-    "CPPFLAGS=${CPPFLAGS:-} ${_w32api_include}"
-    "CFLAGS=${CFLAGS:-} ${_w32api_include}"
-    "CXXFLAGS=${CXXFLAGS:-} ${_w32api_include}"
-    "CPPFLAGS_FOR_BUILD=${CPPFLAGS_FOR_BUILD:-} ${_w32api_include}"
-    "CFLAGS_FOR_BUILD=${CFLAGS_FOR_BUILD:-} ${_w32api_include}"
-    "CXXFLAGS_FOR_BUILD=${CXXFLAGS_FOR_BUILD:-} ${_w32api_include}"
-    "LIBCFLAGS=${LIBCFLAGS:-} ${_w32api_include}"
-    "LIBCFLAGS_FOR_TARGET=${LIBCFLAGS_FOR_TARGET:-} ${_w32api_include}"
-    "CFLAGS_FOR_TARGET=${CFLAGS_FOR_TARGET:-} ${_w32api_include}"
-    "CXXFLAGS_FOR_TARGET=${CXXFLAGS_FOR_TARGET:-} ${_w32api_include}"
+  local _target_sysroot="/opt/${_install_target}"
+  local _target_include="/opt/${_install_target}/include"
+  local _target_w32api="${_target_include}/w32api"
+  local _target_cxx_include="${_target_include}/c++/15.0.1"
+  local _target_cxx_specific="${_target_cxx_include}/${_install_target}"
+  local _target_cxx_backward="${_target_cxx_include}/backward"
+  local _runtime_source_include="-I${srcdir}/${_runtime_root}/winsup/cygwin/include"
+  local _target_cppflags="-D_WIN64"
+  local _runtime_cppflags="--sysroot=${_target_sysroot} ${_target_cppflags} -isystem ${_target_include} -idirafter ${_target_w32api}"
+  local _runtime_cflags="-O2 -g -D__MSYS__ ${_runtime_cppflags} ${_runtime_source_include}"
+  local _runtime_cxxflags="${_runtime_cflags} -nostdinc++ -isystem ${_target_cxx_include} -isystem ${_target_cxx_specific} -isystem ${_target_cxx_backward}"
+  local _runtime_library_path="/opt/lib/gcc/aarch64-pc-cygwin/15.0.1:/opt/aarch64-pc-msys/lib"
+  local _runtime_link_library_path="${LIBRARY_PATH:+${LIBRARY_PATH}:}${_runtime_library_path}"
+  local _default_manifest="/opt/${_install_target}/lib/default-manifest.o"
+  local _cc_default_manifest
+  local _cc_libgcc _cc_kernel32 _cc_ntdll
+  _cc_default_manifest="$(LIBRARY_PATH="${_runtime_link_library_path}" aarch64-pc-cygwin-gcc --sysroot="${_target_sysroot}" -print-file-name=default-manifest.o)"
+  _cc_libgcc="$(LIBRARY_PATH="${_runtime_link_library_path}" aarch64-pc-cygwin-gcc --sysroot="${_target_sysroot}" -print-file-name=libgcc.a)"
+  _cc_kernel32="$(LIBRARY_PATH="${_runtime_link_library_path}" aarch64-pc-cygwin-gcc --sysroot="${_target_sysroot}" -print-file-name=libkernel32.a)"
+  _cc_ntdll="$(LIBRARY_PATH="${_runtime_link_library_path}" aarch64-pc-cygwin-gcc --sysroot="${_target_sysroot}" -print-file-name=libntdll.a)"
+  printf 'gcc default-manifest.o => %s\n' "${_cc_default_manifest}"
+  printf 'explicit default-manifest => %s\n' "${_default_manifest}"
+  printf 'gcc libgcc.a => %s\n' "${_cc_libgcc}"
+  printf 'gcc libkernel32.a => %s\n' "${_cc_kernel32}"
+  printf 'gcc libntdll.a => %s\n' "${_cc_ntdll}"
+  test -f "${_default_manifest}"
+  test -f "${_cc_libgcc}"
+  test -f "${_cc_kernel32}"
+  test -f "${_cc_ntdll}"
+  aarch64-pc-cygwin-objdump -f "${_default_manifest}" | grep -F "file format pe-aarch64-little"
+  aarch64-pc-cygwin-objdump -f "${_cc_libgcc}" | grep -F "architecture: aarch64"
+  aarch64-pc-cygwin-objdump -f "${_cc_kernel32}" | grep -F "architecture: aarch64"
+  aarch64-pc-cygwin-objdump -f "${_cc_ntdll}" | grep -F "architecture: aarch64"
+  if [[ "${_cc_default_manifest}" != "${_default_manifest}" ]]; then
+    printf 'using explicit manifest override because compiler lookup returned %s\n' "${_cc_default_manifest}"
+  fi
+  local -a _runtime_make_vars=(
+    "CPPFLAGS=${_runtime_cppflags}"
+    "CFLAGS=${_runtime_cflags}"
+    "CXXFLAGS=${_runtime_cxxflags}"
+    "DEFAULT_MANIFEST=${_default_manifest}"
+    "V=1"
+  )
+  local _newlib_cflags="-O2 -g -D__MSYS__ ${_target_cppflags}"
+  local -a _newlib_env=(
+   env
+   "CPPFLAGS=${CPPFLAGS:-} ${_target_cppflags}"
+   "CFLAGS=${CFLAGS:-} ${_newlib_cflags}"
+   "CXXFLAGS="
+   "CPPFLAGS_FOR_BUILD=${CPPFLAGS_FOR_BUILD:-} ${_target_cppflags}"
+   "CFLAGS_FOR_BUILD=${CFLAGS_FOR_BUILD:-} ${_newlib_cflags}"
+   "CXXFLAGS_FOR_BUILD="
+   "LIBCFLAGS=${LIBCFLAGS:-} ${_newlib_cflags}"
+   "LIBCFLAGS_FOR_TARGET=${LIBCFLAGS_FOR_TARGET:-} ${_newlib_cflags}"
+   "CPPFLAGS_FOR_TARGET=${CPPFLAGS_FOR_TARGET:-} ${_target_cppflags}"
+   "CFLAGS_FOR_TARGET=${CFLAGS_FOR_TARGET:-} ${_newlib_cflags}"
+  )
+  local -a _runtime_env=(
+   env
+   "CPPFLAGS=${CPPFLAGS:-} ${_runtime_cppflags}"
+   "CFLAGS=${CFLAGS:-} ${_runtime_cflags}"
+   "CXXFLAGS=${CXXFLAGS:-} ${_runtime_cxxflags}"
+   "LIBRARY_PATH=${_runtime_link_library_path}"
+   "CPPFLAGS_FOR_BUILD=${CPPFLAGS_FOR_BUILD:-} ${_runtime_cppflags}"
+   "CFLAGS_FOR_BUILD=${CFLAGS_FOR_BUILD:-} ${_runtime_cflags}"
+   "CXXFLAGS_FOR_BUILD=${CXXFLAGS_FOR_BUILD:-} ${_runtime_cxxflags}"
+   "LIBCFLAGS=${LIBCFLAGS:-} ${_runtime_cflags}"
+   "LIBCFLAGS_FOR_TARGET=${LIBCFLAGS_FOR_TARGET:-} ${_runtime_cflags}"
+   "CPPFLAGS_FOR_TARGET=${CPPFLAGS_FOR_TARGET:-} ${_runtime_cppflags}"
+   "CFLAGS_FOR_TARGET=${CFLAGS_FOR_TARGET:-} ${_runtime_cflags}"
+   "CXXFLAGS_FOR_TARGET=${CXXFLAGS_FOR_TARGET:-} ${_runtime_cxxflags}"
   )
   export PATH="/opt/bin:${PATH}"
   export SOURCE_DATE_EPOCH="$(git -C "${startdir}" show -s --format=%ct HEAD)"
-  export CPPFLAGS="${CPPFLAGS:-} ${_w32api_include}"
-  export CFLAGS="${CFLAGS:-} ${_w32api_include}"
-  export CXXFLAGS="${CXXFLAGS:-} ${_w32api_include}"
-  export CPPFLAGS_FOR_BUILD="${CPPFLAGS_FOR_BUILD:-} ${_w32api_include}"
-  export CFLAGS_FOR_BUILD="${CFLAGS_FOR_BUILD:-} ${_w32api_include}"
-  export CXXFLAGS_FOR_BUILD="${CXXFLAGS_FOR_BUILD:-} ${_w32api_include}"
-  export LIBCFLAGS="${LIBCFLAGS:-} ${_w32api_include}"
-  export LIBCFLAGS_FOR_TARGET="${LIBCFLAGS_FOR_TARGET:-} ${_w32api_include}"
-  export CFLAGS_FOR_TARGET="${CFLAGS_FOR_TARGET:-} ${_w32api_include}"
-  export CXXFLAGS_FOR_TARGET="${CXXFLAGS_FOR_TARGET:-} ${_w32api_include}"
   export ac_cv_lib_sframe_sframe_decode=no
   export ac_cv_lib_zstd_ZSTD_isError=no
 
@@ -83,19 +133,43 @@ build() {
   mkdir -p "${build_dir}"
   (
     cd "${build_dir}"
+    "${_newlib_env[@]}" \
     "${srcdir}/${_runtime_root}/configure" \
         --target="${_build_target}" \
         --prefix="${build_dir}/install" \
         --disable-doc \
         --with-cross-bootstrap \
         --with-msys2-runtime-commit="${_runtime_commit}" \
-        CFLAGS_FOR_TARGET='-O2 -g -D__MSYS__' \
-        CXXFLAGS_FOR_TARGET='-O2 -g -D__MSYS__'
+        CFLAGS_FOR_TARGET="${_newlib_cflags}" \
+        CPPFLAGS_FOR_TARGET="${_target_cppflags}"
   )
 
-  make -C "${build_dir}" "${_w32api_make_args[@]}" -j"$(nproc)" all-target-newlib
-  make -C "${build_dir}" "${_w32api_make_args[@]}" configure-target-winsup
-  make -C "${build_dir}/${_build_target}/winsup/cygwin" "${_w32api_make_args[@]}" -j"$(nproc)"
+  mkdir -p "${build_dir}/probe"
+  cat > "${build_dir}/probe/runtime-personality.cc" <<'EOF'
+#include <basetsd.h>
+#include <new>
+static_assert(sizeof(void*) == 8, "void* must be 8 bytes");
+static_assert(sizeof(UINT_PTR) == 8, "UINT_PTR must be 8 bytes");
+int main() { return 0; }
+EOF
+  cat > "${build_dir}/probe/runtime-personality.c" <<'EOF'
+#include <basetsd.h>
+_Static_assert(sizeof(void*) == 8, "void* must be 8 bytes");
+_Static_assert(sizeof(UINT_PTR) == 8, "UINT_PTR must be 8 bytes");
+int main(void) { return 0; }
+EOF
+  test -f "${srcdir}/${_runtime_root}/winsup/cygwin/include/cygwin/version.h"
+  cat > "${build_dir}/probe/runtime-version-header.c" <<'EOF'
+#include <cygwin/version.h>
+int main(void) { return 0; }
+EOF
+  aarch64-pc-cygwin-gcc ${_runtime_cflags} -c "${build_dir}/probe/runtime-personality.c" -o "${build_dir}/probe/runtime-personality-c.o"
+  aarch64-pc-cygwin-g++ ${_runtime_cxxflags} -c "${build_dir}/probe/runtime-personality.cc" -o "${build_dir}/probe/runtime-personality-cxx.o"
+  aarch64-pc-cygwin-gcc ${_runtime_cflags} -c "${build_dir}/probe/runtime-version-header.c" -o "${build_dir}/probe/runtime-version-header.o"
+
+  "${_newlib_env[@]}" make -C "${build_dir}" -j"$(nproc)" all-target-newlib
+  "${_runtime_env[@]}" make -C "${build_dir}" configure-target-winsup "${_runtime_make_vars[@]}"
+  "${_runtime_env[@]}" make -C "${build_dir}/${_build_target}/winsup/cygwin" -j"$(nproc)" "${_runtime_make_vars[@]}"
 }
 
 check() {
@@ -109,6 +183,8 @@ check() {
   rm -rf "${report_dir}"
   mkdir -p "${report_dir}"
 
+  CC="aarch64-pc-cygwin-gcc" \
+  CXX="aarch64-pc-cygwin-g++" \
   "${srcdir}/${_runtime_root}/.github/checks/validate-aarch64-runtime.sh" \
     "${build_dir}" \
     "${report_dir}"

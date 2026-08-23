@@ -492,7 +492,7 @@ report = {
     "package": "mingw-w64-cross-msysarm64-libstdc++-headers",
     "target": "aarch64-pc-msys",
     "gcc_source_commit": "e1a057af466f066d86b20270fb7864764951420d",
-    "runtime_validation_commit": "6922c388be93e423c1186f0b58c39380a5ee9e2d",
+    "runtime_validation_commit": "c7932d64f13d51deacdcbfdab8df79bcb35ebd92",
     "header_count": header_count,
     "installed_target_libraries": 0,
     "configuration": {

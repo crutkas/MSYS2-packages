@@ -20,10 +20,10 @@ jobs:
       }}
     env:
       CI_BASE_REPOSITORY: https://github.com/${{ github.repository }}.git
-      CI_BASE_REF: ${{ github.event.pull_request.base.ref || (github.ref_name == 'crutkas-congenial-system' && 'crutkas-package-aarch64-static-libgcc' || 'master') }}
-      CI_PACKAGE_PREFIXES: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system')) && 'mingw-w64-cross-cygwinarm64- mingw-w64-cross-msysarm64-' || '' }}
-      CI_RUN_CHECK: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system')) && '1' || '0' }}
-      CI_CANONICALIZE_PACKAGES: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system')) && '1' || '0' }}
+      CI_BASE_REF: ${{ github.event.pull_request.base.ref || 'master' }}
+      CI_PACKAGE_PREFIXES: ''
+      CI_RUN_CHECK: '0'
+      CI_CANONICALIZE_PACKAGES: '0'
       SOURCE_DATE_EPOCH: 1786817435
     strategy:
       fail-fast: false
@@ -56,6 +56,36 @@ jobs:
           filter: blob:none
           persist-credentials: false
 
+      - name: Resolve fork-local AArch64 settings
+        id: arm64-settings
+        shell: pwsh
+        run: |
+          $branchCandidates = @('${{ github.ref_name }}', '${{ github.head_ref }}') | Where-Object { $_ }
+          $match = @('crutkas-package-aarch64-static-libgcc', 'crutkas-congenial-system', 'crutkas-aarch64-gcc-layer') |
+            Where-Object { $branchCandidates -contains $_ } |
+            Select-Object -First 1
+          if (-not $match) {
+            "enabled=0" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+
+          $baseRef = switch ($match) {
+            'crutkas-aarch64-gcc-layer' { 'crutkas-package-aarch64-static-libgcc' }
+            'crutkas-congenial-system' { 'crutkas-package-aarch64-static-libgcc' }
+            default { 'master' }
+          }
+          $prefixes = 'mingw-w64-cross-cygwinarm64- mingw-w64-cross-msysarm64-'
+
+          "enabled=1" >> $env:GITHUB_OUTPUT
+          "base_ref=$baseRef" >> $env:GITHUB_OUTPUT
+          "package_prefixes=$prefixes" >> $env:GITHUB_OUTPUT
+          "run_check=1" >> $env:GITHUB_OUTPUT
+          "canonicalize_packages=1" >> $env:GITHUB_OUTPUT
+          "CI_BASE_REF=$baseRef" >> $env:GITHUB_ENV
+          "CI_PACKAGE_PREFIXES=$prefixes" >> $env:GITHUB_ENV
+          "CI_RUN_CHECK=1" >> $env:GITHUB_ENV
+          "CI_CANONICALIZE_PACKAGES=1" >> $env:GITHUB_ENV
+
       - name: Add staging repo
         shell: pwsh
         run: |
@@ -74,7 +104,7 @@ jobs:
           & 'C:\msys64\usr\bin\pacman.exe' --noconfirm --needed -S git python base-devel
 
       - name: Download fork-local AArch64 Cygwin inputs
-        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
+        if: ${{ steps.arm64-settings.outputs.enabled == '1' }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -85,6 +115,11 @@ jobs:
             --repo crutkas/MSYS2-packages `
             --pattern 'mingw-w64-cross-cygwinarm64-binutils-*.pkg.tar.zst' `
             --dir $destination
+          gh release download cygwinarm64-gcc-static-runtime-20260815 `
+            --repo crutkas/MSYS2-packages `
+            --pattern 'mingw-w64-cross-cygwinarm64-gcc-stage1-*.pkg.tar.zst' `
+            --pattern 'mingw-w64-cross-cygwinarm64-gcc-libs-stage1-*.pkg.tar.zst' `
+            --dir $destination
           gh release download cygwinarm64-sysroot-pr3-20260813 `
             --repo crutkas/MSYS2-packages `
             --pattern 'mingw-w64-cross-cygwinarm64-headers-*.pkg.tar.zst' `
@@ -94,10 +129,6 @@ jobs:
           gh release download cygwinarm64-w32api-20260813 `
             --repo crutkas/MSYS2-packages `
             --pattern 'mingw-w64-cross-cygwinarm64-w32api-runtime-*.pkg.tar.zst' `
-            --dir $destination
-          gh release download cygwinarm64-gcc-stage0-pr4-20260813 `
-            --repo crutkas/MSYS2-packages `
-            --pattern 'mingw-w64-cross-cygwinarm64-gcc-stage1-*.pkg.tar.zst' `
             --dir $destination
           gh release download cygwinarm64-libstdcxx-headers-pr7-20260815 `
             --repo crutkas/MSYS2-packages `
@@ -110,7 +141,8 @@ jobs:
             'mingw-w64-cross-cygwinarm64-windows-default-manifest-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst' = 'cc089511fede6042a25f83fcb5903fddeede89ddd9655360741513ee9015e3dc'
             'mingw-w64-cross-cygwinarm64-sysroot-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst' = '4ed8a30f592317bf7e4def6f3c773139f2565b0f8afaedd820f7ee46d33cad20'
             'mingw-w64-cross-cygwinarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst' = '53478f9a60e2fdad7d3b4357fa4fb937a1afab16af16a55e5a25ae9fac308fa7'
-            'mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-1-x86_64.pkg.tar.zst' = 'f6260f3190fd602a5311c0c4cc47381405e96d9d049a679589f0b5c7be25fffe'
+            'mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-2-x86_64.pkg.tar.zst' = '063579211851ed69370a6362f2795e39d9be0235a2bfe2f58da1bbd73a1d108e'
+            'mingw-w64-cross-cygwinarm64-gcc-libs-stage1-15.0.1dev-2-x86_64.pkg.tar.zst' = '17a8fbc22227c541ff3179179d307045302f6b18fbc6207cf9d863a9e4dad98c'
             'mingw-w64-cross-cygwinarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst' = '1e018d384e5e16b76524b69677819b660e6611480a85a7f7b8a412403bf15ea6'
           }
           foreach ($entry in $expected.GetEnumerator()) {
@@ -121,7 +153,7 @@ jobs:
           }
 
       - name: Install fork-local AArch64 Cygwin inputs
-        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
+        if: ${{ steps.arm64-settings.outputs.enabled == '1' }}
         shell: pwsh
         run: |
           $input_dir = Join-Path $env:RUNNER_TEMP 'cygwinarm64-inputs'
@@ -131,11 +163,39 @@ jobs:
             "$input_dir\mingw-w64-cross-cygwinarm64-windows-default-manifest-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst" `
             "$input_dir\mingw-w64-cross-cygwinarm64-sysroot-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst" `
             "$input_dir\mingw-w64-cross-cygwinarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst" `
-            "$input_dir\mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-1-x86_64.pkg.tar.zst" `
+            "$input_dir\mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-2-x86_64.pkg.tar.zst" `
+            "$input_dir\mingw-w64-cross-cygwinarm64-gcc-libs-stage1-15.0.1dev-2-x86_64.pkg.tar.zst" `
             "$input_dir\mingw-w64-cross-cygwinarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst"
 
+      - name: Preflight fork-local AArch64 Cygwin inputs
+        if: ${{ steps.arm64-settings.outputs.enabled == '1' }}
+        shell: pwsh
+        run: |
+          $packages = @(
+            'mingw-w64-cross-cygwinarm64-gcc-stage1',
+            'mingw-w64-cross-cygwinarm64-gcc-libs-stage1',
+            'mingw-w64-cross-cygwinarm64-binutils',
+            'mingw-w64-cross-cygwinarm64-libstdc++-headers'
+          )
+          foreach ($pkg in $packages) {
+            & 'C:\msys64\usr\bin\pacman.exe' -Q $pkg
+          }
+          $bash = 'C:\msys64\usr\bin\bash.exe'
+          $script = @'
+          set -euo pipefail
+          LIBRARY_PATH=/opt/lib/gcc/aarch64-pc-cygwin/15.0.1:/opt/aarch64-pc-msys/lib
+          libgcc=$(LIBRARY_PATH="$LIBRARY_PATH" aarch64-pc-cygwin-gcc -print-file-name=libgcc.a)
+          libkernel32=$(LIBRARY_PATH="$LIBRARY_PATH" aarch64-pc-cygwin-gcc -print-file-name=libkernel32.a)
+          libntdll=$(LIBRARY_PATH="$LIBRARY_PATH" aarch64-pc-cygwin-gcc -print-file-name=libntdll.a)
+          for path in "$libgcc" "$libkernel32" "$libntdll"; do
+            test -f "$path"
+            aarch64-pc-cygwin-objdump -f "$path" | grep -F 'architecture: aarch64'
+          done
+          '@
+          & $bash --login -lc $script
+
       - name: Add MSYS tool aliases
-        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
+        if: ${{ steps.arm64-settings.outputs.enabled == '1' }}
         shell: pwsh
         run: |
           $binDir = 'C:\msys64\opt\bin'
