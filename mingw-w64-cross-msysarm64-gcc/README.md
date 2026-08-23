@@ -36,6 +36,9 @@ compiler source pin carries the fork-local `_WIN64`, SEH, `__cxa_atexit`, and
 defines `__MSYS__`, preserves LP64, and consumes the real runtime/newlib/w32api
 sysroot from the previous stack.
 
+The build also runs an explicit stage-compiler `#include <windows.h>` preflight
+before target libgcc so missing package-owned w32api headers fail fast.
+
 The compiler package does not ship target C++ headers. Those remain in the
 separate `mingw-w64-cross-msysarm64-libstdc++-headers` package so the compiler
 layer stays reproducible and the install boundary remains explicit.
