@@ -7,9 +7,9 @@ _gcc_commit=e1a057af466f066d86b20270fb7864764951420d
 _gcc_root=gcc-woarm64-${_gcc_commit}
 _gcc_archive_sha256=8194893d7093f3cadedc2ec42375ffbbc02a22e30d943e5f1c1aefa273af8122
 _gcc_version=15.0.1
-_runtime_version=3.6.10.r0.g6922c388b
+_runtime_version=3.6.10.r0.gc7932d64f
 _runtime_pkgrel=1
-_sysroot_version=3.6.10.r0.g6922c388b
+_sysroot_version=3.6.10.r0.gc7932d64f
 _w32api_version=14.0.0.r0.g9b3dd0125
 
 export SOURCE_DATE_EPOCH=1786669894
@@ -56,8 +56,8 @@ source=(
 )
 sha256sums=(
   "${_gcc_archive_sha256}"
-  '88b0301f34e3929c488b5bd43131c74d7a3a6ef042bcbc4d0e2b3afc6a7928ac'
-  '17d1031627da0c6ed77ae90171c607c8d16e43eebffa7738dde884e9cf23a97f'
+  '2d26dd763052f3fe742cfd38c414b7f89f123afc6b323c8db035a2e36926a2e3'
+  'dbac2bd6db95688242feac27a5a94eb68a0737388776d26fde32301aba208d78'
 )
 
 _build_dir="${srcdir}/build-${_target}"
