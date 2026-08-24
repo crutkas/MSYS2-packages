@@ -2,7 +2,7 @@
 
 This package installs the GCC 15 target C++ standard-library header tree for
 `aarch64-pc-msys`. It is configured and installed from
-`crutkas/gcc-woarm64@e1a057af466f066d86b20270fb7864764951420d`; no host,
+`crutkas/gcc-woarm64@50bcb1fbfb31a4a51b6cf0a517ecf3c668d00506`; no host,
 MinGW, or pre-generated C++ configuration headers are copied into the target.
 
 ## Why a transient compiler configuration is required

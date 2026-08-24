@@ -2,7 +2,7 @@
 
 This package split provides the production `aarch64-pc-msys` GCC toolchain
 layer built from the final linear fork-local `gcc-woarm64` source pin
-`crutkas/gcc-woarm64@e1a057af466f066d86b20270fb7864764951420d`.
+`crutkas/gcc-woarm64@50bcb1fbfb31a4a51b6cf0a517ecf3c668d00506`.
 
 ## Package split
 

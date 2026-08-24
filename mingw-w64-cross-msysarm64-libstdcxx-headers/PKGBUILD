@@ -2,13 +2,13 @@
 
 _target=aarch64-pc-msys
 _host=x86_64-pc-msys
-_gcc_commit=e1a057af466f066d86b20270fb7864764951420d
+_gcc_commit=50bcb1fbfb31a4a51b6cf0a517ecf3c668d00506
 _gcc_root=gcc-woarm64-${_gcc_commit}
 _gcc_version=15.0.1
 _runtime_commit=c7932d64f13d51deacdcbfdab8df79bcb35ebd92
 _runtime_root=msys2-runtime-${_runtime_commit}
 _sysroot_version=3.6.10.r0.gc7932d64f
-export SOURCE_DATE_EPOCH=1786669894
+export SOURCE_DATE_EPOCH=1787591662
 
 pkgname=mingw-w64-cross-msysarm64-libstdc++-headers
 pkgver=15.0.1dev
@@ -54,14 +54,14 @@ source=(
   header-features.cc
   validate-libstdcxx-headers.sh
 )
-sha256sums=('8194893d7093f3cadedc2ec42375ffbbc02a22e30d943e5f1c1aefa273af8122'
+sha256sums=('b6d0494f22b70e9cb8cadda260a299aaba109fc20e4342542b9443f9cb4597a9'
             'a21c55ad56fd60e24739497cbcfbce0ca77094c0f42b35818ee43e886c093e0c'
             '58bbd49450bcfd01be5feb42df19125630314177a022607f1c278e4ac0d374eb'
-            '013cc6d6d21fc46eddc0d0a8225d3329a216b71db1b4e8081661be81687263e8'
+            '0877e4876ad7e25c493901eb94d0ae46c988511bf63d084dd9e81aa9ed9755ec'
             'f76d8b6988bf512429efff8454cbc505369138ff6ba1efbb34ef5a2648487452'
             '70c412971f56b717f536ac575e7b39fa65873ad6e43f671af1acc940b0c7e0f8'
             '45d9adfc3996fa36726c1182cc80e7126f2f988c060bc8d38cf7f3903a18a660'
-            'a0e5f30ca1a4d6965166495f66b3e24f68864b613a1943ad33fb7baf4025dcf7')
+            '6e0c9999e1d2f305c13d60278ad86f3e5196f1d1f6669a8604c8004b3b68548e')
 
 _gcc_build=build-${_target}-libstdcxx-headers
 _libstdcxx_build=${_gcc_build}/${_target}/libstdc++-v3
@@ -463,7 +463,7 @@ EOF
 package-version	${pkgver}-${pkgrel}
 gcc-repository	https://github.com/crutkas/gcc-woarm64
 gcc-commit	${_gcc_commit}
-gcc-archive-sha256	8194893d7093f3cadedc2ec42375ffbbc02a22e30d943e5f1c1aefa273af8122
+gcc-archive-sha256	b6d0494f22b70e9cb8cadda260a299aaba109fc20e4342542b9443f9cb4597a9
 runtime-validation-repository	https://github.com/crutkas/msys2-runtime
 runtime-validation-commit	${_runtime_commit}
 runtime-validation-archive-sha256	a21c55ad56fd60e24739497cbcfbce0ca77094c0f42b35818ee43e886c093e0c

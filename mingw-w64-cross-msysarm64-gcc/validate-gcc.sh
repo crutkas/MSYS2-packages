@@ -315,9 +315,9 @@ done < "$report_dir/file-list.txt"
 cat > "$report_dir/source-identity.txt" <<EOF
 package-version	${pkgver:-15.0.1dev}-1
 gcc-repository	https://github.com/crutkas/gcc-woarm64
-gcc-commit	e1a057af466f066d86b20270fb7864764951420d
-gcc-archive-sha256	8194893d7093f3cadedc2ec42375ffbbc02a22e30d943e5f1c1aefa273af8122
-gcc-source-chain	9b0c288d8f337d685017621b2e9d84579f8aa391,3053d5071151031574f9ea272031d1dcba053f62,626c500b14b8eac6754b80b3a175acc305426c06,e1a057af466f066d86b20270fb7864764951420d
+gcc-commit	50bcb1fbfb31a4a51b6cf0a517ecf3c668d00506
+gcc-archive-sha256	b6d0494f22b70e9cb8cadda260a299aaba109fc20e4342542b9443f9cb4597a9
+gcc-source-chain	9b0c288d8f337d685017621b2e9d84579f8aa391,3053d5071151031574f9ea272031d1dcba053f62,626c500b14b8eac6754b80b3a175acc305426c06,e1a057af466f066d86b20270fb7864764951420d,50bcb1fbfb31a4a51b6cf0a517ecf3c668d00506
 runtime-version	3.6.10.r0.gc7932d64f-1
 sysroot-version	3.6.10.r0.gc7932d64f-1
 w32api-version	14.0.0.r0.g9b3dd0125-1

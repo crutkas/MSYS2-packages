@@ -3,16 +3,16 @@
 _realname=gcc
 _target=aarch64-pc-msys
 _host=x86_64-pc-msys
-_gcc_commit=e1a057af466f066d86b20270fb7864764951420d
+_gcc_commit=50bcb1fbfb31a4a51b6cf0a517ecf3c668d00506
 _gcc_root=gcc-woarm64-${_gcc_commit}
-_gcc_archive_sha256=8194893d7093f3cadedc2ec42375ffbbc02a22e30d943e5f1c1aefa273af8122
+_gcc_archive_sha256=b6d0494f22b70e9cb8cadda260a299aaba109fc20e4342542b9443f9cb4597a9
 _gcc_version=15.0.1
 _runtime_version=3.6.10.r0.gc7932d64f
 _runtime_pkgrel=1
 _sysroot_version=3.6.10.r0.gc7932d64f
 _w32api_version=14.0.0.r0.g9b3dd0125
 
-export SOURCE_DATE_EPOCH=1786669894
+export SOURCE_DATE_EPOCH=1787591662
 
 pkgbase=mingw-w64-cross-msysarm64-gcc
 pkgname=(
@@ -56,8 +56,8 @@ source=(
 )
 sha256sums=(
   "${_gcc_archive_sha256}"
-  '1d472e230a7a64eb227787f21cedc3256c0cba28d37f4e4e07ac279c1c920c7c'
-  'dbac2bd6db95688242feac27a5a94eb68a0737388776d26fde32301aba208d78'
+  '960927037b2705dae885875f9ed9a8c43d04e57ca1b6d41a2b9f66d89adf0d99'
+  '45133a69b4983c27cd9bf9f5e3a5a2348c5d37729b0de4b68f94ffd4476963a5'
 )
 
 _build_name="build-${_target}"
@@ -311,9 +311,9 @@ EOF
   {
     printf 'package-version\t%s-%s\n' "${pkgver}" "${pkgrel}"
     printf 'gcc-repository\t%s\n' "${msys2_repository_url}"
-    printf 'gcc-commit\te1a057af466f066d86b20270fb7864764951420d\n'
-    printf 'gcc-archive-sha256\t8194893d7093f3cadedc2ec42375ffbbc02a22e30d943e5f1c1aefa273af8122\n'
-    printf 'gcc-source-chain\t%s\n' '9b0c288d8f337d685017621b2e9d84579f8aa391,3053d5071151031574f9ea272031d1dcba053f62,626c500b14b8eac6754b80b3a175acc305426c06,e1a057af466f066d86b20270fb7864764951420d'
+    printf 'gcc-commit\t50bcb1fbfb31a4a51b6cf0a517ecf3c668d00506\n'
+    printf 'gcc-archive-sha256\tb6d0494f22b70e9cb8cadda260a299aaba109fc20e4342542b9443f9cb4597a9\n'
+    printf 'gcc-source-chain\t%s\n' '9b0c288d8f337d685017621b2e9d84579f8aa391,3053d5071151031574f9ea272031d1dcba053f62,626c500b14b8eac6754b80b3a175acc305426c06,e1a057af466f066d86b20270fb7864764951420d,50bcb1fbfb31a4a51b6cf0a517ecf3c668d00506'
     printf 'runtime-version\t%s-%s\n' "${_runtime_version}" "${_runtime_pkgrel}"
     printf 'sysroot-version\t%s-1\n' "${_sysroot_version}"
     printf 'w32api-version\t%s-1\n' "${_w32api_version}"
