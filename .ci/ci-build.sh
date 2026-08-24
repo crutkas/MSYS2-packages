@@ -64,7 +64,45 @@ list_packages() {
 }
 
 install_packages() {
-    pacman --noprogressbar --upgrade --noconfirm *.pkg.tar.*
+    pacman "${pacman_local_arch_args[@]}" --noprogressbar --upgrade --noconfirm *.pkg.tar.*
+}
+
+validate_package_payload() {
+    if [[ -z "${CI_PACKAGE_ARCH:-}" ]]; then
+        return 0
+    fi
+
+    local pkgname="${1}"
+    local pkgfile="${2}"
+    local -a installed_files pe_files header_files lib_files
+
+    mapfile -t installed_files < <(pacman "${pacman_local_arch_args[@]}" -Qql "${pkgname}")
+
+    mapfile -t header_files < <(
+        printf '%s\n' "${installed_files[@]}" | grep -E '^/usr/lib/perl5/core_perl/CORE/.*\.h$' || true
+    )
+    mapfile -t lib_files < <(
+        printf '%s\n' "${installed_files[@]}" | grep -E '^/usr/lib/perl5/core_perl/.*\.(a|dll\.a)$' || true
+    )
+    mapfile -t pe_files < <(
+        printf '%s\n' "${installed_files[@]}" | grep -E '\.(dll|exe|pyd)$' || true
+    )
+
+    if [[ "${pkgname}" == "perl-devel" ]]; then
+        if (( ${#header_files[@]} == 0 || ${#lib_files[@]} == 0 )); then
+            failure "perl-devel missing expected headers/libs in ${pkgfile}"
+        fi
+    fi
+
+    if [[ "${pkgname}" == "perl" && "${#pe_files[@]}" -eq 0 ]]; then
+        failure "perl package has no PE payload in ${pkgfile}"
+    fi
+
+    if [[ "${#pe_files[@]}" -eq 0 ]]; then
+        return 0
+    fi
+
+    python "$DIR/validate-package-payload.py" "${pkgname}" "${pkgfile}" "${pe_files[@]}"
 }
 
 # Status functions
@@ -87,6 +125,11 @@ pacman -Sy
 
 # Remove git and python
 pacman -R --recursive --unneeded --noconfirm --noprogressbar git python
+
+pacman_local_arch_args=()
+if [[ -n "${CI_PACKAGE_ARCH:-}" ]]; then
+    pacman_local_arch_args=(--arch "${CI_PACKAGE_ARCH}")
+fi
 
 # Enable linting
 export MAKEPKG_LINT_PKGBUILD=1
@@ -115,21 +158,25 @@ for package in "${packages[@]}"; do
     for pkg in *.pkg.tar.*; do
         pkgname="$(echo "$pkg" | rev | cut -d- -f4- | rev)"
         echo "::group::[install] ${pkgname}"
-        grep -qFx "${package}" "$DIR/ci-dont-install-list.txt" || pacman --noprogressbar --upgrade --noconfirm $pkg
+        grep -qFx "${package}" "$DIR/ci-dont-install-list.txt" || pacman "${pacman_local_arch_args[@]}" --noprogressbar --upgrade --noconfirm $pkg
+        if [[ -n "${CI_PACKAGE_ARCH:-}" ]]; then
+            pacman --arch "${CI_PACKAGE_ARCH}" -Qip "${pkg}" | grep -q '^Architecture[[:space:]]*:[[:space:]]*aarch64$'
+        fi
+        validate_package_payload "${pkgname}" "${pkg}"
         echo "::endgroup::"
 
         echo "::group::[meta-diff] ${pkgname}"
         message "Package info diff for ${pkgname}"
-        diff -Nur <(pacman -Si ${MSYSTEM,,}/"${pkgname}") <(pacman -Qip "${pkg}") || true
+        diff -Nur <(pacman "${pacman_local_arch_args[@]}" -Si ${MSYSTEM,,}/"${pkgname}") <(pacman -Qip "${pkg}") || true
         echo "::endgroup::"
 
         echo "::group::[file-diff] ${pkgname}"
         message "File listing diff for ${pkgname}"
-        diff -Nur <(pacman -Fl ${MSYSTEM,,}/"$pkgname" | sed -e 's|^[^ ]* |/|' | sort) <(pacman -Ql "$pkgname" | sed -e 's|^[^/]*||' | sort) || true
+        diff -Nur <(pacman "${pacman_local_arch_args[@]}" -Fl ${MSYSTEM,,}/"$pkgname" | sed -e 's|^[^ ]* |/|' | sort) <(pacman "${pacman_local_arch_args[@]}" -Ql "$pkgname" | sed -e 's|^[^/]*||' | sort) || true
         echo "::endgroup::"
 
         echo "::group::[dll check] ${pkgname}"
-        declare -a binaries=($(pacman -Qlq $pkgname | grep -E ${MINGW_PREFIX}/.+\.\(dll\|exe\|pyd\)$))
+        declare -a binaries=($(pacman "${pacman_local_arch_args[@]}" -Qlq $pkgname | grep -E ${MINGW_PREFIX}/.+\.\(dll\|exe\|pyd\)$))
         if [ "${#binaries[@]}" -ne 0 ]; then
             message "Runtime dependencies for ${pkgname}"
             for binary in ${binaries[@]}; do
@@ -145,7 +192,7 @@ for package in "${packages[@]}"; do
 
         echo "::group::[uninstall] ${pkgname}"
         message "Uninstalling $pkgname"
-        grep -qFx "${package}" "$DIR/ci-dont-install-list.txt" || pacman -R --recursive --unneeded --noconfirm --noprogressbar "$pkgname"
+        grep -qFx "${package}" "$DIR/ci-dont-install-list.txt" || pacman "${pacman_local_arch_args[@]}" -R --recursive --unneeded --noconfirm --noprogressbar "$pkgname"
         echo "::endgroup::"
     done
     cd - > /dev/null

@@ -3,9 +3,9 @@
 pkgbase=perl
 pkgname=('perl' 'perl-doc' 'perl-devel')
 pkgver=5.38.4
-pkgrel=2
+pkgrel=3
 pkgdesc="A highly capable, feature-rich programming language"
-arch=(i686 x86_64)
+arch=(i686 x86_64 aarch64)
 license=('GPL')
 url="https://www.perl.org/"
 msys2_references=(
@@ -64,6 +64,12 @@ _EOF
 build() {
   cd ${srcdir}/${pkgname}-${pkgver}
 
+  if [[ ${CARCH} == aarch64 ]]; then
+    # Native ARM64 Configure still emits this warning in the generated probe;
+    # keep the existing x86 builds strict.
+    CFLAGS+=" -Wno-int-conversion"
+  fi
+
   export MSYSTEM=CYGWIN
   ./Configure -des -Dusethreads \
     -Doptimize="${CFLAGS}" \
@@ -94,7 +100,12 @@ build() {
 
 check() {
   cd ${srcdir}/${pkgname}-${pkgver}
-  TEST_JOBS=$(echo $MAKEFLAGS | sed 's/.*-j\([0-9][0-9]*\).*/\1/') make test_harness || true
+  TEST_JOBS=$(echo $MAKEFLAGS | sed 's/.*-j\([0-9][0-9]*\).*/\1/') \
+  MSYS=winsymlinks:nativestrict \
+  # Keep the harness output visible; the ARM64 branch still reports known
+  # Archive-Tar and Time-HiRes failures, but package publication is gated by
+  # install/query/remove validation instead of this exit status.
+  make test_harness || true
   #make test
 }
 

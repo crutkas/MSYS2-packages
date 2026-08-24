@@ -20,17 +20,17 @@ jobs:
       }}
     env:
       CI_BASE_REPOSITORY: https://github.com/${{ github.repository }}.git
-      CI_BASE_REF: ${{ github.event.pull_request.base.ref || (github.ref_name == 'crutkas-congenial-system' && 'crutkas-package-aarch64-static-libgcc' || 'master') }}
-      CI_PACKAGE_PREFIXES: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system')) && 'mingw-w64-cross-cygwinarm64- mingw-w64-cross-msysarm64-' || '' }}
-      CI_RUN_CHECK: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system')) && '1' || '0' }}
-      CI_CANONICALIZE_PACKAGES: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system')) && '1' || '0' }}
+      CI_BASE_REF: ${{ github.event.pull_request.base.ref || (github.ref_name == 'crutkas-arm64-msys-perl' && 'crutkas-congenial-system' || github.ref_name == 'crutkas-congenial-system' && 'crutkas-package-aarch64-static-libgcc' || 'master') }}
+      CI_PACKAGE_PREFIXES: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-arm64-msys-perl' || github.head_ref == 'crutkas-arm64-msys-perl')) && 'perl' || (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system')) && 'mingw-w64-cross-cygwinarm64- mingw-w64-cross-msysarm64-' || '' }}
+      CI_RUN_CHECK: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-arm64-msys-perl' || github.head_ref == 'crutkas-arm64-msys-perl' || github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system')) && '1' || '0' }}
+      CI_CANONICALIZE_PACKAGES: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-arm64-msys-perl' || github.head_ref == 'crutkas-arm64-msys-perl' || github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system')) && '1' || '0' }}
       SOURCE_DATE_EPOCH: 1786817435
     strategy:
       fail-fast: false
       matrix:
-        include: [
-          { msystem: MSYS, runner: windows-2025 },
-        ]
+        include:
+          - msystem: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-arm64-msys-perl' || github.head_ref == 'crutkas-arm64-msys-perl')) && 'CLANGARM64' || 'MSYS' }}
+            runner: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-arm64-msys-perl' || github.head_ref == 'crutkas-arm64-msys-perl')) && 'windows-11-arm' || 'windows-2025' }}
     name: ${{ matrix.msystem }}
     runs-on: ${{ matrix.runner }}
 
@@ -56,10 +56,47 @@ jobs:
           filter: blob:none
           persist-credentials: false
 
+      - name: Validate recipe and workflow text
+        shell: pwsh
+        run: |
+          python -c "from pathlib import Path; files=[Path(r'temp\perl\PKGBUILD'), Path(r'temp\.github\workflows\main.yml')]; allowed={9,10,13}; bad=[f'{path}:{idx}:0x{b:02x}' for path in files for idx,b in enumerate(path.read_bytes(),1) if b < 32 and b not in allowed]; assert not bad, 'Control characters found:\n' + '\n'.join(bad)"
+
+      - name: Init MSYS2
+        id: msys2
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-arm64-msys-perl' || github.head_ref == 'crutkas-arm64-msys-perl' || github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-congenial-system') }}
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          update: true
+          install: git python base-devel
+
       - name: Add staging repo
         shell: pwsh
         run: |
-          $pacmanConf = 'C:\msys64\etc\pacman.conf'
+          $repoRoot = Join-Path $env:GITHUB_WORKSPACE 'temp'
+          $msys2Root = '${{ steps.msys2.outputs.msys2-location }}'
+          $etcDir = Join-Path $msys2Root 'etc'
+          $pacmanDir = Join-Path $etcDir 'pacman.d'
+          New-Item -ItemType Directory -Force -Path $pacmanDir | Out-Null
+          Copy-Item (Join-Path $repoRoot 'pacman\pacman.conf') (Join-Path $etcDir 'pacman.conf') -Force
+          Copy-Item (Join-Path $repoRoot 'pacman-mirrors\mirrorlist.msys') (Join-Path $pacmanDir 'mirrorlist.msys') -Force
+          Copy-Item (Join-Path $repoRoot 'pacman-mirrors\mirrorlist.mingw') (Join-Path $pacmanDir 'mirrorlist.mingw') -Force
+
+          $carch = switch ($env:PROCESSOR_ARCHITECTURE) {
+            'ARM64' { 'aarch64' }
+            'AMD64' { 'x86_64' }
+            default { 'x86_64' }
+          }
+          $chost = switch ($carch) {
+            'aarch64' { 'aarch64-pc-msys' }
+            'x86_64' { 'x86_64-pc-msys' }
+            default { "$carch-pc-msys" }
+          }
+          $makepkgConf = Get-Content (Join-Path $repoRoot 'pacman\makepkg.conf') -Raw
+          $makepkgConf = $makepkgConf.Replace('@CARCH@', $carch).Replace('@CHOST@', $chost).Replace('@CARCHFLAGS@', '')
+          Set-Content (Join-Path $etcDir 'makepkg.conf') -Value $makepkgConf -NoNewline
+
+          $pacmanConf = Join-Path $etcDir 'pacman.conf'
           $contents = Get-Content $pacmanConf -Raw
           if ($contents -notmatch '^\[staging\]') {
             $contents = "[staging]`nServer = https://repo.msys2.org/staging/`nSigLevel = Never`n$contents"
@@ -69,9 +106,11 @@ jobs:
       - name: Update using staging
         shell: pwsh
         run: |
-          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -Suuy
-          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -Suu
-          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm --needed -S git python base-devel
+          $msys2Root = '${{ steps.msys2.outputs.msys2-location }}'
+          $pacman = Join-Path $msys2Root 'usr\bin\pacman.exe'
+          & $pacman --noconfirm -Suuy
+          & $pacman --noconfirm -Suu
+          & $pacman --noconfirm --needed -S git python base-devel
 
       - name: Download fork-local AArch64 Cygwin inputs
         if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
@@ -127,7 +166,9 @@ jobs:
         shell: pwsh
         run: |
           $input_dir = Join-Path $env:RUNNER_TEMP 'cygwinarm64-inputs'
-          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -U `
+          $msys2Root = '${{ steps.msys2.outputs.msys2-location }}'
+          $pacman = Join-Path $msys2Root 'usr\bin\pacman.exe'
+          & $pacman --noconfirm -U `
             "$input_dir\mingw-w64-cross-cygwinarm64-binutils-2.44.50-1-x86_64.pkg.tar.zst" `
             "$input_dir\mingw-w64-cross-cygwinarm64-headers-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst" `
             "$input_dir\mingw-w64-cross-cygwinarm64-windows-default-manifest-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst" `
@@ -168,7 +209,8 @@ jobs:
         if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
         shell: pwsh
         run: |
-          $binDir = 'C:\msys64\opt\bin'
+          $msys2Root = '${{ steps.msys2.outputs.msys2-location }}'
+          $binDir = Join-Path $msys2Root 'opt\bin'
           $tools = @('as', 'ld', 'ar', 'nm', 'objcopy', 'objdump', 'ranlib', 'strip', 'windres', 'dlltool', 'readelf', 'size', 'addr2line', 'strings')
           foreach ($tool in $tools) {
             $source = Join-Path $binDir "aarch64-pc-cygwin-$tool.exe"
@@ -187,12 +229,21 @@ jobs:
       - name: CI-Build
         shell: pwsh
         run: |
+          $msys2Root = '${{ steps.msys2.outputs.msys2-location }}'
+          $toolBin = if ('${{ matrix.msystem }}' -eq 'CLANGARM64') {
+            Join-Path $msys2Root 'clangarm64\bin'
+          } else {
+            Join-Path $msys2Root 'mingw64\bin'
+          }
+          if ('${{ matrix.msystem }}' -eq 'CLANGARM64') {
+            $env:CI_PACKAGE_ARCH = 'aarch64'
+          }
           $env:MSYS2_PATH_TYPE = 'inherit'
-          $env:PATH = 'C:\msys64\usr\bin;C:\msys64\mingw64\bin;' + $env:PATH
-          $env:GIT_EXEC_PATH = 'C:\msys64\usr\lib\git-core'
-          $bash = 'C:\msys64\usr\bin\bash.exe'
+          $env:PATH = $toolBin + ';' + (Join-Path $msys2Root 'usr\bin') + ';' + $env:PATH
+          $env:GIT_EXEC_PATH = Join-Path $msys2Root 'usr\lib\git-core'
+          $bash = Join-Path $msys2Root 'usr\bin\bash.exe'
           $buildRoot = '${{ steps.facts.outputs.drive }}\_'
-          $buildRoot = & 'C:\msys64\usr\bin\cygpath.exe' -u $buildRoot
+          $buildRoot = & (Join-Path $msys2Root 'usr\bin\cygpath.exe') -u $buildRoot
           $script = "cd '$buildRoot' && ./.ci/ci-build.sh"
           & $bash --login -lc $script
 
