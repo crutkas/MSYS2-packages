@@ -20,11 +20,11 @@ libgcc configure result is staged before libstdc++ configure. Only the
 upstream `install-headers` target is run. The package rejects any target
 archive, object, executable, or DLL.
 
-The frozen compiler also omits the required Windows ARM64 `_WIN64` target
-macro. Configuration and the recorded runtime continuation supply `-D_WIN64`
-explicitly. This does not alter a libstdc++ feature result; it preserves the
-Windows LP64 data model while the compiler macro fix remains a separate
-stage-0 blocker.
+Both the installed Cygwin stage-0 compiler and the transient final MSYS
+compiler predefine the required Windows ARM64 `_WIN64` and SEH target macros
+while preserving LP64 sizes. Only the final compiler defines `__MSYS__`.
+Configuration retains an explicit `-D_WIN64` consistency flag, and validation
+checks the native compiler macros separately from configured header features.
 
 The assembler contract starts at the package-owned
 `/opt/bin/aarch64-pc-cygwin-as`. GCC configures its build-tree `gcc/as`
