@@ -84,20 +84,20 @@ build() {
   export lt_cv_deplibs_check_method=pass_all
   local _tool_target=aarch64-pc-cygwin
   local _prefix_map="-ffile-prefix-map=${srcdir}=. -fdebug-prefix-map=${srcdir}=. -fmacro-prefix-map=${srcdir}=."
+  local _target_specs_flag="-specs=/opt/${_target}/lib/cygwin-compile-only.specs"
   local -a _target_xgcc_flags=(
     "-B/opt/${_target}/lib/"
     -isystem "/opt/${_target}/include"
     -isystem "/opt/${_target}/sys-include"
     "--sysroot=/opt/${_target}"
-    "-specs=/opt/${_target}/lib/cygwin-compile-only.specs"
   )
   local _target_xgcc_flags_string="${_target_xgcc_flags[*]}"
   export CFLAGS="-O2 -pipe ${_prefix_map}"
   export CXXFLAGS="-O2 -pipe ${_prefix_map}"
   export CFLAGS_FOR_BUILD="${CFLAGS}"
   export CXXFLAGS_FOR_BUILD="${CXXFLAGS}"
-  export CFLAGS_FOR_TARGET="${CFLAGS}"
-  export CXXFLAGS_FOR_TARGET="${CXXFLAGS}"
+  export CFLAGS_FOR_TARGET="${CFLAGS} ${_target_specs_flag}"
+  export CXXFLAGS_FOR_TARGET="${CXXFLAGS} ${_target_specs_flag}"
 
   (
     cd "${_build_dir}"
@@ -165,9 +165,13 @@ EOF
   fi
   local _original_as="/opt/bin/${_tool_target}-as"
   local _wrapper_as="${_build_dir}/gcc/as"
+  local _ar="/opt/bin/${_tool_target}-ar"
+  local _nm="/opt/bin/${_tool_target}-nm"
   local _objdump="/opt/bin/${_tool_target}-objdump"
   test -x "${_original_as}"
   test -x "${_wrapper_as}"
+  test -x "${_ar}"
+  test -x "${_nm}"
   test -x "${_objdump}"
   grep -Fx "ORIGINAL_AS_FOR_TARGET=\"${_original_as}\"" "${_wrapper_as}"
   if ! env \
@@ -178,7 +182,7 @@ EOF
     -B"${_build_dir}/${_target}/libgcc/" \
     -B"${_build_dir}/${_target}/libstdc++-v3/src/" \
     --sysroot="/opt/${_target}" \
-    -specs="/opt/${_target}/lib/cygwin-compile-only.specs" \
+    "${_target_specs_flag}" \
     -v \
     -c "${_build_dir}/windows-header-check.c" \
     -o "${_build_dir}/windows-header-check.o" \
@@ -213,6 +217,39 @@ EOF
   printf 'libmsys-import\t%s\n' "${_resolved_msys_import}" \
     > "${_report_dir}/target-library-search.txt"
 
+  local _target_runtime="/opt/${_target}/bin/msys-2.0.dll"
+  test -f "${_target_runtime}"
+  "${_objdump}" -f -p "${_target_runtime}" \
+    > "${_report_dir}/runtime-public-abi.txt"
+  "${_nm}" -a "${_target_runtime}" \
+    > "${_report_dir}/runtime-public-symbols.txt"
+  "${_nm}" -A "${_resolved_msys_import}" \
+    > "${_report_dir}/runtime-import-symbols.txt"
+  "${_ar}" t "${_resolved_msys_import}" \
+    > "${_report_dir}/runtime-import-members.txt"
+  grep -F 'file format pei-aarch64-little' \
+    "${_report_dir}/runtime-public-abi.txt"
+  for _symbol in \
+    __pthread_cond_initializer \
+    __pthread_errorcheck_mutex_initializer_np \
+    __pthread_normal_mutex_initializer_np \
+    __pthread_recursive_mutex_initializer_np \
+    __pthread_rwlock_initializer \
+    _ctype_
+  do
+    grep -Eq "[[:space:]]${_symbol}$" \
+      "${_report_dir}/runtime-public-abi.txt"
+    grep -Eq "[[:space:]]D[[:space:]]+${_symbol}$" \
+      "${_report_dir}/runtime-public-symbols.txt"
+    grep -Eq "[[:space:]]I[[:space:]]+__imp_${_symbol}$" \
+      "${_report_dir}/runtime-import-symbols.txt"
+  done
+  if grep -Eq '(^|/)pthreadconst\.o$' \
+      "${_report_dir}/runtime-import-members.txt"; then
+    echo "runtime import library contains private pthreadconst.o" >&2
+    return 1
+  fi
+
   make -C "${_build_dir}" MAKEINFO=true \
     XGCC_FLAGS_FOR_TARGET="${_target_xgcc_flags_string}" \
     all-target-libgcc
@@ -229,9 +266,12 @@ EOF
     "${_report_dir}/libgcc-shared-audit.txt"
   grep -F 'DLL Name: KERNEL32.dll' \
     "${_report_dir}/libgcc-shared-audit.txt"
-  ! grep -Ei 'cygwin1\.dll|x86_64' \
-    "${_report_dir}/libgcc-shared-audit.txt"
-  "/opt/bin/${_tool_target}-nm" "${_libgcc_shared}" \
+  if grep -Ei 'cygwin1\.dll|x86_64' \
+      "${_report_dir}/libgcc-shared-audit.txt"; then
+    echo "libgcc shared runtime contains a foreign dependency" >&2
+    return 1
+  fi
+  "${_nm}" "${_libgcc_shared}" \
     > "${_report_dir}/libgcc-shared-symbols.txt"
   grep -Eq '[[:space:]]_msys_dll_entry$' \
     "${_report_dir}/libgcc-shared-symbols.txt"
@@ -239,8 +279,9 @@ EOF
   if ! "${_stage_xgcc}" \
       -B"${_build_dir}/gcc/" \
       "${_target_xgcc_flags[@]}" \
+      "${_target_specs_flag}" \
       -shared -nodefaultlibs \
-      -Wl,-t,--trace-symbol=__pthread_normal_mutex_initializer_np \
+      -Wl,-t,--trace-symbol=__imp___pthread_normal_mutex_initializer_np \
       -o "${_build_dir}/libgcc-link-check.dll" \
       "${_libgcc_dir}/emutls_s.o" \
       "${_libgcc_dir}/libgcc.a" \
@@ -251,7 +292,7 @@ EOF
   fi
   grep -F "/opt/${_target}/lib/libmsys-2.0.a" \
     "${_report_dir}/libgcc-link-trace.txt"
-  grep -F 'libmsys-2.0.a(pthreadconst.o): definition of __pthread_normal_mutex_initializer_np' \
+  grep -E 'libmsys-2\.0\.a\([^)]*\): definition of __imp___pthread_normal_mutex_initializer_np' \
     "${_report_dir}/libgcc-link-trace.txt"
   "${_objdump}" -f -p "${_build_dir}/libgcc-link-check.dll" \
     > "${_report_dir}/libgcc-link-check.txt"
@@ -265,6 +306,11 @@ EOF
 
   make -C "${_build_dir}" MAKEINFO=true \
     XGCC_FLAGS_FOR_TARGET="${_target_xgcc_flags_string}" \
+    configure-target-libstdc++-v3
+
+  make -C "${_build_dir}" MAKEINFO=true \
+    XGCC_FLAGS_FOR_TARGET="${_target_xgcc_flags_string}" \
+    LDFLAGS_FOR_TARGET="${_target_specs_flag}" \
     all-target-libstdc++-v3
 
   make -C "${_build_dir}/gcc" MAKEINFO=true xgcc.exe cc1.exe cc1plus.exe
