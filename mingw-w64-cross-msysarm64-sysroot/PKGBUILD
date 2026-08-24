@@ -1,7 +1,7 @@
 # Maintainer: Chris Reddington <crutkas@microsoft.com>
 
 _target=aarch64-pc-msys
-_runtime_commit=c7932d64f13d51deacdcbfdab8df79bcb35ebd92
+_runtime_commit=a527ace21c23b763bb96841745f0e2d8cd984f4a
 _runtime_root=msys2-runtime-${_runtime_commit}
 _w32api_version=14.0.0.r0.g9b3dd0125
 
@@ -11,7 +11,7 @@ pkgname=(
   mingw-w64-cross-msysarm64-windows-default-manifest
   mingw-w64-cross-msysarm64-sysroot
 )
-pkgver=3.6.10.r0.gc7932d64f
+pkgver=3.6.10.r0.ga527ace21
 pkgrel=1
 pkgdesc="Compile-time MSYS/newlib/w32api sysroot for an aarch64-pc-msys target"
 arch=('x86_64')
@@ -41,16 +41,16 @@ source=(
   abi-test.c
   sysroot-probe.s
 )
-sha256sums=('a21c55ad56fd60e24739497cbcfbce0ca77094c0f42b35818ee43e886c093e0c'
+sha256sums=('153aa6ae82a6220176a0a0ce265e1f126e3ce8ee40d717a95dfe906e810a3472'
             '1ed75e084c2af54e7ee7e0479257cadf43419ec5b1c9e895baac8cb37c482eae'
             'c02f953e73cc63a29799daeee7c06231781ef53f7281209bebd805a30175f6d9'
             'c36e1a0abd196b35c15ef8d3a695a237ae9812f575f99adebe130dff3b7eb56a'
             'a54acb9e36aa625770ceb7c08c7fc2cc7e5de7b5f9e317ae223d5d28617a7b99'
             'dcd90c672825f64c599cb314cc53f17f52ae37e9fb8767a699789a3f580204a1'
             'bda436b309e682e1b5d6095e122b16087435dcd7f8e12aab6e568036a649f580'
-            '07dbff1363a5c4502cdbe080f4cf531c726f672e9e955b78b5b10cd9a672d1e7'
+            '5e0bee02f9cee12f28d3c00dd416c55313f99a88fe6b52e31a3bb7ca01f67126'
             '947f9af54085ab87da8156f93e58d4a9b6669a04483ed2a7ccff7229234abbd7'
-            '46d0fccc1a741f0162de85af6f8fbec493d0e086577654b463089c6760a6cbf9'
+            'e39c81989251f3ba8d383d3654145cd8b2b9e935ac9f5b135ce2145f030ae80b'
             'cf08960ea132214b74fbe66330bf25cfffb6c794b2b3c8192ffc751b508b8af0'
             '47a9e64c00b6f392c93137c83919a881af1d5fc5755cdf179959f8b0ab200228'
             '8477643a02f450c2f8fd11e4ca5af5cbeff6bd14f35245445cec4d7cbf2b8bd7'

@@ -4,6 +4,12 @@ This package set installs the source-derived newlib and MSYS headers, a
 vendored w32api header snapshot, a compile-only GCC specs fragment, and a
 target-built default manifest under `/opt/aarch64-pc-msys`.
 
+The MSYS/newlib sources are pinned to
+`crutkas/msys2-runtime@a527ace21c23b763bb96841745f0e2d8cd984f4a`
+(archive SHA256
+`153aa6ae82a6220176a0a0ce265e1f126e3ce8ee40d717a95dfe906e810a3472`).
+All packages from this pkgbase use version `3.6.10.r0.ga527ace21-1`.
+
 ## Install order
 
 1. `mingw-w64-cross-cygwinarm64-binutils`
