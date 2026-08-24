@@ -39,7 +39,7 @@ makedepends=(
   'libzstd-devel'
   'make'
   'mingw-w64-cross-cygwinarm64-binutils>=2.44.50'
-  'mingw-w64-cross-cygwinarm64-gcc-stage1=15.0.1dev-1'
+  'mingw-w64-cross-cygwinarm64-gcc-stage1=15.0.1dev-2'
   "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
   "mingw-w64-cross-msysarm64-sysroot=${_sysroot_version}-1"
   "mingw-w64-cross-msysarm64-w32api-runtime=${_w32api_version}-1"
