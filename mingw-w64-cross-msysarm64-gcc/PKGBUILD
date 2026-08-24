@@ -56,13 +56,13 @@ source=(
 )
 sha256sums=(
   "${_gcc_archive_sha256}"
-  '2d26dd763052f3fe742cfd38c414b7f89f123afc6b323c8db035a2e36926a2e3'
+  '1d472e230a7a64eb227787f21cedc3256c0cba28d37f4e4e07ac279c1c920c7c'
   'dbac2bd6db95688242feac27a5a94eb68a0737388776d26fde32301aba208d78'
 )
 
-_build_dir="${srcdir}/build-${_target}"
-_stage_dir="${srcdir}/stage-${_target}"
-_report_dir="${srcdir}/gcc-report"
+_build_name="build-${_target}"
+_stage_name="stage-${_target}"
+_report_name="gcc-report"
 
 prepare() {
   cd "${srcdir}/${_gcc_root}"
@@ -70,6 +70,13 @@ prepare() {
 }
 
 build() {
+  local _src_dir="${srcdir}/${_gcc_root}"
+  local _build_dir="${srcdir}/${_build_name}"
+  local _stage_dir="${srcdir}/${_stage_name}"
+  local _report_dir="${srcdir}/${_report_name}"
+  local _libgcc_dir="${_build_dir}/${_target}/libgcc"
+  local _libstdcxx_src="${_build_dir}/${_target}/libstdc++-v3/src"
+  local _target_libdir="${_stage_dir}/opt/lib/gcc/${_target}/${_gcc_version}"
   rm -rf "${_build_dir}" "${_stage_dir}" "${_report_dir}"
   mkdir -p "${_build_dir}" "${_stage_dir}" "${_report_dir}"
 
@@ -77,6 +84,14 @@ build() {
   export lt_cv_deplibs_check_method=pass_all
   local _tool_target=aarch64-pc-cygwin
   local _prefix_map="-ffile-prefix-map=${srcdir}=. -fdebug-prefix-map=${srcdir}=. -fmacro-prefix-map=${srcdir}=."
+  local -a _target_xgcc_flags=(
+    "-B/opt/${_target}/lib/"
+    -isystem "/opt/${_target}/include"
+    -isystem "/opt/${_target}/sys-include"
+    "--sysroot=/opt/${_target}"
+    "-specs=/opt/${_target}/lib/cygwin-compile-only.specs"
+  )
+  local _target_xgcc_flags_string="${_target_xgcc_flags[*]}"
   export CFLAGS="-O2 -pipe ${_prefix_map}"
   export CXXFLAGS="-O2 -pipe ${_prefix_map}"
   export CFLAGS_FOR_BUILD="${CFLAGS}"
@@ -87,7 +102,7 @@ build() {
   (
     cd "${_build_dir}"
     AS_FOR_TARGET="/opt/bin/${_tool_target}-as" \
-      "${srcdir}/${_gcc_root}/configure" \
+      "${_src_dir}/configure" \
       --prefix=/opt \
       --build="${_host}" \
       --host="${_host}" \
@@ -186,8 +201,70 @@ EOF
   grep -F 'file format pe-aarch64-little' \
     "${_build_dir}/windows-header-check.objdump"
 
+  local _resolved_msys_import
+  _resolved_msys_import="$(
+    "${_stage_xgcc}" \
+      -B"${_build_dir}/gcc/" \
+      "${_target_xgcc_flags[@]}" \
+      -print-file-name=libmsys-2.0.a
+  )"
+  test "${_resolved_msys_import}" = "/opt/${_target}/lib/libmsys-2.0.a"
+  test -f "${_resolved_msys_import}"
+  printf 'libmsys-import\t%s\n' "${_resolved_msys_import}" \
+    > "${_report_dir}/target-library-search.txt"
+
   make -C "${_build_dir}" MAKEINFO=true \
-    all-target-libgcc \
+    XGCC_FLAGS_FOR_TARGET="${_target_xgcc_flags_string}" \
+    all-target-libgcc
+
+  local _libgcc_shared="${_libgcc_dir}/shlib/msys-gcc_s-seh-1.dll"
+  local _libgcc_import="${_libgcc_dir}/shlib/libgcc_s.dll.a"
+  test -f "${_libgcc_shared}"
+  test -f "${_libgcc_import}"
+  "${_objdump}" -f -p "${_libgcc_shared}" \
+    > "${_report_dir}/libgcc-shared-audit.txt"
+  grep -F 'file format pei-aarch64-little' \
+    "${_report_dir}/libgcc-shared-audit.txt"
+  grep -F 'DLL Name: msys-2.0.dll' \
+    "${_report_dir}/libgcc-shared-audit.txt"
+  grep -F 'DLL Name: KERNEL32.dll' \
+    "${_report_dir}/libgcc-shared-audit.txt"
+  ! grep -Ei 'cygwin1\.dll|x86_64' \
+    "${_report_dir}/libgcc-shared-audit.txt"
+  "/opt/bin/${_tool_target}-nm" "${_libgcc_shared}" \
+    > "${_report_dir}/libgcc-shared-symbols.txt"
+  grep -Eq '[[:space:]]_msys_dll_entry$' \
+    "${_report_dir}/libgcc-shared-symbols.txt"
+
+  if ! "${_stage_xgcc}" \
+      -B"${_build_dir}/gcc/" \
+      "${_target_xgcc_flags[@]}" \
+      -shared -nodefaultlibs \
+      -Wl,-t,--trace-symbol=__pthread_normal_mutex_initializer_np \
+      -o "${_build_dir}/libgcc-link-check.dll" \
+      "${_libgcc_dir}/emutls_s.o" \
+      "${_libgcc_dir}/libgcc.a" \
+      -lmsys-2.0 -ladvapi32 -lshell32 -luser32 -lkernel32 \
+      > "${_report_dir}/libgcc-link-trace.txt" 2>&1; then
+    cat "${_report_dir}/libgcc-link-trace.txt"
+    return 1
+  fi
+  grep -F "/opt/${_target}/lib/libmsys-2.0.a" \
+    "${_report_dir}/libgcc-link-trace.txt"
+  grep -F 'libmsys-2.0.a(pthreadconst.o): definition of __pthread_normal_mutex_initializer_np' \
+    "${_report_dir}/libgcc-link-trace.txt"
+  "${_objdump}" -f -p "${_build_dir}/libgcc-link-check.dll" \
+    > "${_report_dir}/libgcc-link-check.txt"
+  grep -F 'file format pei-aarch64-little' \
+    "${_report_dir}/libgcc-link-check.txt"
+  grep -F 'DLL Name: msys-2.0.dll' \
+    "${_report_dir}/libgcc-link-check.txt"
+  grep -F 'DLL Name: KERNEL32.dll' \
+    "${_report_dir}/libgcc-link-check.txt"
+  rm -f "${_build_dir}/libgcc-link-check.dll"
+
+  make -C "${_build_dir}" MAKEINFO=true \
+    XGCC_FLAGS_FOR_TARGET="${_target_xgcc_flags_string}" \
     all-target-libstdc++-v3
 
   make -C "${_build_dir}/gcc" MAKEINFO=true xgcc.exe cc1.exe cc1plus.exe
@@ -202,9 +279,6 @@ EOF
   make -C "${_build_dir}/${_target}/libstdc++-v3/src" MAKEINFO=true DESTDIR="${_stage_dir}" \
     install-toolexeclibLTLIBRARIES
 
-  local _libgcc_dir="${_build_dir}/${_target}/libgcc"
-  local _libstdcxx_src="${_build_dir}/${_target}/libstdc++-v3/src"
-  local _target_libdir="${_stage_dir}/opt/lib/gcc/${_target}/${_gcc_version}"
   mkdir -p "${_target_libdir}"
 
   for _file in \
@@ -255,6 +329,7 @@ EOF
 }
 
 check() {
+  local _report_dir="${srcdir}/${_report_name}"
   python -m json.tool "${_report_dir}/validation-report.json" > /dev/null
   grep -Fx 'target	aarch64-pc-msys' "${_report_dir}/source-identity.txt"
   grep -Fx 'abi	lp64' "${_report_dir}/source-identity.txt"
@@ -262,6 +337,8 @@ check() {
 }
 
 package_mingw-w64-cross-msysarm64-gcc() {
+  local _src_dir="${srcdir}/${_gcc_root}"
+  local _stage_dir="${srcdir}/${_stage_name}"
   pkgdesc="C, C++, and LTO compiler for aarch64-pc-msys"
   depends=(
     "mingw-w64-cross-msysarm64-gcc-libs=${pkgver}-${pkgrel}"
@@ -282,12 +359,15 @@ package_mingw-w64-cross-msysarm64-gcc() {
   local _licensedir="${pkgdir}/opt/share/licenses/${pkgname}"
   install -d "${_licensedir}"
   install -m644 \
-    "${srcdir}/${_gcc_root}/COPYING3" \
-    "${srcdir}/${_gcc_root}/COPYING.RUNTIME" \
+    "${_src_dir}/COPYING3" \
+    "${_src_dir}/COPYING.RUNTIME" \
     "${_licensedir}/"
 }
 
 package_mingw-w64-cross-msysarm64-gcc-libs() {
+  local _src_dir="${srcdir}/${_gcc_root}"
+  local _stage_dir="${srcdir}/${_stage_name}"
+  local _report_dir="${srcdir}/${_report_name}"
   pkgdesc="Runtime libraries for aarch64-pc-msys GCC"
   depends=(
     "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
@@ -314,8 +394,8 @@ package_mingw-w64-cross-msysarm64-gcc-libs() {
 
   install -d "${pkgdir}/opt/share/licenses/${pkgname}"
   install -m644 \
-    "${srcdir}/${_gcc_root}/COPYING3" \
-    "${srcdir}/${_gcc_root}/COPYING.RUNTIME" \
+    "${_src_dir}/COPYING3" \
+    "${_src_dir}/COPYING.RUNTIME" \
     "${pkgdir}/opt/share/licenses/${pkgname}/"
   install -d "${pkgdir}/opt/share/doc/${pkgname}"
   cp -a "${_report_dir}/." "${pkgdir}/opt/share/doc/${pkgname}/"

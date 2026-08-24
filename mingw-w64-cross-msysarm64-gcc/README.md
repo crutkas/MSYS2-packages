@@ -38,6 +38,10 @@ sysroot from the previous stack.
 
 The build also runs an explicit stage-compiler `#include <windows.h>` preflight
 before target libgcc so missing package-owned w32api headers fail fast.
+Target libgcc completes before libstdc++ configuration begins. Target compiler
+library search uses the sysroot `lib` directory without the runtime `bin`
+directory, ensuring `-lmsys-2.0` selects the package-owned import archive
+instead of the runtime DLL itself.
 
 The compiler package does not ship target C++ headers. Those remain in the
 separate `mingw-w64-cross-msysarm64-libstdc++-headers` package so the compiler
