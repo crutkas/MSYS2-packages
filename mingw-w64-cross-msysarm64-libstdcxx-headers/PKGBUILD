@@ -58,7 +58,7 @@ source=(
 sha256sums=('8194893d7093f3cadedc2ec42375ffbbc02a22e30d943e5f1c1aefa273af8122'
             'a21c55ad56fd60e24739497cbcfbce0ca77094c0f42b35818ee43e886c093e0c'
             '58bbd49450bcfd01be5feb42df19125630314177a022607f1c278e4ac0d374eb'
-            '4430625eda117c96b29bab5ad07cf3b4aefc3de098aef33333a7b29ecd39df9c'
+            'bae8e8b07d73e54c64b15135b8e6f9e3c35c4dcc78f03f597df06cc0370e4493'
             'f76d8b6988bf512429efff8454cbc505369138ff6ba1efbb34ef5a2648487452'
             '70c412971f56b717f536ac575e7b39fa65873ad6e43f671af1acc940b0c7e0f8'
             '45d9adfc3996fa36726c1182cc80e7126f2f988c060bc8d38cf7f3903a18a660'
@@ -78,6 +78,7 @@ prepare() {
 _configure_bootstrap_compiler() {
   local _builddir="${srcdir}/${_gcc_build}"
   local _source="${srcdir}/${_gcc_root}"
+  local _tool_target=aarch64-pc-cygwin
   local _prefix_map="-ffile-prefix-map=${srcdir}=. -fdebug-prefix-map=${srcdir}=. -fmacro-prefix-map=${srcdir}=."
   local -a _args=(
     "--build=${_host}"
@@ -130,6 +131,7 @@ _configure_bootstrap_compiler() {
   mkdir -p "${_builddir}" "${srcdir}/${_report}"
   (
     cd "${_builddir}"
+    AS_FOR_TARGET="/opt/bin/${_tool_target}-as" \
     CFLAGS="-O2 -pipe ${_prefix_map}" \
     CXXFLAGS="-O2 -pipe ${_prefix_map}" \
     CFLAGS_FOR_BUILD="-O2 -pipe ${_prefix_map}" \
@@ -176,7 +178,14 @@ _probe_libstdcxx_preprocessor() {
   local _private_include_fixed="${_builddir}/gcc/include-fixed"
   local _cppflags="-isystem ${_private_include} -isystem ${_private_include_fixed} -isystem /opt/${_target}/include -idirafter /opt/${_target}/include/w32api"
   local _target_flags="-B/opt/bin/ -B${_builddir}/gcc/ -B/opt/libexec/gcc/${_target}/${_gcc_version}/ -B/opt/${_target}/bin/ -B/opt/${_target}/lib/ ${_cppflags} --sysroot=/opt/${_target}"
+  local _original_as="/opt/bin/${_tool_target}-as"
+  local _wrapper_as="${_builddir}/gcc/as"
+  local _objdump="/opt/bin/${_tool_target}-objdump"
   mkdir -p "${_probe_dir}"
+  test -x "${_original_as}"
+  test -x "${_wrapper_as}"
+  test -x "${_objdump}"
+  grep -Fx "ORIGINAL_AS_FOR_TARGET=\"${_original_as}\"" "${_wrapper_as}"
 
   printf '/* confdefs.h */\n#include <limits.h>\n' \
     > "${_probe_dir}/conftest-limits.c"
@@ -213,10 +222,10 @@ _probe_libstdcxx_preprocessor() {
     printf 'limits.h sanity\tok\n'
     printf 'ac_nonexistent.h sanity\texpected-failure\n'
     printf 'assembler-trace-command\t%s\n' \
-      "env original=/opt/bin/${_tool_target}-as ${_xgcc} -B/opt/bin/ -B${_builddir}/gcc/ -B/opt/libexec/gcc/${_target}/${_gcc_version}/ -B/opt/${_target}/bin/ -B/opt/${_target}/lib/ ${_cppflags} --sysroot=/opt/${_target} -v -c ${_probe_dir}/conftest-assembler.c -o ${_probe_dir}/conftest-assembler.o"
+      "env original=${_original_as} ${_xgcc} -B/opt/bin/ -B${_builddir}/gcc/ -B/opt/libexec/gcc/${_target}/${_gcc_version}/ -B/opt/${_target}/bin/ -B/opt/${_target}/lib/ ${_cppflags} --sysroot=/opt/${_target} -v -c ${_probe_dir}/conftest-assembler.c -o ${_probe_dir}/conftest-assembler.o"
     printf 'int main(void) { return 0; }\n' > "${_probe_dir}/conftest-assembler.c"
     if ! env \
-      original="/opt/bin/${_tool_target}-as" \
+      original="${_original_as}" \
       CPPFLAGS="${_cppflags}" \
       "${_xgcc}" -B/opt/bin/ -B${_builddir}/gcc/ -B/opt/libexec/gcc/${_target}/${_gcc_version}/ -B/opt/${_target}/bin/ -B/opt/${_target}/lib/ ${_cppflags} --sysroot=/opt/${_target} \
       -v -c "${_probe_dir}/conftest-assembler.c" \
@@ -226,11 +235,25 @@ _probe_libstdcxx_preprocessor() {
       printf 'assembler-trace\tfailed\n' > "${srcdir}/${_report}/preprocessor-sanity.txt"
       return 1
     fi
-    if ! grep -Fq "/opt/bin/${_tool_target}-as" "${_probe_dir}/conftest-assembler.err"; then
-      printf 'assembler-trace\tmissing-delegated-as\n' > "${srcdir}/${_report}/preprocessor-sanity.txt"
+    if ! grep -Fq "${_wrapper_as}" "${_probe_dir}/conftest-assembler.err"; then
+      printf 'assembler-trace\tmissing-build-wrapper\n' > "${srcdir}/${_report}/preprocessor-sanity.txt"
       cat "${_probe_dir}/conftest-assembler.err" >> "${srcdir}/${_report}/preprocessor-sanity.txt"
       return 1
     fi
+    if ! "${_objdump}" -f "${_probe_dir}/conftest-assembler.o" \
+        > "${_probe_dir}/conftest-assembler.objdump"; then
+      printf 'assembler-object\tobjdump-failed\n' > "${srcdir}/${_report}/preprocessor-sanity.txt"
+      return 1
+    fi
+    if ! grep -Fq 'file format pe-aarch64-little' \
+        "${_probe_dir}/conftest-assembler.objdump"; then
+      printf 'assembler-object\tnot-aarch64-pe\n' > "${srcdir}/${_report}/preprocessor-sanity.txt"
+      cat "${_probe_dir}/conftest-assembler.objdump" >> "${srcdir}/${_report}/preprocessor-sanity.txt"
+      return 1
+    fi
+    printf 'assembler-original\t%s\n' "${_original_as}"
+    printf 'assembler-wrapper\t%s\n' "${_wrapper_as}"
+    cat "${_probe_dir}/conftest-assembler.objdump"
     printf 'assembler-trace\tok\n'
     "${_xgcc}" -print-prog-name=cc1
     "${_xgcc}" -print-prog-name=cc1plus

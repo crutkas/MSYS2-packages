@@ -26,11 +26,11 @@ explicitly. This does not alter a libstdc++ feature result; it preserves the
 Windows LP64 data model while the compiler macro fix remains a separate
 stage-0 blocker.
 
-The assembler contract is the installed `/opt/bin/aarch64-pc-cygwin-as`
-resolution reported by `xgcc -print-prog-name=as`. The probe records that
-path explicitly. The `original` environment override is passed through so the
-selected wrapper can delegate correctly, but the package only accepts the
-`/opt/bin` assembler path as the product contract.
+The assembler contract starts at the package-owned
+`/opt/bin/aarch64-pc-cygwin-as`. GCC configures its build-tree `gcc/as`
+wrapper with that exact original path, and each probe supplies the same scoped
+`original` value. Validation requires the verbose compiler trace to select the
+wrapper and verifies that the resulting object is AArch64 PE/COFF.
 
 ## Install order
 

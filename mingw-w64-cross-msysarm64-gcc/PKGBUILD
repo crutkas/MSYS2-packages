@@ -75,6 +75,7 @@ build() {
 
   export MSYSTEM=MSYS
   export lt_cv_deplibs_check_method=pass_all
+  local _tool_target=aarch64-pc-cygwin
   local _prefix_map="-ffile-prefix-map=${srcdir}=. -fdebug-prefix-map=${srcdir}=. -fmacro-prefix-map=${srcdir}=."
   export CFLAGS="-O2 -pipe ${_prefix_map}"
   export CXXFLAGS="-O2 -pipe ${_prefix_map}"
@@ -85,7 +86,8 @@ build() {
 
   (
     cd "${_build_dir}"
-    "${srcdir}/${_gcc_root}/configure" \
+    AS_FOR_TARGET="/opt/bin/${_tool_target}-as" \
+      "${srcdir}/${_gcc_root}/configure" \
       --prefix=/opt \
       --build="${_host}" \
       --host="${_host}" \
@@ -146,9 +148,15 @@ EOF
   if [[ ! -x "${_stage_xgcc}" ]]; then
     _stage_xgcc="${_build_dir}/gcc/xgcc"
   fi
-  local _tool_target=aarch64-pc-cygwin
+  local _original_as="/opt/bin/${_tool_target}-as"
+  local _wrapper_as="${_build_dir}/gcc/as"
+  local _objdump="/opt/bin/${_tool_target}-objdump"
+  test -x "${_original_as}"
+  test -x "${_wrapper_as}"
+  test -x "${_objdump}"
+  grep -Fx "ORIGINAL_AS_FOR_TARGET=\"${_original_as}\"" "${_wrapper_as}"
   if ! env \
-    original="/opt/bin/${_tool_target}-as" \
+    original="${_original_as}" \
     "${_stage_xgcc}" \
     -B"/opt/bin/" \
     -B"${_build_dir}/gcc/" \
@@ -163,11 +171,14 @@ EOF
     2> "${_build_dir}/windows-header-check.err"; then
     return 1
   fi
-  grep -Fq "/opt/bin/${_tool_target}-as" "${_build_dir}/windows-header-check.err" || {
-    printf 'stage-xgcc-as-mismatch\t%s\n' \
-      "$(grep -oE '/opt/bin/[[:alnum:]_-]+-as(\.exe)?' "${_build_dir}/windows-header-check.err" | tail -n 1)"
+  grep -Fq "${_wrapper_as}" "${_build_dir}/windows-header-check.err" || {
+    printf 'stage-xgcc-wrapper-missing\t%s\n' "${_wrapper_as}" >&2
     return 1
   }
+  "${_objdump}" -f "${_build_dir}/windows-header-check.o" \
+    > "${_build_dir}/windows-header-check.objdump"
+  grep -F 'file format pe-aarch64-little' \
+    "${_build_dir}/windows-header-check.objdump"
 
   make -C "${_build_dir}" MAKEINFO=true \
     all-target-libgcc \
