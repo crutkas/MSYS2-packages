@@ -42,7 +42,6 @@ makedepends=(
 provides=("aarch64-pc-msys-libstdc++-headers=${pkgver}")
 conflicts=(
   'aarch64-pc-msys-libstdc++-headers'
-  'mingw-w64-cross-cygwinarm64-libstdc++-headers'
 )
 options=('!strip' '!buildflags' '!emptydirs')
 source=(
