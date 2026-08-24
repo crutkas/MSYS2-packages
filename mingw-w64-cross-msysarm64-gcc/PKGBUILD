@@ -172,7 +172,13 @@ EOF
     return 1
   fi
   grep -Fq "${_wrapper_as}" "${_build_dir}/windows-header-check.err" || {
-    printf 'stage-xgcc-wrapper-missing\t%s\n' "${_wrapper_as}" >&2
+    local _delegated_as
+    _delegated_as=$(
+      grep -oE '/opt/bin/[[:alnum:]_-]+-as(\.exe)?' \
+        "${_build_dir}/windows-header-check.err" | tail -n 1
+    )
+    printf 'stage-xgcc-wrapper-missing\t%s\t%s\n' \
+      "${_wrapper_as}" "${_delegated_as:-<unparsed>}" >&2
     return 1
   }
   "${_objdump}" -f "${_build_dir}/windows-header-check.o" \
