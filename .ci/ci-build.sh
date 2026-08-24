@@ -105,9 +105,10 @@ for package in "${packages[@]}"; do
         execute 'Canonicalizing package containers' \
             bash "$DIR/canonicalize-packages.sh" *.pkg.tar.zst
     fi
-    repo-add $PWD/artifacts/ci.db.tar.gz $PWD/$package/*.pkg.tar.*
-    pacman -Sy
     cp $PWD/$package/*.pkg.tar.* $PWD/artifacts
+    sync
+    repo-add $PWD/artifacts/ci.db.tar.gz $PWD/artifacts/*.pkg.tar.*
+    pacman -Sy
     echo "::endgroup::"
 
     cd "$package"

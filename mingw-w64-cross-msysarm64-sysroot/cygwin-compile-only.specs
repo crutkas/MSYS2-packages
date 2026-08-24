@@ -1,0 +1,4 @@
+%rename cpp cygwin_bootstrap_cpp
+
+*cpp:
+%(cygwin_bootstrap_cpp) %{!nostdinc:-isystem %R/include -idirafter %R/include/w32api}

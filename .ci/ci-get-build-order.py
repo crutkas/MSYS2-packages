@@ -25,19 +25,32 @@ def get_toplevel():
     return run("cygpath", "-m", path)
 
 
-def list_changes(*git_args):
+def list_changes():
     base_revision = os.environ.get("CI_BASE_REV", "upstream/master")
-    out = run("git", "log", *git_args, f"{base_revision}..").splitlines()
-    out += run("git", "log", *git_args, "HEAD^..").splitlines()
+    out = run(
+        "git",
+        "diff",
+        "--name-only",
+        "--diff-filter=ACMR",
+        f"{base_revision}...HEAD",
+    ).splitlines()
     return list(dict.fromkeys(x.split("::")[-1] for x in sorted(out)))
 
 
 def list_packages():
-    changes = list_changes("--pretty=format:", "--name-only")
+    changes = list_changes()
+    prefixes = tuple(
+        prefix for prefix in os.environ.get("CI_PACKAGE_PREFIXES", "").split() if prefix
+    )
     return [
         x.split("/")[0]
         for x in changes
-        if x.endswith("/PKGBUILD") and os.path.exists(x)
+        if x.endswith("/PKGBUILD")
+        and os.path.exists(x)
+        and (
+            not prefixes
+            or any(x.split("/")[0].startswith(prefix) for prefix in prefixes)
+        )
     ]
 
 

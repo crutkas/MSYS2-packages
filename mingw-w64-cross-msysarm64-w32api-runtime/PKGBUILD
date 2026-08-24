@@ -1,0 +1,258 @@
+# Maintainer: Chris Reddington <crutkas@microsoft.com>
+
+_target=aarch64-pc-msys
+_build_target=aarch64-w64-mingw32
+_source_commit=9b3dd0125792fe94d16cacdc596dbd42fca1b369
+_source_tree=a6a6250b1b40b74c27aa797c2d5325c03b8c7610
+_source_root=mingw-w64-${_source_commit}
+_sysroot_version=3.6.10.r0.gc7932d64f
+export SOURCE_DATE_EPOCH=1774351580
+
+pkgname=mingw-w64-cross-msysarm64-w32api-runtime
+pkgver=14.0.0.r0.g9b3dd0125
+pkgrel=1
+pkgdesc="ARM64 Win32 API import libraries for the aarch64-pc-msys sysroot"
+arch=('x86_64')
+url="https://github.com/crutkas/mingw-w64"
+msys2_repository_url="https://github.com/crutkas/mingw-w64"
+license=('custom')
+groups=('mingw-w64-cross-toolchain' 'mingw-w64-cross')
+depends=(
+  "mingw-w64-cross-msysarm64-headers=${_sysroot_version}-1"
+  "mingw-w64-cross-msysarm64-windows-default-manifest=${_sysroot_version}-1"
+)
+makedepends=(
+  'gcc'
+  'mingw-w64-cross-cygwinarm64-binutils'
+  'mingw-w64-cross-mingwarm64-gcc'
+)
+provides=("aarch64-pc-msys-w32api-runtime=${pkgver}-${pkgrel}"
+          "mingw-w64-cross-cygwinarm64-w32api-runtime=14.0.0.r0.g9b3dd0125-1")
+replaces=('mingw-w64-cross-cygwinarm64-w32api-runtime')
+conflicts=(
+  'aarch64-pc-msys-w32api-runtime'
+  'mingw-w64-cross-cygwinarm64-w32api-runtime'
+)
+options=('staticlibs' '!strip' '!buildflags' '!emptydirs')
+source=(
+  "mingw-w64-${_source_commit}.tar.gz::https://github.com/crutkas/mingw-w64/archive/${_source_commit}.tar.gz"
+  validate-w32api-runtime.sh
+  w32api-link-smoke.c
+  default-manifest.rc
+  default.manifest
+)
+sha256sums=(
+  'a538427786ab530b253c8350a9b4c14e511032f8900366336b29065ad23de129'
+  'c2d2fc80664be7e30233dbca1cf7ef39313a21f2bf411d64b8024355e7424c73'
+  'f9e15074f77ed1550ca4716af369d33d5b7c4db99fa5574ee3a2293df60a1cc3'
+  'dcd90c672825f64c599cb314cc53f17f52ae37e9fb8767a699789a3f580204a1'
+  'bda436b309e682e1b5d6095e122b16087435dcd7f8e12aab6e568036a649f580'
+)
+
+prepare() {
+  cd "${srcdir}/${_source_root}"
+
+  grep -Fx '#define __MINGW64_VERSION_MAJOR 14' \
+    mingw-w64-headers/crt/_mingw_mac.h
+  grep -Fx '#define __MINGW64_VERSION_MINOR 0' \
+    mingw-w64-headers/crt/_mingw_mac.h
+  grep -Fx '#define __MINGW64_VERSION_BUGFIX 0' \
+    mingw-w64-headers/crt/_mingw_mac.h
+  grep -Fx '#define __W32API_VERSION 3.14' \
+    mingw-w64-headers/include/w32api.h
+  test -f mingw-w64-crt/lib-common/kernel32.def.in
+  test -f mingw-w64-crt/lib-common/ntdll.def.in
+
+  tr -d '\r' < "${srcdir}/validate-w32api-runtime.sh" \
+    > "${srcdir}/validate-w32api-runtime.lf.sh"
+  chmod 755 "${srcdir}/validate-w32api-runtime.lf.sh"
+}
+
+build() {
+  local _builddir="${srcdir}/build-${_build_target}"
+  local _stage="${srcdir}/stage-${_target}"
+  local _runtime="${srcdir}/runtime-${_target}"
+  local _report="${srcdir}/w32api-report"
+  local _source_libdir="${_stage}/opt/${_build_target}/lib/w32api"
+  local _forbidden
+
+  rm -rf "${_builddir}" "${_stage}" "${_runtime}" "${_report}"
+  mkdir -p "${_builddir}" "${_stage}" "${_runtime}" "${_report}"
+
+  cd "${_builddir}"
+  unset CC CXX CPPFLAGS CFLAGS CXXFLAGS LDFLAGS
+  "${srcdir}/${_source_root}/mingw-w64-crt/configure" \
+    --build="${CHOST}" \
+    --host="${_build_target}" \
+    --prefix="/opt/${_build_target}" \
+    --with-default-msvcrt=ucrt \
+    --enable-w32api \
+    --disable-dependency-tracking \
+    --disable-lib32 \
+    --disable-lib64 \
+    --disable-libarm32 \
+    --enable-libarm64 \
+    CFLAGS="-I/opt/${_target}/include/w32api" \
+    CXXFLAGS="-I/opt/${_target}/include/w32api" \
+    CPPFLAGS="-I/opt/${_target}/include/w32api"
+
+  make
+  make DESTDIR="${_stage}" install
+
+  find "${_source_libdir}" -maxdepth 1 -type f -name 'lib*.a' \
+    -exec install -m644 -t "${_runtime}" {} +
+  find "${_runtime}" -maxdepth 1 -type f -name 'lib*.a' \
+    -exec "${_build_target}-ar" sD {} \;
+
+  test "$(find "${_runtime}" -maxdepth 1 -type f -name 'lib*.a' \
+    | wc -l)" -eq 418
+  _forbidden=$(find "${_runtime}" -type f \
+    \( -name '*.dll' -o -name '*.exe' -o -name '*.o' \
+       -o -name 'libcygwin.a' -o -name 'libmsys-2.0.a' \
+       -o -name 'libgcc*.a' -o -name 'libc.a' -o -name 'libm.a' \) \
+    -print -quit)
+  if [[ -n "${_forbidden}" ]]; then
+    printf 'ERROR: excluded runtime file generated: %s\n' \
+      "${_forbidden}" >&2
+    return 1
+  fi
+
+  CROSS_PREFIX="${_build_target}" \
+  CYGWIN_PREFIX="aarch64-pc-cygwin" \
+    "${srcdir}/validate-w32api-runtime.lf.sh" \
+      "${_runtime}" \
+      "${srcdir}/default-manifest.rc" \
+      "${srcdir}/w32api-link-smoke.c" \
+      "${_report}"
+
+  sed -E -i 's|^([[:xdigit:]]{64} [*]).*/|\1|' \
+    "${_report}/SHA256SUMS"
+  sed -E -i \
+    's|^/tmp/tmp\.[^/]*/w32api-link-smoke\.exe:|w32api-link-smoke.exe:|' \
+    "${_report}/link-file.txt" \
+    "${_report}/link-sections.txt"
+  grep -Fx $'libraries\t418' "${_report}/summary.txt"
+  grep -Fx $'archive-members\t78578' "${_report}/summary.txt"
+  grep -Fx $'empty-archives\t0' "${_report}/summary.txt"
+  test ! -s "${_report}/empty-archives.txt"
+  grep -E '[[:space:]]\.pdata[[:space:]]' \
+    "${_report}/link-sections.txt"
+  grep -E '[[:space:]]\.rsrc[[:space:]]' \
+    "${_report}/link-sections.txt"
+  if grep -Ei '^(cygwin1|msys-2\.0)\.dll$' \
+      "${_report}/link-imports.txt"; then
+    printf 'ERROR: smoke executable imports a Cygwin or MSYS runtime\n' >&2
+    return 1
+  fi
+
+  (
+    cd "${_runtime}"
+    sha256sum lib*.a
+  ) > "${_report}/archive-sha256.txt"
+
+  cat > "${_report}/source-identity.txt" <<EOF
+package-version	${pkgver}-${pkgrel}
+source-repository	https://github.com/crutkas/mingw-w64
+source-commit	${_source_commit}
+source-tree	${_source_tree}
+source-archive-sha256	a538427786ab530b253c8350a9b4c14e511032f8900366336b29065ad23de129
+w32api-version	3.14
+mingw-version	14.0.0
+generator	$("${_build_target}-gcc" -dumpmachine) gcc $("${_build_target}-gcc" -dumpversion)
+archive-tools	$("${_build_target}-ar" --version | head -n1)
+target-tools	$(aarch64-pc-cygwin-ld --version | head -n1)
+EOF
+
+  cat > "${_report}/ownership-boundary.txt" <<'EOF'
+package-owned-archives	418
+package-owned-members	78578
+fixture-only-archives	22
+fixture-only-members	15180
+fixture-total-archives	440
+fixture-total-members	93758
+fixture-crt	libdelayimp.a	0	mingw-w64-cross-mingwarm64-crt
+fixture-crt	liblargeint.a	1	mingw-w64-cross-mingwarm64-crt
+fixture-crt	libm.a	1	mingw-w64-cross-mingwarm64-crt
+fixture-crt	libmingw32.a	30	mingw-w64-cross-mingwarm64-crt
+fixture-crt	libmingwex.a	244	mingw-w64-cross-mingwarm64-crt
+fixture-crt	libmingwthrd.a	1	mingw-w64-cross-mingwarm64-crt
+fixture-crt	libmoldname.a	1	mingw-w64-cross-mingwarm64-crt
+fixture-crt	libmsvcrt-os.a	1647	mingw-w64-cross-mingwarm64-crt
+fixture-crt	libmsvcrt.a	2728	mingw-w64-cross-mingwarm64-crt
+fixture-crt	libucrt.a	2728	mingw-w64-cross-mingwarm64-crt
+fixture-crt	libucrtapp.a	1621	mingw-w64-cross-mingwarm64-crt
+fixture-crt	libucrtbase.a	2705	mingw-w64-cross-mingwarm64-crt
+fixture-crt	libucrtbased.a	2762	mingw-w64-cross-mingwarm64-crt
+fixture-crt	libvcruntime140.a	72	mingw-w64-cross-mingwarm64-crt
+fixture-crt	libvcruntime140_app.a	72	mingw-w64-cross-mingwarm64-crt
+fixture-crt	libvcruntime140d.a	72	mingw-w64-cross-mingwarm64-crt
+fixture-external	libpthread.a	12	mingw-w64-cross-mingwarm64-winpthreads
+fixture-external	libpthread.dll.a	170	mingw-w64-cross-mingwarm64-winpthreads
+fixture-external	libwinpthread.a	12	mingw-w64-cross-mingwarm64-winpthreads
+fixture-external	libwinpthread.dll.a	170	mingw-w64-cross-mingwarm64-winpthreads
+fixture-external	libz.a	15	mingw-w64-cross-mingwarm64-zlib
+fixture-external	libz.dll.a	116	mingw-w64-cross-mingwarm64-zlib
+EOF
+
+  cat > "${_report}/install-order.txt" <<EOF
+1	mingw-w64-cross-cygwinarm64-binutils	2.44.50-1	8908cb690952788153b60bc4fb659826bbd8a03a26c1073f76c0be7ed6f97518
+2	mingw-w64-cross-msysarm64-headers	${_sysroot_version}-1	5266346cc10b142f871704ce4277699b1a5daa3121dc869990b4bedce69c0611
+3	mingw-w64-cross-msysarm64-windows-default-manifest	${_sysroot_version}-1	cc089511fede6042a25f83fcb5903fddeede89ddd9655360741513ee9015e3dc
+4	${pkgname}	${pkgver}-${pkgrel}	see package SHA256SUMS
+5	mingw-w64-cross-msysarm64-sysroot	${_sysroot_version}-1	4ed8a30f592317bf7e4def6f3c773139f2565b0f8afaedd820f7ee46d33cad20
+EOF
+
+  cat > "${_report}/link-input-report.txt" <<'EOF'
+available	w32api headers	matching 14.0.0.r0.g9b3dd0125 header snapshot
+available	default-manifest.o	ARM64 resource object from the sysroot manifest package
+available	w32api import libraries	418 source-owned AArch64 archives
+available	cross binutils	aarch64-pc-cygwin PE/COFF assembler, linker, windres, and inspection tools
+missing	aarch64-pc-msys GCC	not delivered by this package
+missing	target libgcc	not delivered by this package
+missing	newlib libc/libm target libraries	not delivered by this package
+missing	winsup/newlib runtime objects	must be compiled from crutkas/msys2-runtime@6922c388be93e423c1186f0b58c39380a5ee9e2d
+missing	msys-2.0.dll and import library	outputs of the first runtime link; never fabricated here
+excluded	crt0.o and MinGW CRT objects	outside the w32api import-library ownership boundary
+next-blocker	build the aarch64-pc-msys target compiler/runtime objects before the first msys-2.0.dll link
+EOF
+}
+
+check() {
+  local _report="${srcdir}/w32api-report"
+
+  (
+    cd "${_report}"
+    sha256sum -c SHA256SUMS
+  )
+  grep -Fx $'linked-format\tpei-aarch64-little' "${_report}/summary.txt"
+  grep -Fx $'default-manifest\tembedded' "${_report}/summary.txt"
+  if grep -Ei '^(cygwin1|msys-2\.0)\.dll$' \
+      "${_report}/link-imports.txt"; then
+    printf 'ERROR: packaged smoke report contains a MSYS or MSYS import\n' >&2
+    return 1
+  fi
+}
+
+package() {
+  local _runtime="${srcdir}/runtime-${_target}"
+  local _report="${srcdir}/w32api-report"
+  local _libdir="${pkgdir}/opt/${_target}/usr/lib"
+  local _sharedir="${pkgdir}/opt/${_target}/share/msys-sysroot/w32api-runtime"
+  local _forbidden
+
+  mkdir -p "${_libdir}" "${_sharedir}"
+  cp -a "${_runtime}/." "${_libdir}/"
+  cp -a "${_report}/." "${_sharedir}/"
+
+  _forbidden=$(find "${pkgdir}" -type f \
+    \( -name '*.dll' -o -name 'cygwin1.dll' -o -name 'msys-2.0.dll' \
+       -o -name 'libcygwin.a' -o -name 'libmsys-2.0.a' \
+       -o -name 'crt0.o' -o -name 'libgcc*.a' \
+       -o -name 'libc.a' -o -name 'libm.a' \) \
+    -print -quit)
+  if [[ -n "${_forbidden}" ]]; then
+    printf 'ERROR: excluded package file found: %s\n' \
+      "${_forbidden}" >&2
+    return 1
+  fi
+}

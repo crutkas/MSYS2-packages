@@ -30,22 +30,18 @@ jobs:
         run: |
           pipx install --python '${{ steps.setup-python.outputs.python-path }}' 'msys2-devtools[srcinfo-cache] @ git+https://github.com/msys2/msys2-devtools'
 
-      - uses: msys2/setup-msys2@v2
-        id: msys2
-        with:
-          msystem: MSYS
-          update: true
-
       - name: Download srcinfo.json.gz and set up the environment
-        shell: msys2 {0}
+        shell: pwsh
         run: |
-          # makepkg requires strip in PATH even if it wont be used
-          touch /usr/bin/strip.exe
-          curl --fail -L --retry 5 -o srcinfo.json.gz "https://github.com/$GITHUB_REPOSITORY/releases/download/srcinfo-cache/srcinfo.json.gz"
+          New-Item -ItemType File -Force -Path 'C:\msys64\usr\bin\strip.exe' | Out-Null
+          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm --needed -S base-devel
+          & curl.exe --fail -L --retry 5 -o srcinfo.json.gz "https://github.com/$GITHUB_REPOSITORY/releases/download/srcinfo-cache/srcinfo.json.gz"
 
       - name: Parse PKGBUILDs and update srcinfo.json.gz
         run: |
-          msys2-srcinfo-cache --time-limit 19800 msys '${{ steps.msys2.outputs.msys2-location }}' . srcinfo.json.gz
+          $env:MSYS2_PATH_TYPE = 'inherit'
+          $env:PATH = 'C:\msys64\usr\bin;C:\msys64\mingw64\bin;' + $env:PATH
+          msys2-srcinfo-cache --time-limit 19800 msys 'C:\msys64' . srcinfo.json.gz
 
       - uses: actions/upload-artifact@v4
         with:

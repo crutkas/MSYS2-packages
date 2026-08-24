@@ -1,0 +1,4 @@
+*.pkg.tar.*
+src/
+pkg/
+!w32api-headers-14.0.0.r0.g9b3dd0125.tar.zst
