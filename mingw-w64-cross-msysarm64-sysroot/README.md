@@ -9,6 +9,10 @@ The MSYS/newlib sources are pinned to
 (archive SHA256
 `153aa6ae82a6220176a0a0ce265e1f126e3ce8ee40d717a95dfe906e810a3472`).
 All packages from this pkgbase use version `3.6.10.r0.ga527ace21-1`.
+The three outputs also provide their prior `3.6.10.r0.gc7932d64f-1`
+package identities so the already-built w32api and libstdc++ bootstrap layers
+remain installable during this five-package transition. Dependencies within
+this package set still require the exact `a527ace21-1` versions.
 
 ## Install order
 

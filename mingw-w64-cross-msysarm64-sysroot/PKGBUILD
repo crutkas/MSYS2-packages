@@ -4,6 +4,7 @@ _target=aarch64-pc-msys
 _runtime_commit=a527ace21c23b763bb96841745f0e2d8cd984f4a
 _runtime_root=msys2-runtime-${_runtime_commit}
 _w32api_version=14.0.0.r0.g9b3dd0125
+_previous_sysroot_release=3.6.10.r0.gc7932d64f-1
 
 pkgbase=mingw-w64-cross-msysarm64-sysroot
 pkgname=(
@@ -48,7 +49,7 @@ sha256sums=('153aa6ae82a6220176a0a0ce265e1f126e3ce8ee40d717a95dfe906e810a3472'
             'a54acb9e36aa625770ceb7c08c7fc2cc7e5de7b5f9e317ae223d5d28617a7b99'
             'dcd90c672825f64c599cb314cc53f17f52ae37e9fb8767a699789a3f580204a1'
             'bda436b309e682e1b5d6095e122b16087435dcd7f8e12aab6e568036a649f580'
-            '5e0bee02f9cee12f28d3c00dd416c55313f99a88fe6b52e31a3bb7ca01f67126'
+            '088b79eec54bcfbe2e7f999b0086a26ae51846a6adb32a2d977ebe18b41cbc98'
             '947f9af54085ab87da8156f93e58d4a9b6669a04483ed2a7ccff7229234abbd7'
             'e39c81989251f3ba8d383d3654145cd8b2b9e935ac9f5b135ce2145f030ae80b'
             'cf08960ea132214b74fbe66330bf25cfffb6c794b2b3c8192ffc751b508b8af0'
@@ -189,7 +190,8 @@ check() {
 
 package_mingw-w64-cross-msysarm64-headers() {
   pkgdesc="MSYS, newlib, and w32api headers for aarch64-pc-msys"
-  provides=("aarch64-pc-msys-headers=${pkgver}"
+  provides=("mingw-w64-cross-msysarm64-headers=${_previous_sysroot_release}"
+            "aarch64-pc-msys-headers=${pkgver}"
             "mingw-w64-cross-cygwinarm64-headers=3.6.10.r0.gee50e0223-1")
   replaces=('mingw-w64-cross-cygwinarm64-headers')
   conflicts=('aarch64-pc-msys-headers'
@@ -200,7 +202,8 @@ package_mingw-w64-cross-msysarm64-headers() {
 
 package_mingw-w64-cross-msysarm64-windows-default-manifest() {
   pkgdesc="Default Windows application manifest for aarch64-pc-msys"
-  provides=("aarch64-pc-msys-windows-default-manifest=${pkgver}"
+  provides=("mingw-w64-cross-msysarm64-windows-default-manifest=${_previous_sysroot_release}"
+            "aarch64-pc-msys-windows-default-manifest=${pkgver}"
             "mingw-w64-cross-cygwinarm64-windows-default-manifest=3.6.10.r0.gee50e0223-1")
   replaces=('mingw-w64-cross-cygwinarm64-windows-default-manifest')
   conflicts=('aarch64-pc-msys-windows-default-manifest'
@@ -215,7 +218,8 @@ package_mingw-w64-cross-msysarm64-sysroot() {
     "mingw-w64-cross-msysarm64-headers=${pkgver}-${pkgrel}"
     "mingw-w64-cross-msysarm64-windows-default-manifest=${pkgver}-${pkgrel}"
   )
-  provides=("aarch64-pc-msys-sysroot=${pkgver}"
+  provides=("mingw-w64-cross-msysarm64-sysroot=${_previous_sysroot_release}"
+            "aarch64-pc-msys-sysroot=${pkgver}"
             "mingw-w64-cross-cygwinarm64-sysroot=3.6.10.r0.gee50e0223-1")
   replaces=('mingw-w64-cross-cygwinarm64-sysroot')
   conflicts=('aarch64-pc-msys-sysroot'
