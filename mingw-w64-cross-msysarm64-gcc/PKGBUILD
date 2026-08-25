@@ -56,13 +56,43 @@ source=(
 )
 sha256sums=(
   "${_gcc_archive_sha256}"
-  '960927037b2705dae885875f9ed9a8c43d04e57ca1b6d41a2b9f66d89adf0d99'
-  '85eda6af915594b991c4bc92660280c962ef8a3e967a8c294d341c02c294abb0'
+  'dcd3711497179b3f039c56c1f9fd9655dafd12668e5f398168bcf15a747fc073'
+  '5044bba38e57203117685ddce1905e55cc1cce34f7945557077debe0ea23803d'
 )
 
 _build_name="build-${_target}"
 _stage_name="stage-${_target}"
 _report_name="gcc-report"
+
+_require_target_binutils() {
+  local _tool_root=$1
+  local _tool_prefix=$2
+  local _tool
+
+  for _tool in \
+    ar \
+    as \
+    dlltool \
+    ld \
+    nm \
+    objcopy \
+    objdump \
+    ranlib \
+    readelf \
+    strip
+  do
+    if [[ ! -x "${_tool_root}/${_tool}" ]]; then
+      echo "missing package-owned target tool: ${_tool_root}/${_tool}" >&2
+      return 1
+    fi
+  done
+  for _tool in as ld windmc windres; do
+    if [[ ! -x "${_tool_prefix}${_tool}" ]]; then
+      echo "missing package-owned installed-driver tool: ${_tool_prefix}${_tool}" >&2
+      return 1
+    fi
+  done
+}
 
 prepare() {
   cd "${srcdir}/${_gcc_root}"
@@ -83,6 +113,9 @@ build() {
   export MSYSTEM=MSYS
   export lt_cv_deplibs_check_method=pass_all
   local _tool_target=aarch64-pc-cygwin
+  _require_target_binutils \
+    "/opt/${_tool_target}/bin" \
+    "/opt/bin/${_tool_target}-"
   local _prefix_map="-ffile-prefix-map=${srcdir}=. -fdebug-prefix-map=${srcdir}=. -fmacro-prefix-map=${srcdir}=."
   local _target_specs_flag="-specs=/opt/${_target}/lib/cygwin-compile-only.specs"
   local -a _target_xgcc_flags=(
@@ -102,6 +135,8 @@ build() {
   (
     cd "${_build_dir}"
     AS_FOR_TARGET="/opt/bin/${_tool_target}-as" \
+      WINDMC_FOR_TARGET="/opt/bin/${_tool_target}-windmc" \
+      WINDRES_FOR_TARGET="/opt/bin/${_tool_target}-windres" \
       "${_src_dir}/configure" \
       --prefix=/opt \
       --build="${_host}" \
@@ -110,8 +145,9 @@ build() {
       --libexecdir=/opt/libexec \
       --with-sysroot="/opt/${_target}" \
       --with-build-sysroot="/opt/${_target}" \
-      --with-build-time-tools="/opt/${_target}/bin" \
+      --with-build-time-tools="/opt/${_tool_target}/bin" \
       --with-native-system-header-dir=/include \
+      --with-gxx-include-dir="/opt/${_target}/include/c++/${_gcc_version}" \
       --with-newlib \
       --with-abi=lp64 \
       --with-arch=armv8-a \
@@ -147,6 +183,8 @@ build() {
       --with-mpfr=/usr \
       --with-mpc=/usr \
       --with-isl=/usr \
+      --with-as="/opt/bin/${_tool_target}-as" \
+      --with-ld="/opt/bin/${_tool_target}-ld" \
       --with-gnu-as \
       --with-gnu-ld
   )
@@ -163,21 +201,15 @@ EOF
   if [[ ! -x "${_stage_xgcc}" ]]; then
     _stage_xgcc="${_build_dir}/gcc/xgcc"
   fi
-  local _original_as="/opt/bin/${_tool_target}-as"
-  local _wrapper_as="${_build_dir}/gcc/as"
+  local _installed_as="/opt/bin/${_tool_target}-as"
   local _ar="/opt/bin/${_tool_target}-ar"
   local _nm="/opt/bin/${_tool_target}-nm"
   local _objdump="/opt/bin/${_tool_target}-objdump"
-  test -x "${_original_as}"
-  test -x "${_wrapper_as}"
+  test -x "${_installed_as}"
   test -x "${_ar}"
   test -x "${_nm}"
   test -x "${_objdump}"
-  grep -Fx "ORIGINAL_AS_FOR_TARGET=\"${_original_as}\"" "${_wrapper_as}"
-  if ! env \
-    original="${_original_as}" \
-    "${_stage_xgcc}" \
-    -B"/opt/bin/" \
+  if ! "${_stage_xgcc}" \
     -B"${_build_dir}/gcc/" \
     -B"${_build_dir}/${_target}/libgcc/" \
     -B"${_build_dir}/${_target}/libstdc++-v3/src/" \
@@ -190,16 +222,35 @@ EOF
     2> "${_build_dir}/windows-header-check.err"; then
     return 1
   fi
-  grep -Fq "${_wrapper_as}" "${_build_dir}/windows-header-check.err" || {
-    local _delegated_as
-    _delegated_as=$(
-      grep -oE '/opt/bin/[[:alnum:]_-]+-as(\.exe)?' \
-        "${_build_dir}/windows-header-check.err" | tail -n 1
-    )
-    printf 'stage-xgcc-wrapper-missing\t%s\t%s\n' \
-      "${_wrapper_as}" "${_delegated_as:-<unparsed>}" >&2
+  "${_stage_xgcc}" \
+    -B"${_build_dir}/gcc/" \
+    -B"${_build_dir}/${_target}/libgcc/" \
+    -B"${_build_dir}/${_target}/libstdc++-v3/src/" \
+    --sysroot="/opt/${_target}" \
+    "${_target_specs_flag}" \
+    -### \
+    -c "${_build_dir}/windows-header-check.c" \
+    -o "${_build_dir}/windows-header-check-dry-run.o" \
+    > /dev/null \
+    2> "${_build_dir}/windows-header-check.commands.txt"
+  for _file in \
+    "${_build_dir}/windows-header-check.err" \
+    "${_build_dir}/windows-header-check.commands.txt"
+  do
+    grep -Eq \
+      "^[[:space:]]+['\"]?/opt/bin/${_tool_target}-as(\\.exe)?['\"]?[[:space:]]" \
+      "${_file}"
+    if grep -Eq \
+        "^[[:space:]]+['\"]?(as(\\.exe)?|/usr/bin/as(\\.exe)?|/opt/bin/${_target}-as(\\.exe)?|${_build_dir}/gcc/as(\\.exe)?)['\"]?[[:space:]]" \
+        "${_file}"; then
+      echo "stage xgcc selected a non-package-owned assembler" >&2
+      return 1
+    fi
+  done
+  if [[ -e "${_build_dir}/windows-header-check-dry-run.o" ]]; then
+    echo "stage xgcc -### unexpectedly created an object" >&2
     return 1
-  }
+  fi
   "${_objdump}" -f "${_build_dir}/windows-header-check.o" \
     > "${_build_dir}/windows-header-check.objdump"
   grep -F 'file format pe-aarch64-little' \
@@ -353,6 +404,13 @@ EOF
     fi
   done
 
+  install -d "${_stage_dir}/opt/${_target}/bin"
+  for _file in ar nm ranlib; do
+    MSYS=winsymlinks:sys ln -s \
+      "../../${_tool_target}/bin/${_file}.exe" \
+      "${_stage_dir}/opt/${_target}/bin/${_file}.exe"
+  done
+
   bash "${srcdir}/validate-gcc.sh" \
     "${_stage_dir}/opt" \
     "${_report_dir}"
@@ -373,7 +431,10 @@ EOF
 
   (
     cd "${_stage_dir}"
-    find opt -type f -print0 | sort -z | xargs -0 sha256sum
+    find opt -type f -print0 \
+      | LC_ALL=C sort -z \
+      | xargs -0 sha256sum --binary \
+      | sed -E 's/^([0-9a-f]{64}) \*/\1  /'
   ) > "${_report_dir}/package-manifest.sha256"
 }
 
@@ -392,6 +453,7 @@ package_mingw-w64-cross-msysarm64-gcc() {
   depends=(
     "mingw-w64-cross-msysarm64-gcc-libs=${pkgver}-${pkgrel}"
     "mingw-w64-cross-msysarm64-libstdc++-headers=${pkgver}-${pkgrel}"
+    'mingw-w64-cross-cygwinarm64-binutils>=2.44.50'
   )
   provides=(
     "aarch64-pc-msys-gcc=${pkgver}"
@@ -400,7 +462,7 @@ package_mingw-w64-cross-msysarm64-gcc() {
     'aarch64-pc-msys-gcc'
   )
 
-  cp -a "${_stage_dir}/." "${pkgdir}/"
+  MSYS=winsymlinks:sys cp -a "${_stage_dir}/." "${pkgdir}/"
   rm -rf "${pkgdir}/opt/lib/gcc/${_target}/${_gcc_version}"
   rm -f "${pkgdir}/opt/bin/"*.dll
   rm -rf "${pkgdir}/opt/share"

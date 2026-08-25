@@ -8,6 +8,11 @@ if (( $# != 2 )); then
 fi
 
 prefix_root=$(cd "$1" && pwd)
+package_root=$(dirname "$prefix_root")
+if [[ $(basename "$prefix_root") != opt ]]; then
+  echo "PREFIX_ROOT must name the package's opt prefix: $prefix_root" >&2
+  exit 1
+fi
 report_dir=$2
 mkdir -p "$report_dir"
 report_dir=$(cd "$report_dir" && pwd)
@@ -25,6 +30,8 @@ nm=${NM:-${binutils_prefix}-nm}
 objdump=${OBJDUMP:-${binutils_prefix}-objdump}
 ld=${LD:-${binutils_prefix}-ld}
 windres=${WINDRES:-${binutils_prefix}-windres}
+host_ar=/usr/bin/ar
+host_objdump=/usr/bin/objdump
 gcc_version=$("$cxx" -dumpversion)
 sysroot=/opt/${target}
 generic_include="${sysroot}/include/c++/${gcc_version}"
@@ -33,9 +40,13 @@ backward_include="${generic_include}/backward"
 sysroot_include="${sysroot}/include"
 sysroot_w32api="${sysroot}/include/w32api"
 specs="${sysroot}/lib/cygwin-compile-only.specs"
+target_gcc_root="${prefix_root}/lib/gcc/${target}"
 libgcc_dir="${prefix_root}/lib/gcc/${target}/${gcc_version}"
+compiler_include="${libgcc_dir}/include"
+compiler_fixed_include="${libgcc_dir}/include-fixed"
 
-for tool in "$cc" "$cxx" "$ar" "$nm" "$objdump" "$windres"; do
+for tool in "$cc" "$cxx" "$ar" "$nm" "$objdump" "$windres" \
+  "$host_ar" "$host_objdump"; do
   command -v "$tool" >/dev/null
 done
 
@@ -54,36 +65,313 @@ link_tool=(
   "--sysroot=${sysroot}"
 )
 
-audit_file() {
+payload_arch() {
   local file=$1
   case "$file" in
-    *.a)
-      local archive_dir="${workdir}/$(basename "$file" .a)"
-      mkdir -p "$archive_dir"
-      "$ar" t "$file" > "${archive_dir}/members.txt"
-      test -s "${archive_dir}/members.txt"
-      if sort "${archive_dir}/members.txt" | uniq -d | grep -q .; then
-        echo "duplicate archive member names in $file" >&2
-        exit 1
-      fi
-      (
-        cd "$archive_dir"
-        "$ar" x "$file"
-      )
-      while IFS= read -r member; do
-        member_path="${archive_dir}/${member}"
-        test "$(od -An -tx2 -N2 "$member_path" | tr -d '[:space:]')" = aa64
-        "$objdump" -f "$member_path" | grep -F 'file format pe-aarch64-little' >/dev/null
-      done < "${archive_dir}/members.txt"
+    "${target_gcc_root}/"*liblto_plugin*.a)
+      printf 'host\n'
       ;;
-    *.dll|*.exe|*.o)
-      "$objdump" -f "$file" | grep -Eq 'file format pei?-aarch64-little'
-      if [[ "$file" == *.o ]]; then
-        test "$(od -An -tx2 -N2 "$file" | tr -d '[:space:]')" = aa64
-      fi
+    "${prefix_root}/${target}/bin/ar.exe"|\
+    "${prefix_root}/${target}/bin/nm.exe"|\
+    "${prefix_root}/${target}/bin/ranlib.exe")
+      printf 'host\n'
+      ;;
+    "${prefix_root}/bin/"*.exe|\
+    "${prefix_root}/libexec/"*|\
+    "${prefix_root}/lib/bfd-plugins/"*)
+      printf 'host\n'
+      ;;
+    "${prefix_root}/bin/msys-"*.dll|\
+    "${prefix_root}/bin/"*.dll.a|\
+    "${target_gcc_root}/"*)
+      printf 'target\n'
+      ;;
+    *)
+      echo "unclassified PE/COFF payload: $file" >&2
+      return 1
       ;;
   esac
 }
+
+reject_match() {
+  local pattern=$1
+  local file=$2
+  local description=$3
+  local rc
+
+  if grep -Ei -- "$pattern" "$file"; then
+    echo "$description" >&2
+    return 1
+  else
+    rc=$?
+    if (( rc != 1 )); then
+      echo "failed to inspect $file: grep exited $rc" >&2
+      return "$rc"
+    fi
+  fi
+}
+
+audit_file() {
+  local file=$1
+  local arch
+  local archive_dir
+  local archive_tool
+  local actual_format
+  local actual_machine
+  local duplicates
+  local image_format
+  local inspect_tool
+  local machine
+  local member
+  local member_path
+  local members_file
+  local object_format
+  local signature
+
+  arch=$(payload_arch "$file")
+  if [[ "$arch" == target ]]; then
+    machine=aa64
+    object_format=pe-aarch64-little
+    image_format=pei-aarch64-little
+    archive_tool=$ar
+    inspect_tool=$objdump
+  else
+    machine=8664
+    object_format=pe-x86-64
+    image_format=pei-x86-64
+    archive_tool=$host_ar
+    inspect_tool=$host_objdump
+  fi
+
+  case "$file" in
+    *.a)
+      archive_dir=$(mktemp -d "${workdir}/archive.XXXXXX")
+      members_file="${archive_dir}/members.txt"
+      if ! "$archive_tool" t "$file" > "$members_file"; then
+        echo "malformed archive: $file" >&2
+        rm -rf "$archive_dir"
+        return 1
+      fi
+      if [[ ! -s "$members_file" ]]; then
+        echo "empty archive: $file" >&2
+        rm -rf "$archive_dir"
+        return 1
+      fi
+      duplicates=$(awk 'seen[$0]++ { print }' "$members_file")
+      if [[ -n "$duplicates" ]]; then
+        echo "duplicate archive member names in $file" >&2
+        rm -rf "$archive_dir"
+        return 1
+      fi
+      if ! (
+        cd "$archive_dir"
+        "$archive_tool" x "$file"
+      ); then
+        echo "failed to extract archive: $file" >&2
+        rm -rf "$archive_dir"
+        return 1
+      fi
+      while IFS= read -r member; do
+        member_path="${archive_dir}/${member}"
+        if [[ ! -f "$member_path" ]]; then
+          echo "missing extracted archive member: $file($member)" >&2
+          rm -rf "$archive_dir"
+          return 1
+        fi
+        signature=$(od -An -tx1 -N4 "$member_path" | tr -d '[:space:]')
+        if [[ "$signature" == 0000ffff ]]; then
+          actual_machine=$(
+            od -An -tx2 -j6 -N2 "$member_path" | tr -d '[:space:]'
+          )
+          actual_format="short-import:${signature}"
+        else
+          actual_machine=$(od -An -tx2 -N2 "$member_path" | tr -d '[:space:]')
+          actual_format=$(
+            "$inspect_tool" -f "$member_path" \
+              | sed -n 's/^.*file format //p'
+          )
+        fi
+        if [[ "$actual_machine" != "$machine" ]]; then
+          echo "wrong COFF machine in $file($member): ${actual_machine:-unknown}" >&2
+          rm -rf "$archive_dir"
+          return 1
+        fi
+        if [[ "$signature" != 0000ffff && \
+            "$actual_format" != "$object_format" ]]; then
+          echo "wrong object format in $file($member): ${actual_format:-unknown}" >&2
+          rm -rf "$archive_dir"
+          return 1
+        fi
+        printf '%s(%s)\t%s\t%s\t%s\t%s\n' \
+          "${file#"$package_root"/}" "$member" "$arch" "$object_format" \
+          "$actual_format" "$actual_machine" \
+          >> "$report_dir/payload-audit.tsv"
+      done < "$members_file"
+      rm -rf "$archive_dir"
+      ;;
+    *.dll|*.exe)
+      actual_format=$(
+        "$inspect_tool" -f "$file" \
+          | sed -n 's/^.*file format //p'
+      )
+      if [[ "$actual_format" != "$image_format" ]]; then
+        echo "wrong image format for $file: ${actual_format:-unknown}" >&2
+        return 1
+      fi
+      printf '%s\t%s\t%s\t%s\t%s\n' \
+        "${file#"$package_root"/}" "$arch" "$image_format" "$actual_format" \
+        "$machine" \
+        >> "$report_dir/payload-audit.tsv"
+      ;;
+    *.o)
+      actual_machine=$(od -An -tx2 -N2 "$file" | tr -d '[:space:]')
+      actual_format=$(
+        "$inspect_tool" -f "$file" \
+          | sed -n 's/^.*file format //p'
+      )
+      if [[ "$actual_machine" != "$machine" || \
+          "$actual_format" != "$object_format" ]]; then
+        echo "wrong COFF object for $file: machine=${actual_machine:-unknown} format=${actual_format:-unknown}" >&2
+        return 1
+      fi
+      printf '%s\t%s\t%s\t%s\t%s\n' \
+        "${file#"$package_root"/}" "$arch" "$object_format" "$actual_format" \
+        "$actual_machine" \
+        >> "$report_dir/payload-audit.tsv"
+      ;;
+    *)
+      echo "unsupported payload type: $file" >&2
+      return 1
+      ;;
+  esac
+}
+
+write_package_manifest() {
+  (
+    cd "$package_root"
+    find opt -type f -print0 \
+      | LC_ALL=C sort -z \
+      | xargs -0 sha256sum --binary \
+      | sed -E 's/^([0-9a-f]{64}) \*/\1  /'
+  )
+}
+
+validate_binutils_bridges() {
+  local actual_target
+  local bridge
+  local expected_target
+  local owned_target
+  local owner
+  local tool
+
+  for tool in ar nm ranlib; do
+    bridge="${prefix_root}/${target}/bin/${tool}.exe"
+    expected_target="../../${binutils_prefix}/bin/${tool}.exe"
+    if [[ ! -L "$bridge" ]]; then
+      echo "Missing internal binutils bridge: $bridge" >&2
+      return 1
+    fi
+    actual_target=$(readlink "$bridge")
+    if [[ "$actual_target" != "$expected_target" ]]; then
+      echo "Unexpected internal binutils bridge target: $bridge -> $actual_target" >&2
+      return 1
+    fi
+    owned_target="/opt/${binutils_prefix}/bin/${tool}.exe"
+    if [[ ! -x "$owned_target" ]]; then
+      echo "Missing binutils-owned bridge target: $owned_target" >&2
+      return 1
+    fi
+    owner=$(pacman -Qoq "$owned_target")
+    if [[ "$owner" != mingw-w64-cross-cygwinarm64-binutils ]]; then
+      echo "Unexpected bridge target owner: $owned_target -> $owner" >&2
+      return 1
+    fi
+    if [[ -e "${prefix_root}/bin/${target}-${tool}.exe" || \
+        -L "${prefix_root}/bin/${target}-${tool}.exe" ]]; then
+      echo "Forbidden public target-binutils alias in GCC payload: ${target}-${tool}.exe" >&2
+      return 1
+    fi
+    printf '%s\thost-tool-bridge\trelative-symlink\t%s\t%s\n' \
+      "${bridge#"$package_root"/}" "$actual_target" "$owner" \
+      >> "$report_dir/payload-audit.tsv"
+  done
+}
+
+validate_required_payloads() {
+  local required_host
+  local required_plugin
+  local required_target_name
+  local -a plugin_roots
+  local -a required_plugins
+  local -a required_targets
+
+  validate_binutils_bridges
+
+  for required_host in \
+    "${prefix_root}/bin/${target}-gcc.exe" \
+    "${prefix_root}/bin/${target}-g++.exe" \
+    "${prefix_root}/libexec/gcc/${target}/${gcc_version}/cc1.exe" \
+    "${prefix_root}/libexec/gcc/${target}/${gcc_version}/cc1plus.exe" \
+    "${prefix_root}/libexec/gcc/${target}/${gcc_version}/lto1.exe" \
+    "${prefix_root}/libexec/gcc/${target}/${gcc_version}/lto-wrapper.exe" \
+    "${prefix_root}/libexec/gcc/${target}/${gcc_version}/collect2.exe"
+  do
+    if [[ ! -e "$required_host" ]]; then
+      echo "Missing required host tool: $required_host" >&2
+      return 1
+    fi
+    if [[ $(payload_arch "$required_host") != host ]]; then
+      echo "Required host tool is in the wrong payload role: $required_host" >&2
+      return 1
+    fi
+    audit_file "$required_host"
+  done
+
+  plugin_roots=("${prefix_root}/libexec")
+  if [[ -d "${prefix_root}/lib/bfd-plugins" ]]; then
+    plugin_roots+=("${prefix_root}/lib/bfd-plugins")
+  fi
+  mapfile -t required_plugins < <(
+    find -L "${plugin_roots[@]}" -type f -name '*lto_plugin*.dll' \
+      | LC_ALL=C sort -u
+  )
+  if (( ${#required_plugins[@]} < 1 )); then
+    echo "Missing required host LTO plugin" >&2
+    return 1
+  fi
+  for required_plugin in "${required_plugins[@]}"; do
+    if [[ $(payload_arch "$required_plugin") != host ]]; then
+      echo "Required host LTO plugin is in the wrong payload role: $required_plugin" >&2
+      return 1
+    fi
+    audit_file "$required_plugin"
+  done
+
+  for required_target_name in \
+    libgcc.a \
+    crtbegin.o \
+    msys-gcc_s-seh-1.dll \
+    libstdc++.a \
+    msys-stdc++-6.dll
+  do
+    mapfile -t required_targets < <(
+      find -L "$target_gcc_root" -type f -name "$required_target_name"
+    )
+    if (( ${#required_targets[@]} != 1 )); then
+      echo "Expected one $required_target_name target artifact; found ${#required_targets[@]}" >&2
+      return 1
+    fi
+    if [[ $(payload_arch "${required_targets[0]}") != target ]]; then
+      echo "Required target artifact is in the wrong payload role: ${required_targets[0]}" >&2
+      return 1
+    fi
+    audit_file "${required_targets[0]}"
+  done
+}
+
+if [[ ${VALIDATE_GCC_FUNCTIONS_ONLY:-0} == 1 ]]; then
+  return 0 2>/dev/null || exit 0
+fi
 
 "$cxx" "${compile_tool[@]}" -dM -E -x c++ /dev/null > "$workdir/compiler-macros.txt"
 test "$("$cxx" -dumpmachine)" = "$target"
@@ -212,8 +500,12 @@ PY
 
 "$cxx" "${compile_tool[@]}" -E -Wp,-v -x c++ /dev/null > /dev/null 2> "$workdir/include-search.txt"
 
-python - "$workdir/include-search.txt" "$generic_include" "$target_include" "$backward_include" "$sysroot_include" "$sysroot_w32api" <<'PY'
+python - "$workdir/include-search.txt" \
+  "$compiler_include" "$compiler_fixed_include" \
+  "$generic_include" "$target_include" "$backward_include" \
+  "$sysroot_include" "$sysroot_w32api" <<'PY'
 import pathlib
+import posixpath
 import re
 import shlex
 import sys
@@ -233,13 +525,16 @@ for line in pathlib.Path(sys.argv[1]).read_text(encoding="utf-8", errors="replac
         elif token.startswith("-I") and len(token) > 2:
             paths.append(token[2:])
 
-allowed = tuple(
-    value.replace("\\", "/").lower().rstrip("/")
-    for value in sys.argv[2:]
-)
+def normalize(value):
+    return posixpath.normpath(value.replace("\\", "/").lower()).rstrip("/")
+
+allowed = tuple(normalize(value) for value in sys.argv[2:])
 for path in paths:
-    normalized = path.replace("\\", "/").lower()
-    if not normalized.startswith(allowed):
+    normalized = normalize(path)
+    if not any(
+        normalized == root or normalized.startswith(root + "/")
+        for root in allowed
+    ):
         raise SystemExit(f"foreign include path: {path}")
     if (
         "aarch64-w64-mingw32" in normalized
@@ -250,10 +545,8 @@ for path in paths:
         raise SystemExit(f"foreign include path: {path}")
 PY
 
-if grep -q -- '-D_WIN64' "$workdir/include-search.txt"; then
-  echo "compiler unexpectedly injects a recipe-level _WIN64 define" >&2
-  exit 1
-fi
+reject_match '-D_WIN64' "$workdir/include-search.txt" \
+  'compiler unexpectedly injects a recipe-level _WIN64 define'
 
 cat > "$workdir/hello.c" <<'EOF'
 #include <windows.h>
@@ -281,25 +574,33 @@ for file in "$workdir/hello-c.exe" "$workdir/hello-cxx.exe"; do
   "$objdump" -p "$file" | sed -n 's/^[[:space:]]*DLL Name: //p' > "${file}.imports"
   grep -F 'msys-2.0.dll' "${file}.imports"
   grep -F 'KERNEL32.dll' "${file}.imports"
-  ! grep -Ei '^cygwin1\.dll$' "${file}.imports"
+  reject_match '^cygwin1\.dll$' "${file}.imports" \
+    "unexpected cygwin1.dll dependency in $file"
 done
 
 "$cc" "${link_tool[@]}" -dumpspecs > "$workdir/gcc.specs"
 grep -F -- '-lmsys-2.0' "$workdir/gcc.specs"
-! grep -F -- '-lcygwin' "$workdir/gcc.specs"
+reject_match '(^|[[:space:]])-lcygwin([[:space:]]|$)' "$workdir/gcc.specs" \
+  'compiler specs reference -lcygwin'
 
-! grep -Ei 'cygwin1\.dll|libcygwin\.a|x86_64' "$workdir/include-search.txt"
+reject_match 'cygwin1\.dll|libcygwin\.a|x86_64' "$workdir/include-search.txt" \
+  'foreign include/runtime path detected'
 
-find "$prefix_root" -type f \( -name '*.a' -o -name '*.dll' -o -name '*.dll.a' -o -name '*.exe' -o -name '*.o' \) \
-  | LC_ALL=C sort > "$report_dir/file-list.txt"
-while IFS= read -r file; do
-  audit_file "$file"
-done < "$report_dir/file-list.txt"
+printf 'path\trole\texpected-format\tactual-format\tmachine\n' \
+  > "$report_dir/payload-audit.tsv"
+validate_required_payloads
 
 (
-  cd "$prefix_root"
-  find opt -type f -print0 | sort -z | xargs -0 sha256sum
-) > "$report_dir/package-manifest.sha256"
+  cd "$package_root"
+  find -L opt -type f \( -name '*.a' -o -name '*.dll' -o \
+    -name '*.dll.a' -o -name '*.exe' -o -name '*.o' \) \
+    | LC_ALL=C sort
+) > "$report_dir/file-list.txt"
+while IFS= read -r relative_file; do
+  audit_file "${package_root}/${relative_file}"
+done < "$report_dir/file-list.txt"
+
+write_package_manifest > "$report_dir/package-manifest.sha256"
 
 {
   printf 'package\tmingw-w64-cross-msysarm64-gcc\n'
@@ -345,3 +646,4 @@ pathlib.Path(sys.argv[2]).write_text(
 PY
 
 printf 'validated\t%s\n' "$("$cxx" -dumpmachine)" > "$report_dir/validated.txt"
+rm -rf "$workdir"

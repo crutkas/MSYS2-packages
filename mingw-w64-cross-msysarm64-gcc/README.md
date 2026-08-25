@@ -47,6 +47,12 @@ The compiler package does not ship target C++ headers. Those remain in the
 separate `mingw-w64-cross-msysarm64-libstdc++-headers` package so the compiler
 layer stays reproducible and the install boundary remains explicit.
 
+The compiler package owns relative internal bridges for `ar`, `nm`, and
+`ranlib` under `/opt/aarch64-pc-msys/bin`. They point to the package-owned
+`aarch64-pc-cygwin` binutils to support GCC's LTO-aware wrappers without
+public `aarch64-pc-msys-*` aliases. Remove or transfer these bridges when a
+native MSYS-target binutils package owns that target tool directory.
+
 ## Local static checks
 
 Use this exact bounded shell invocation for local proof steps:
