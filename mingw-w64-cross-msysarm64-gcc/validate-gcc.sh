@@ -22,8 +22,8 @@ mkdir -p "$workdir"
 export PATH="${prefix_root}/bin:${PATH}"
 
 target=${TARGET:-aarch64-pc-msys}
-cc=${CC:-aarch64-pc-msys-gcc}
-cxx=${CXX:-aarch64-pc-msys-g++}
+cc=${TARGET_CC:-"${prefix_root}/bin/${target}-gcc.exe"}
+cxx=${TARGET_CXX:-"${prefix_root}/bin/${target}-g++.exe"}
 binutils_prefix=${BINUTILS_PREFIX:-aarch64-pc-cygwin}
 ar=${AR:-${binutils_prefix}-ar}
 nm=${NM:-${binutils_prefix}-nm}
@@ -32,8 +32,105 @@ ld=${LD:-${binutils_prefix}-ld}
 windres=${WINDRES:-${binutils_prefix}-windres}
 host_ar=/usr/bin/ar
 host_objdump=/usr/bin/objdump
-gcc_version=$("$cxx" -dumpversion)
-sysroot=/opt/${target}
+sysroot="/opt/${target}"
+
+record_driver_path() {
+  local role=$1
+  local tool=$2
+  local expected=$3
+  local resolved
+  local hash
+
+  if [[ "$tool" != /* ]]; then
+    echo "$role compiler path must be absolute: $tool" >&2
+    return 1
+  fi
+  resolved=$(realpath -m "$tool")
+  if [[ ! -f "$resolved" || ! -x "$resolved" ]]; then
+    echo "$role compiler is missing or not executable: $resolved" >&2
+    return 1
+  fi
+  hash=$(sha256sum --binary "$resolved" | cut -d' ' -f1)
+  printf '%s\t%s\t%s\t%s\n' "$role" "$tool" "$resolved" "$hash" \
+    >> "$report_dir/compiler-tools.tsv"
+  printf '%s\n' "$resolved"
+}
+
+query_driver() {
+  local role=$1
+  local tool=$2
+  local option=$3
+  local result_name=$4
+  local stderr_file="$report_dir/${role}-${option#-}.stderr.txt"
+  local output
+  local rc
+  local bytes
+
+  set +e
+  output=$("$tool" "$option" 2> "$stderr_file")
+  rc=$?
+  set -e
+  bytes=$(printf '%s' "$output" | od -An -tx1 | tr -d '[:space:]')
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$role" "$tool" "$option" "$rc" "$output" "$bytes" \
+    >> "$report_dir/compiler-queries.tsv"
+  if (( rc != 0 )); then
+    echo "$role compiler query failed: tool=$tool option=$option rc=$rc stderr=$stderr_file" >&2
+    return 1
+  fi
+  printf -v "$result_name" '%s' "$output"
+}
+
+: > "$report_dir/compiler-tools.tsv"
+: > "$report_dir/compiler-queries.tsv"
+expected_cc=$(realpath -m "${prefix_root}/bin/${target}-gcc.exe")
+expected_cxx=$(realpath -m "${prefix_root}/bin/${target}-g++.exe")
+cc_resolved=$(record_driver_path CC "$cc" "$expected_cc")
+cxx_resolved=$(record_driver_path CXX "$cxx" "$expected_cxx")
+query_driver CC "$cc_resolved" -dumpmachine cc_machine
+query_driver CC "$cc_resolved" -dumpversion cc_version
+query_driver CXX "$cxx_resolved" -dumpmachine cxx_machine
+query_driver CXX "$cxx_resolved" -dumpversion cxx_version
+if [[ "$cc_machine" != "$target" ]]; then
+  echo "CC dumpmachine mismatch: tool=$cc_resolved expected=$target actual=$cc_machine" >&2
+  exit 1
+fi
+if [[ "$cxx_machine" != "$target" ]]; then
+  echo "CXX dumpmachine mismatch: tool=$cxx_resolved expected=$target actual=$cxx_machine" >&2
+  exit 1
+fi
+if [[ -z "$cc_version" || -z "$cxx_version" || "$cc_version" != "$cxx_version" ]]; then
+  echo "compiler version mismatch: CC=$cc_version CXX=$cxx_version" >&2
+  exit 1
+fi
+if [[ "$cc_resolved" != "$expected_cc" ]]; then
+  echo "CC compiler path mismatch: expected=$expected_cc actual=$cc_resolved" >&2
+  exit 1
+fi
+if [[ "$cxx_resolved" != "$expected_cxx" ]]; then
+  echo "CXX compiler path mismatch: expected=$expected_cxx actual=$cxx_resolved" >&2
+  exit 1
+fi
+gcc_version=$cxx_version
+set +e
+"$cxx_resolved" -v \
+  > "$report_dir/CXX-version.stdout.txt" \
+  2> "$report_dir/CXX-version.stderr.txt"
+cxx_version_rc=$?
+set -e
+if (( cxx_version_rc != 0 )); then
+  echo "CXX version probe failed: tool=$cxx_resolved rc=$cxx_version_rc" >&2
+  exit 1
+fi
+thread_model=$(sed -n 's/^Thread model: //p' "$report_dir/CXX-version.stderr.txt")
+if [[ "$thread_model" != posix ]]; then
+  echo "CXX thread model mismatch: tool=$cxx_resolved expected=posix actual=${thread_model:-<missing>}" >&2
+  exit 1
+fi
+printf 'target\t%s\nversion\t%s\nthread-model\t%s\n' \
+  "$target" "$gcc_version" "$thread_model" \
+  > "$report_dir/compiler-identity.tsv"
+
 generic_include="${sysroot}/include/c++/${gcc_version}"
 target_include="${generic_include}/${target}"
 backward_include="${generic_include}/backward"
@@ -45,7 +142,7 @@ libgcc_dir="${prefix_root}/lib/gcc/${target}/${gcc_version}"
 compiler_include="${libgcc_dir}/include"
 compiler_fixed_include="${libgcc_dir}/include-fixed"
 
-for tool in "$cc" "$cxx" "$ar" "$nm" "$objdump" "$windres" \
+for tool in "$ar" "$nm" "$objdump" "$windres" \
   "$host_ar" "$host_objdump"; do
   command -v "$tool" >/dev/null
 done
@@ -374,8 +471,7 @@ if [[ ${VALIDATE_GCC_FUNCTIONS_ONLY:-0} == 1 ]]; then
 fi
 
 "$cxx" "${compile_tool[@]}" -dM -E -x c++ /dev/null > "$workdir/compiler-macros.txt"
-test "$("$cxx" -dumpmachine)" = "$target"
-grep -Fx 'Thread model: posix' <("$cxx" -v 2>&1)
+grep -Fx 'Thread model: posix' "$report_dir/CXX-version.stderr.txt"
 grep -Eq '^#define __MSYS__( 1)?$' "$workdir/compiler-macros.txt"
 grep -Eq '^#define __CYGWIN__( 1)?$' "$workdir/compiler-macros.txt"
 grep -Eq '^#define __SEH__( 1)?$' "$workdir/compiler-macros.txt"
@@ -384,6 +480,7 @@ grep -Fx '#define __LP64__ 1' "$workdir/compiler-macros.txt"
 grep -Fx '#define __SIZEOF_LONG__ 8' "$workdir/compiler-macros.txt"
 grep -Fx '#define __SIZEOF_POINTER__ 8' "$workdir/compiler-macros.txt"
 grep -Fx '#define __SIZEOF_LONG_DOUBLE__ 8' "$workdir/compiler-macros.txt"
+cp "$workdir/compiler-macros.txt" "$report_dir/compiler-macros.txt"
 
 cat > "$workdir/ctor-order.c" <<'EOF'
 volatile int ctor_order_state;
@@ -605,7 +702,7 @@ write_package_manifest > "$report_dir/package-manifest.sha256"
 {
   printf 'package\tmingw-w64-cross-msysarm64-gcc\n'
   printf 'target\t%s\n' "$target"
-  printf 'dumpmachine\t%s\n' "$("$cxx" -dumpmachine)"
+  printf 'dumpmachine\t%s\n' "$cxx_machine"
   printf 'thread-model\tposix\n'
   printf 'msys-macro\t%s\n' "$(grep -Eq '^#define __MSYS__( 1)?$' "$workdir/compiler-macros.txt" && echo yes)"
   printf 'win64-macro\t%s\n' "$(grep -Fx '#define _WIN64 1' "$workdir/compiler-macros.txt" && echo yes)"
@@ -645,5 +742,5 @@ pathlib.Path(sys.argv[2]).write_text(
 )
 PY
 
-printf 'validated\t%s\n' "$("$cxx" -dumpmachine)" > "$report_dir/validated.txt"
+printf 'validated\t%s\n' "$cxx_machine" > "$report_dir/validated.txt"
 rm -rf "$workdir"

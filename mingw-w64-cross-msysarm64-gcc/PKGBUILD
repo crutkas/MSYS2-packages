@@ -57,7 +57,7 @@ source=(
 sha256sums=(
   "${_gcc_archive_sha256}"
   'dcd3711497179b3f039c56c1f9fd9655dafd12668e5f398168bcf15a747fc073'
-  '5044bba38e57203117685ddce1905e55cc1cce34f7945557077debe0ea23803d'
+  'cd6f9d8ca33d13a521fe41f51a988fff8db9ae0c258bba64e73e3ac55fb5ab52'
 )
 
 _build_name="build-${_target}"
@@ -411,7 +411,10 @@ EOF
       "${_stage_dir}/opt/${_target}/bin/${_file}.exe"
   done
 
-  bash "${srcdir}/validate-gcc.sh" \
+  TARGET="${_target}" \
+    TARGET_CC="${_stage_dir}/opt/bin/${_target}-gcc.exe" \
+    TARGET_CXX="${_stage_dir}/opt/bin/${_target}-g++.exe" \
+    bash "${srcdir}/validate-gcc.sh" \
     "${_stage_dir}/opt" \
     "${_report_dir}"
 
