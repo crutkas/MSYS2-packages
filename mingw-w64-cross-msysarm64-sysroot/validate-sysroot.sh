@@ -59,5 +59,5 @@ grep -F "${sysroot}/include/w32api/" <<<"${w32api_trace}"
 (
   cd /
   sha256sum -c \
-    /usr/share/msysarm64-sysroot/sysroot-manifest.sha256
+    /usr/share/msys-sysroot/sysroot-manifest.sha256
 )
