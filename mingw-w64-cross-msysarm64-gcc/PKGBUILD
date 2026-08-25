@@ -250,7 +250,10 @@ EOF
     return 1
   fi
 
+  # libgcc also folds generated GCC_CFLAGS into its compile commands.
+  # Keep the specs there without repeating them through recursive CFLAGS.
   make -C "${_build_dir}" MAKEINFO=true \
+    CFLAGS_FOR_TARGET="${CFLAGS}" \
     XGCC_FLAGS_FOR_TARGET="${_target_xgcc_flags_string}" \
     all-target-libgcc
 
