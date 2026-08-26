@@ -20,10 +20,10 @@ jobs:
       }}
     env:
       CI_BASE_REPOSITORY: https://github.com/${{ github.repository }}.git
-      CI_BASE_REF: ${{ github.event.pull_request.base.ref || (github.ref_name == 'crutkas-congenial-system' && 'crutkas-package-aarch64-static-libgcc' || 'master') }}
-      CI_PACKAGE_PREFIXES: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system')) && 'mingw-w64-cross-cygwinarm64- mingw-w64-cross-msysarm64-' || '' }}
-      CI_RUN_CHECK: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system')) && '1' || '0' }}
-      CI_CANONICALIZE_PACKAGES: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system')) && '1' || '0' }}
+      CI_BASE_REF: ${{ github.event.pull_request.base.ref || 'master' }}
+      CI_PACKAGE_PREFIXES: ''
+      CI_RUN_CHECK: '0'
+      CI_CANONICALIZE_PACKAGES: '0'
       SOURCE_DATE_EPOCH: 1786817435
     strategy:
       fail-fast: false
@@ -56,6 +56,36 @@ jobs:
           filter: blob:none
           persist-credentials: false
 
+      - name: Resolve fork-local AArch64 settings
+        id: arm64-settings
+        shell: pwsh
+        run: |
+          $branchCandidates = @('${{ github.ref_name }}', '${{ github.head_ref }}') | Where-Object { $_ }
+          $match = @('crutkas-package-aarch64-static-libgcc', 'crutkas-congenial-system', 'crutkas-aarch64-gcc-layer') |
+            Where-Object { $branchCandidates -contains $_ } |
+            Select-Object -First 1
+          if (-not $match) {
+            "enabled=0" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+
+          $baseRef = switch ($match) {
+            'crutkas-aarch64-gcc-layer' { 'crutkas-package-aarch64-static-libgcc' }
+            'crutkas-congenial-system' { 'crutkas-package-aarch64-static-libgcc' }
+            default { 'master' }
+          }
+          $prefixes = 'mingw-w64-cross-cygwinarm64- mingw-w64-cross-msysarm64-'
+
+          "enabled=1" >> $env:GITHUB_OUTPUT
+          "base_ref=$baseRef" >> $env:GITHUB_OUTPUT
+          "package_prefixes=$prefixes" >> $env:GITHUB_OUTPUT
+          "run_check=1" >> $env:GITHUB_OUTPUT
+          "canonicalize_packages=1" >> $env:GITHUB_OUTPUT
+          "CI_BASE_REF=$baseRef" >> $env:GITHUB_ENV
+          "CI_PACKAGE_PREFIXES=$prefixes" >> $env:GITHUB_ENV
+          "CI_RUN_CHECK=1" >> $env:GITHUB_ENV
+          "CI_CANONICALIZE_PACKAGES=1" >> $env:GITHUB_ENV
+
       - name: Add staging repo
         shell: pwsh
         run: |
@@ -74,7 +104,7 @@ jobs:
           & 'C:\msys64\usr\bin\pacman.exe' --noconfirm --needed -S git python base-devel
 
       - name: Download fork-local AArch64 Cygwin inputs
-        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
+        if: ${{ steps.arm64-settings.outputs.enabled == '1' }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -123,7 +153,7 @@ jobs:
           }
 
       - name: Install fork-local AArch64 Cygwin inputs
-        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
+        if: ${{ steps.arm64-settings.outputs.enabled == '1' }}
         shell: pwsh
         run: |
           $input_dir = Join-Path $env:RUNNER_TEMP 'cygwinarm64-inputs'
@@ -138,7 +168,7 @@ jobs:
             "$input_dir\mingw-w64-cross-cygwinarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst"
 
       - name: Preflight fork-local AArch64 Cygwin inputs
-        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
+        if: ${{ steps.arm64-settings.outputs.enabled == '1' }}
         shell: pwsh
         run: |
           $packages = @(
@@ -165,7 +195,7 @@ jobs:
           & $bash --login -lc $script
 
       - name: Add MSYS tool aliases
-        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
+        if: ${{ steps.arm64-settings.outputs.enabled == '1' }}
         shell: pwsh
         run: |
           $binDir = 'C:\msys64\opt\bin'
@@ -208,7 +238,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.msystem }}-libstdcxx-debug
-          path: ${{ steps.facts.outputs.drive }}/_/mingw-w64-cross-msysarm64-libstdcxx-headers/src/libstdcxx-headers-report/*
+          path: |
+            ${{ steps.facts.outputs.drive }}/_/mingw-w64-cross-msysarm64-libstdcxx-headers/src/libstdcxx-headers-report/*
+            ${{ steps.facts.outputs.drive }}/_/mingw-w64-cross-msysarm64-gcc/src/gcc-report/*
 
   package-grokker:
     if: ${{ !(github.repository == 'crutkas/MSYS2-packages' && github.head_ref == 'crutkas-package-aarch64-static-libgcc') }}

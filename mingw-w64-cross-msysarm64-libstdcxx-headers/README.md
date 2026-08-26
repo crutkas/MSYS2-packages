@@ -2,7 +2,7 @@
 
 This package installs the GCC 15 target C++ standard-library header tree for
 `aarch64-pc-msys`. It is configured and installed from
-`crutkas/gcc-woarm64@bd1d77ba35e2820df5387cca5213925adb07a0ee`; no host,
+`crutkas/gcc-woarm64@50bcb1fbfb31a4a51b6cf0a517ecf3c668d00506`; no host,
 MinGW, or pre-generated C++ configuration headers are copied into the target.
 
 ## Why a transient compiler configuration is required
@@ -20,11 +20,17 @@ libgcc configure result is staged before libstdc++ configure. Only the
 upstream `install-headers` target is run. The package rejects any target
 archive, object, executable, or DLL.
 
-The frozen compiler also omits the required Windows ARM64 `_WIN64` target
-macro. Configuration and the recorded runtime continuation supply `-D_WIN64`
-explicitly. This does not alter a libstdc++ feature result; it preserves the
-Windows LP64 data model while the compiler macro fix remains a separate
-stage-0 blocker.
+Both the installed Cygwin stage-0 compiler and the transient final MSYS
+compiler predefine the required Windows ARM64 `_WIN64` and SEH target macros
+while preserving LP64 sizes. Only the final compiler defines `__MSYS__`.
+Configuration retains an explicit `-D_WIN64` consistency flag, and validation
+checks the native compiler macros separately from configured header features.
+
+The assembler contract starts at the package-owned
+`/opt/bin/aarch64-pc-cygwin-as`. GCC configures its build-tree `gcc/as`
+wrapper with that exact original path, and each probe supplies the same scoped
+`original` value. Validation requires the verbose compiler trace to select the
+wrapper and verifies that the resulting object is AArch64 PE/COFF.
 
 ## Install order
 

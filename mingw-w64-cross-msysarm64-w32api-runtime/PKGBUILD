@@ -210,7 +210,7 @@ available	cross binutils	aarch64-pc-cygwin PE/COFF assembler, linker, windres, a
 missing	aarch64-pc-msys GCC	not delivered by this package
 missing	target libgcc	not delivered by this package
 missing	newlib libc/libm target libraries	not delivered by this package
-missing	winsup/newlib runtime objects	must be compiled from crutkas/msys2-runtime@6922c388be93e423c1186f0b58c39380a5ee9e2d
+missing	winsup/newlib runtime objects	must be compiled from crutkas/msys2-runtime@c7932d64f13d51deacdcbfdab8df79bcb35ebd92
 missing	msys-2.0.dll and import library	outputs of the first runtime link; never fabricated here
 excluded	crt0.o and MinGW CRT objects	outside the w32api import-library ownership boundary
 next-blocker	build the aarch64-pc-msys target compiler/runtime objects before the first msys-2.0.dll link

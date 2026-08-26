@@ -1,0 +1,523 @@
+# Maintainer: Chris Reddington <crutkas@microsoft.com>
+
+_realname=gcc
+_target=aarch64-pc-msys
+_host=x86_64-pc-msys
+_gcc_commit=50bcb1fbfb31a4a51b6cf0a517ecf3c668d00506
+_gcc_root=gcc-woarm64-${_gcc_commit}
+_gcc_archive_sha256=b6d0494f22b70e9cb8cadda260a299aaba109fc20e4342542b9443f9cb4597a9
+_gcc_version=15.0.1
+_runtime_version=3.6.10.r0.ga527ace21
+_runtime_pkgrel=1
+_sysroot_version=3.6.10.r0.ga527ace21
+_w32api_version=14.0.0.r0.g9b3dd0125
+
+export SOURCE_DATE_EPOCH=1787591662
+
+pkgbase=mingw-w64-cross-msysarm64-gcc
+pkgname=(
+  mingw-w64-cross-msysarm64-gcc
+  mingw-w64-cross-msysarm64-gcc-libs
+)
+pkgver=15.0.1dev
+pkgrel=1
+pkgdesc="Cross GCC for aarch64-pc-msys"
+arch=('x86_64')
+url="https://github.com/crutkas/gcc-woarm64"
+msys2_repository_url="https://github.com/crutkas/gcc-woarm64"
+license=('GPL' 'LGPL' 'FDL' 'custom')
+groups=('mingw-w64-cross-toolchain' 'mingw-w64-cross')
+depends=(
+  "mingw-w64-cross-msysarm64-gcc-libs=${pkgver}-${pkgrel}"
+  "mingw-w64-cross-msysarm64-libstdc++-headers=${pkgver}-${pkgrel}"
+)
+makedepends=(
+  'gcc'
+  'gmp-devel'
+  'isl-devel'
+  'libiconv-devel'
+  'libzstd-devel'
+  'make'
+  'mingw-w64-cross-cygwinarm64-binutils>=2.44.50'
+  'mingw-w64-cross-cygwinarm64-gcc-stage1=15.0.1dev-2'
+  "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
+  "mingw-w64-cross-msysarm64-sysroot=${_sysroot_version}-1"
+  "mingw-w64-cross-msysarm64-w32api-runtime=${_w32api_version}-1"
+  'mpc-devel'
+  'mpfr-devel'
+  'python'
+  'zlib-devel'
+)
+options=('!strip' 'staticlibs' '!emptydirs' '!buildflags')
+source=(
+  "${_realname}-${_gcc_commit}.tar.gz::https://github.com/crutkas/gcc-woarm64/archive/${_gcc_commit}.tar.gz"
+  README.md
+  validate-gcc.sh
+)
+sha256sums=(
+  "${_gcc_archive_sha256}"
+  'dcd3711497179b3f039c56c1f9fd9655dafd12668e5f398168bcf15a747fc073'
+  'cd6f9d8ca33d13a521fe41f51a988fff8db9ae0c258bba64e73e3ac55fb5ab52'
+)
+
+_build_name="build-${_target}"
+_stage_name="stage-${_target}"
+_report_name="gcc-report"
+
+_require_target_binutils() {
+  local _tool_root=$1
+  local _tool_prefix=$2
+  local _tool
+
+  for _tool in \
+    ar \
+    as \
+    dlltool \
+    ld \
+    nm \
+    objcopy \
+    objdump \
+    ranlib \
+    readelf \
+    strip
+  do
+    if [[ ! -x "${_tool_root}/${_tool}" ]]; then
+      echo "missing package-owned target tool: ${_tool_root}/${_tool}" >&2
+      return 1
+    fi
+  done
+  for _tool in as ld windmc windres; do
+    if [[ ! -x "${_tool_prefix}${_tool}" ]]; then
+      echo "missing package-owned installed-driver tool: ${_tool_prefix}${_tool}" >&2
+      return 1
+    fi
+  done
+}
+
+prepare() {
+  cd "${srcdir}/${_gcc_root}"
+  rm -f libgomp/config/cygwin/plugin-suffix.h
+}
+
+build() {
+  local _src_dir="${srcdir}/${_gcc_root}"
+  local _build_dir="${srcdir}/${_build_name}"
+  local _stage_dir="${srcdir}/${_stage_name}"
+  local _report_dir="${srcdir}/${_report_name}"
+  local _libgcc_dir="${_build_dir}/${_target}/libgcc"
+  local _libstdcxx_src="${_build_dir}/${_target}/libstdc++-v3/src"
+  local _target_libdir="${_stage_dir}/opt/lib/gcc/${_target}/${_gcc_version}"
+  rm -rf "${_build_dir}" "${_stage_dir}" "${_report_dir}"
+  mkdir -p "${_build_dir}" "${_stage_dir}" "${_report_dir}"
+
+  export MSYSTEM=MSYS
+  export lt_cv_deplibs_check_method=pass_all
+  local _tool_target=aarch64-pc-cygwin
+  _require_target_binutils \
+    "/opt/${_tool_target}/bin" \
+    "/opt/bin/${_tool_target}-"
+  local _prefix_map="-ffile-prefix-map=${srcdir}=. -fdebug-prefix-map=${srcdir}=. -fmacro-prefix-map=${srcdir}=."
+  local _target_specs_flag="-specs=/opt/${_target}/lib/cygwin-compile-only.specs"
+  local -a _target_xgcc_flags=(
+    "-B/opt/${_target}/lib/"
+    -isystem "/opt/${_target}/include"
+    -isystem "/opt/${_target}/sys-include"
+    "--sysroot=/opt/${_target}"
+  )
+  local _target_xgcc_flags_string="${_target_xgcc_flags[*]}"
+  export CFLAGS="-O2 -pipe ${_prefix_map}"
+  export CXXFLAGS="-O2 -pipe ${_prefix_map}"
+  export CFLAGS_FOR_BUILD="${CFLAGS}"
+  export CXXFLAGS_FOR_BUILD="${CXXFLAGS}"
+  export CFLAGS_FOR_TARGET="${CFLAGS} ${_target_specs_flag}"
+  export CXXFLAGS_FOR_TARGET="${CXXFLAGS} ${_target_specs_flag}"
+
+  (
+    cd "${_build_dir}"
+    AS_FOR_TARGET="/opt/bin/${_tool_target}-as" \
+      WINDMC_FOR_TARGET="/opt/bin/${_tool_target}-windmc" \
+      WINDRES_FOR_TARGET="/opt/bin/${_tool_target}-windres" \
+      "${_src_dir}/configure" \
+      --prefix=/opt \
+      --build="${_host}" \
+      --host="${_host}" \
+      --target="${_target}" \
+      --libexecdir=/opt/libexec \
+      --with-sysroot="/opt/${_target}" \
+      --with-build-sysroot="/opt/${_target}" \
+      --with-build-time-tools="/opt/${_tool_target}/bin" \
+      --with-native-system-header-dir=/include \
+      --with-gxx-include-dir="/opt/${_target}/include/c++/${_gcc_version}" \
+      --with-newlib \
+      --with-abi=lp64 \
+      --with-arch=armv8-a \
+      --disable-multilib \
+      --enable-bootstrap \
+      --enable-languages=c,c++,lto \
+      --enable-shared \
+      --enable-static \
+      --enable-threads=posix \
+      --enable-__cxa_atexit \
+      --enable-fully-dynamic-string \
+      --enable-libstdcxx-backtrace=yes \
+      --enable-libstdcxx-filesystem-ts \
+      --enable-libstdcxx-time \
+      --disable-libstdcxx-pch \
+      --disable-libstdcxx-debug \
+      --disable-libgomp \
+      --disable-libatomic \
+      --disable-libquadmath \
+      --disable-libvtv \
+      --enable-version-specific-runtime-libs \
+      --disable-isl-version-check \
+      --enable-lto \
+      --disable-libssp \
+      --disable-nls \
+      --disable-rpath \
+      --disable-win32-registry \
+      --disable-werror \
+      --disable-symvers \
+      --with-libiconv \
+      --with-system-zlib \
+      --with-gmp=/usr \
+      --with-mpfr=/usr \
+      --with-mpc=/usr \
+      --with-isl=/usr \
+      --with-as="/opt/bin/${_tool_target}-as" \
+      --with-ld="/opt/bin/${_tool_target}-ld" \
+      --with-gnu-as \
+      --with-gnu-ld
+  )
+
+  make -C "${_build_dir}" MAKEINFO=true all-gcc
+
+  cat > "${_build_dir}/windows-header-check.c" <<'EOF'
+#include <windows.h>
+int main(void) {
+  return 0;
+}
+EOF
+  local _stage_xgcc="${_build_dir}/gcc/xgcc.exe"
+  if [[ ! -x "${_stage_xgcc}" ]]; then
+    _stage_xgcc="${_build_dir}/gcc/xgcc"
+  fi
+  local _installed_as="/opt/bin/${_tool_target}-as"
+  local _ar="/opt/bin/${_tool_target}-ar"
+  local _nm="/opt/bin/${_tool_target}-nm"
+  local _objdump="/opt/bin/${_tool_target}-objdump"
+  test -x "${_installed_as}"
+  test -x "${_ar}"
+  test -x "${_nm}"
+  test -x "${_objdump}"
+  if ! "${_stage_xgcc}" \
+    -B"${_build_dir}/gcc/" \
+    -B"${_build_dir}/${_target}/libgcc/" \
+    -B"${_build_dir}/${_target}/libstdc++-v3/src/" \
+    --sysroot="/opt/${_target}" \
+    "${_target_specs_flag}" \
+    -v \
+    -c "${_build_dir}/windows-header-check.c" \
+    -o "${_build_dir}/windows-header-check.o" \
+    > "${_build_dir}/windows-header-check.out" \
+    2> "${_build_dir}/windows-header-check.err"; then
+    return 1
+  fi
+  "${_stage_xgcc}" \
+    -B"${_build_dir}/gcc/" \
+    -B"${_build_dir}/${_target}/libgcc/" \
+    -B"${_build_dir}/${_target}/libstdc++-v3/src/" \
+    --sysroot="/opt/${_target}" \
+    "${_target_specs_flag}" \
+    -### \
+    -c "${_build_dir}/windows-header-check.c" \
+    -o "${_build_dir}/windows-header-check-dry-run.o" \
+    > /dev/null \
+    2> "${_build_dir}/windows-header-check.commands.txt"
+  for _file in \
+    "${_build_dir}/windows-header-check.err" \
+    "${_build_dir}/windows-header-check.commands.txt"
+  do
+    grep -Eq \
+      "^[[:space:]]+['\"]?/opt/bin/${_tool_target}-as(\\.exe)?['\"]?[[:space:]]" \
+      "${_file}"
+    if grep -Eq \
+        "^[[:space:]]+['\"]?(as(\\.exe)?|/usr/bin/as(\\.exe)?|/opt/bin/${_target}-as(\\.exe)?|${_build_dir}/gcc/as(\\.exe)?)['\"]?[[:space:]]" \
+        "${_file}"; then
+      echo "stage xgcc selected a non-package-owned assembler" >&2
+      return 1
+    fi
+  done
+  if [[ -e "${_build_dir}/windows-header-check-dry-run.o" ]]; then
+    echo "stage xgcc -### unexpectedly created an object" >&2
+    return 1
+  fi
+  "${_objdump}" -f "${_build_dir}/windows-header-check.o" \
+    > "${_build_dir}/windows-header-check.objdump"
+  grep -F 'file format pe-aarch64-little' \
+    "${_build_dir}/windows-header-check.objdump"
+
+  local _resolved_msys_import
+  _resolved_msys_import="$(
+    "${_stage_xgcc}" \
+      -B"${_build_dir}/gcc/" \
+      "${_target_xgcc_flags[@]}" \
+      -print-file-name=libmsys-2.0.a
+  )"
+  test "${_resolved_msys_import}" = "/opt/${_target}/lib/libmsys-2.0.a"
+  test -f "${_resolved_msys_import}"
+  printf 'libmsys-import\t%s\n' "${_resolved_msys_import}" \
+    > "${_report_dir}/target-library-search.txt"
+
+  local _target_runtime="/opt/${_target}/bin/msys-2.0.dll"
+  test -f "${_target_runtime}"
+  "${_objdump}" -f -p "${_target_runtime}" \
+    > "${_report_dir}/runtime-public-abi.txt"
+  "${_nm}" -a "${_target_runtime}" \
+    > "${_report_dir}/runtime-public-symbols.txt"
+  "${_nm}" -A "${_resolved_msys_import}" \
+    > "${_report_dir}/runtime-import-symbols.txt"
+  "${_ar}" t "${_resolved_msys_import}" \
+    > "${_report_dir}/runtime-import-members.txt"
+  grep -F 'file format pei-aarch64-little' \
+    "${_report_dir}/runtime-public-abi.txt"
+  for _symbol in \
+    __pthread_cond_initializer \
+    __pthread_errorcheck_mutex_initializer_np \
+    __pthread_normal_mutex_initializer_np \
+    __pthread_recursive_mutex_initializer_np \
+    __pthread_rwlock_initializer \
+    _ctype_
+  do
+    grep -Eq "[[:space:]]${_symbol}$" \
+      "${_report_dir}/runtime-public-abi.txt"
+    grep -Eq "[[:space:]]D[[:space:]]+${_symbol}$" \
+      "${_report_dir}/runtime-public-symbols.txt"
+    grep -Eq "[[:space:]]I[[:space:]]+__imp_${_symbol}$" \
+      "${_report_dir}/runtime-import-symbols.txt"
+  done
+  if grep -Eq '(^|/)pthreadconst\.o$' \
+      "${_report_dir}/runtime-import-members.txt"; then
+    echo "runtime import library contains private pthreadconst.o" >&2
+    return 1
+  fi
+
+  # libgcc also folds generated GCC_CFLAGS into its compile commands.
+  # Keep the specs there without repeating them through recursive CFLAGS.
+  make -C "${_build_dir}" MAKEINFO=true \
+    CFLAGS_FOR_TARGET="${CFLAGS}" \
+    XGCC_FLAGS_FOR_TARGET="${_target_xgcc_flags_string}" \
+    all-target-libgcc
+
+  local _libgcc_shared="${_libgcc_dir}/shlib/msys-gcc_s-seh-1.dll"
+  local _libgcc_import="${_libgcc_dir}/shlib/libgcc_s.dll.a"
+  test -f "${_libgcc_shared}"
+  test -f "${_libgcc_import}"
+  "${_objdump}" -f -p "${_libgcc_shared}" \
+    > "${_report_dir}/libgcc-shared-audit.txt"
+  grep -F 'file format pei-aarch64-little' \
+    "${_report_dir}/libgcc-shared-audit.txt"
+  grep -F 'DLL Name: msys-2.0.dll' \
+    "${_report_dir}/libgcc-shared-audit.txt"
+  grep -F 'DLL Name: KERNEL32.dll' \
+    "${_report_dir}/libgcc-shared-audit.txt"
+  if grep -Ei 'cygwin1\.dll|x86_64' \
+      "${_report_dir}/libgcc-shared-audit.txt"; then
+    echo "libgcc shared runtime contains a foreign dependency" >&2
+    return 1
+  fi
+  "${_nm}" "${_libgcc_shared}" \
+    > "${_report_dir}/libgcc-shared-symbols.txt"
+  grep -Eq '[[:space:]]_msys_dll_entry$' \
+    "${_report_dir}/libgcc-shared-symbols.txt"
+
+  if ! "${_stage_xgcc}" \
+      -B"${_build_dir}/gcc/" \
+      "${_target_xgcc_flags[@]}" \
+      "${_target_specs_flag}" \
+      -shared -nodefaultlibs \
+      -Wl,-t,--trace-symbol=__imp___pthread_normal_mutex_initializer_np \
+      -o "${_build_dir}/libgcc-link-check.dll" \
+      "${_libgcc_dir}/emutls_s.o" \
+      "${_libgcc_dir}/libgcc.a" \
+      -lmsys-2.0 -ladvapi32 -lshell32 -luser32 -lkernel32 \
+      > "${_report_dir}/libgcc-link-trace.txt" 2>&1; then
+    cat "${_report_dir}/libgcc-link-trace.txt"
+    return 1
+  fi
+  grep -F "/opt/${_target}/lib/libmsys-2.0.a" \
+    "${_report_dir}/libgcc-link-trace.txt"
+  grep -E 'libmsys-2\.0\.a\([^)]*\): definition of __imp___pthread_normal_mutex_initializer_np' \
+    "${_report_dir}/libgcc-link-trace.txt"
+  "${_objdump}" -f -p "${_build_dir}/libgcc-link-check.dll" \
+    > "${_report_dir}/libgcc-link-check.txt"
+  grep -F 'file format pei-aarch64-little' \
+    "${_report_dir}/libgcc-link-check.txt"
+  grep -F 'DLL Name: msys-2.0.dll' \
+    "${_report_dir}/libgcc-link-check.txt"
+  grep -F 'DLL Name: KERNEL32.dll' \
+    "${_report_dir}/libgcc-link-check.txt"
+  rm -f "${_build_dir}/libgcc-link-check.dll"
+
+  make -C "${_build_dir}" MAKEINFO=true \
+    XGCC_FLAGS_FOR_TARGET="${_target_xgcc_flags_string}" \
+    configure-target-libstdc++-v3
+
+  make -C "${_build_dir}" MAKEINFO=true \
+    XGCC_FLAGS_FOR_TARGET="${_target_xgcc_flags_string}" \
+    LDFLAGS_FOR_TARGET="${_target_specs_flag}" \
+    all-target-libstdc++-v3
+
+  make -C "${_build_dir}/gcc" MAKEINFO=true xgcc.exe cc1.exe cc1plus.exe
+
+  make -C "${_build_dir}" MAKEINFO=true DESTDIR="${_stage_dir}" \
+    install-gcc \
+    install-lto-plugin
+
+  make -C "${_build_dir}/${_target}/libgcc" MAKEINFO=true DESTDIR="${_stage_dir}" \
+    install-shared
+
+  make -C "${_build_dir}/${_target}/libstdc++-v3/src" MAKEINFO=true DESTDIR="${_stage_dir}" \
+    install-toolexeclibLTLIBRARIES
+
+  mkdir -p "${_target_libdir}"
+
+  for _file in \
+    libgcc.a \
+    libgcc_eh.a \
+    libgcov.a \
+    crtbegin.o \
+    crtbeginS.o \
+    crtend.o \
+    crtfastmath.o
+  do
+    test -f "${_libgcc_dir}/${_file}"
+    install -m644 "${_libgcc_dir}/${_file}" "${_target_libdir}/${_file}"
+  done
+
+  for _file in \
+    libstdc++.a \
+    libstdc++fs.a \
+    libsupc++.a
+  do
+    if test -f "${_libstdcxx_src}/${_file}"; then
+      install -m644 "${_libstdcxx_src}/${_file}" "${_target_libdir}/${_file}"
+    fi
+  done
+
+  install -d "${_stage_dir}/opt/${_target}/bin"
+  for _file in ar nm ranlib; do
+    MSYS=winsymlinks:sys ln -s \
+      "../../${_tool_target}/bin/${_file}.exe" \
+      "${_stage_dir}/opt/${_target}/bin/${_file}.exe"
+  done
+
+  TARGET="${_target}" \
+    TARGET_CC="${_stage_dir}/opt/bin/${_target}-gcc.exe" \
+    TARGET_CXX="${_stage_dir}/opt/bin/${_target}-g++.exe" \
+    bash "${srcdir}/validate-gcc.sh" \
+    "${_stage_dir}/opt" \
+    "${_report_dir}"
+
+  {
+    printf 'package-version\t%s-%s\n' "${pkgver}" "${pkgrel}"
+    printf 'gcc-repository\t%s\n' "${msys2_repository_url}"
+    printf 'gcc-commit\t50bcb1fbfb31a4a51b6cf0a517ecf3c668d00506\n'
+    printf 'gcc-archive-sha256\tb6d0494f22b70e9cb8cadda260a299aaba109fc20e4342542b9443f9cb4597a9\n'
+    printf 'gcc-source-chain\t%s\n' '9b0c288d8f337d685017621b2e9d84579f8aa391,3053d5071151031574f9ea272031d1dcba053f62,626c500b14b8eac6754b80b3a175acc305426c06,e1a057af466f066d86b20270fb7864764951420d,50bcb1fbfb31a4a51b6cf0a517ecf3c668d00506'
+    printf 'runtime-version\t%s-%s\n' "${_runtime_version}" "${_runtime_pkgrel}"
+    printf 'sysroot-version\t%s-1\n' "${_sysroot_version}"
+    printf 'w32api-version\t%s-1\n' "${_w32api_version}"
+    printf 'target\t%s\n' "${_target}"
+    printf 'abi\tlp64\n'
+    printf 'thread-model\tposix\n'
+  } > "${_report_dir}/source-identity.txt"
+
+  (
+    cd "${_stage_dir}"
+    find opt -type f -print0 \
+      | LC_ALL=C sort -z \
+      | xargs -0 sha256sum --binary \
+      | sed -E 's/^([0-9a-f]{64}) \*/\1  /'
+  ) > "${_report_dir}/package-manifest.sha256"
+}
+
+check() {
+  local _report_dir="${srcdir}/${_report_name}"
+  python -m json.tool "${_report_dir}/validation-report.json" > /dev/null
+  grep -Fx 'target	aarch64-pc-msys' "${_report_dir}/source-identity.txt"
+  grep -Fx 'abi	lp64' "${_report_dir}/source-identity.txt"
+  grep -Fx 'thread-model	posix' "${_report_dir}/source-identity.txt"
+}
+
+package_mingw-w64-cross-msysarm64-gcc() {
+  local _src_dir="${srcdir}/${_gcc_root}"
+  local _stage_dir="${srcdir}/${_stage_name}"
+  pkgdesc="C, C++, and LTO compiler for aarch64-pc-msys"
+  depends=(
+    "mingw-w64-cross-msysarm64-gcc-libs=${pkgver}-${pkgrel}"
+    "mingw-w64-cross-msysarm64-libstdc++-headers=${pkgver}-${pkgrel}"
+    'mingw-w64-cross-cygwinarm64-binutils>=2.44.50'
+  )
+  provides=(
+    "aarch64-pc-msys-gcc=${pkgver}"
+  )
+  conflicts=(
+    'aarch64-pc-msys-gcc'
+  )
+
+  MSYS=winsymlinks:sys cp -a "${_stage_dir}/." "${pkgdir}/"
+  rm -rf "${pkgdir}/opt/lib/gcc/${_target}/${_gcc_version}"
+  rm -f "${pkgdir}/opt/lib/gcc/${_target}/msys-gcc_s-seh-1.dll"
+  rm -f "${pkgdir}/opt/bin/"*.dll
+  rm -rf "${pkgdir}/opt/share"
+
+  local _licensedir="${pkgdir}/opt/share/licenses/${pkgname}"
+  install -d "${_licensedir}"
+  install -m644 \
+    "${_src_dir}/COPYING3" \
+    "${_src_dir}/COPYING.RUNTIME" \
+    "${_licensedir}/"
+}
+
+package_mingw-w64-cross-msysarm64-gcc-libs() {
+  local _src_dir="${srcdir}/${_gcc_root}"
+  local _stage_dir="${srcdir}/${_stage_name}"
+  local _report_dir="${srcdir}/${_report_name}"
+  pkgdesc="Runtime libraries for aarch64-pc-msys GCC"
+  depends=(
+    "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
+    "mingw-w64-cross-msysarm64-sysroot=${_sysroot_version}-1"
+    "mingw-w64-cross-msysarm64-w32api-runtime=${_w32api_version}-1"
+  )
+  provides=(
+    "aarch64-pc-msys-gcc-libs=${pkgver}"
+  )
+  conflicts=(
+    'aarch64-pc-msys-gcc-libs'
+  )
+
+  install -d "${pkgdir}/opt/lib/gcc"
+  cp -a "${_stage_dir}/opt/lib/gcc/${_target}" "${pkgdir}/opt/lib/gcc/"
+  if compgen -G "${_stage_dir}/opt/bin/*.dll" > /dev/null; then
+    install -d "${pkgdir}/opt/bin"
+    cp -a "${_stage_dir}/opt/bin/"*.dll "${pkgdir}/opt/bin/"
+  fi
+  if compgen -G "${_stage_dir}/opt/bin/*.dll.a" > /dev/null; then
+    install -d "${pkgdir}/opt/bin"
+    cp -a "${_stage_dir}/opt/bin/"*.dll.a "${pkgdir}/opt/bin/"
+  fi
+
+  install -d "${pkgdir}/opt/share/licenses/${pkgname}"
+  install -m644 \
+    "${_src_dir}/COPYING3" \
+    "${_src_dir}/COPYING.RUNTIME" \
+    "${pkgdir}/opt/share/licenses/${pkgname}/"
+  install -d "${pkgdir}/opt/share/doc/${pkgname}"
+  cp -a "${_report_dir}/." "${pkgdir}/opt/share/doc/${pkgname}/"
+  install -m755 \
+    "${srcdir}/validate-gcc.sh" \
+    "${pkgdir}/opt/share/doc/${pkgname}/"
+  install -m644 \
+    "${srcdir}/README.md" \
+    "${pkgdir}/opt/share/doc/${pkgname}/"
+}

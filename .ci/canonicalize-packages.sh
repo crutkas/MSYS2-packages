@@ -12,7 +12,7 @@ for package in "$@"; do
   output="${package}.canonical"
   trap 'rm -rf "$work" "$output"' EXIT
 
-  bsdtar -xf "$package" -C "$work"
+  MSYS=winsymlinks:sys bsdtar -xf "$package" -C "$work"
   (
     cd "$work"
     mapfile -d '' entries < <(

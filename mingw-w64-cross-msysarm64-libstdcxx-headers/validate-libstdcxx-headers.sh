@@ -45,6 +45,7 @@ copy_failure_logs() {
 }
 
 cxx=${LIBSTDCXX_VALIDATE_CXX:-/opt/bin/${target}-g++}
+stage0_cxx=/opt/bin/aarch64-pc-cygwin-g++
 objdump=/opt/bin/${target}-objdump
 nm=/opt/bin/${target}-nm
 generic_include="${prefix_root}/${target}/include/c++/${gcc_version}"
@@ -109,6 +110,8 @@ cxx_headers=(
 
 current_step="cxx-executable"
 test -x "$cxx"
+current_step="stage0-cxx-executable"
+test -x "$stage0_cxx"
 current_step="objdump-executable"
 test -x "$objdump"
 current_step="nm-executable"
@@ -134,8 +137,24 @@ mark "initial-checks-ok"
 "$cxx" "${compile_tool[@]}" \
   -dM -E -x c++ /dev/null \
   > "$work/compiler-macros.txt"
-if grep -Eq '^#define _WIN64( 1)?$' "$work/compiler-macros.txt"; then
-  echo "frozen stage-0 unexpectedly defines _WIN64" >&2
+"$stage0_cxx" -dM -E -x c++ /dev/null \
+  > "$work/stage0-compiler-macros.txt"
+test "$("$stage0_cxx" -dumpmachine)" = aarch64-pc-cygwin
+for macro_file in \
+  "$work/compiler-macros.txt" \
+  "$work/stage0-compiler-macros.txt"
+do
+  grep -Fx '#define _WIN64 1' "$macro_file"
+  grep -Eq '^#define __CYGWIN__( 1)?$' "$macro_file"
+  grep -Eq '^#define __SEH__( 1)?$' "$macro_file"
+  grep -Fx '#define __LP64__ 1' "$macro_file"
+  grep -Fx '#define __SIZEOF_LONG__ 8' "$macro_file"
+  grep -Fx '#define __SIZEOF_POINTER__ 8' "$macro_file"
+  grep -Fx '#define __SIZEOF_LONG_DOUBLE__ 8' "$macro_file"
+done
+grep -Eq '^#define __MSYS__( 1)?$' "$work/compiler-macros.txt"
+if grep -Eq '^#define __MSYS__( 1)?$' "$work/stage0-compiler-macros.txt"; then
+  echo "Cygwin stage-0 unexpectedly defines __MSYS__" >&2
   exit 1
 fi
 mark "compiler-macros-ok"
@@ -324,9 +343,9 @@ mkdir -p "$runtime_build"
   CXX="${cxx}" \
   CPP="${cxx} -E -x c" \
   CXXCPP="${cxx} -E -x c++" \
-  CPPFLAGS="-D_WIN64 -isystem ${sysroot}/include -isystem ${generic_include} -isystem ${target_include} -isystem ${backward_include} -idirafter ${sysroot}/include/w32api" \
+  CPPFLAGS="-D_WIN64 -I${sysroot}/include -isystem ${generic_include} -isystem ${target_include} -isystem ${backward_include} -idirafter ${sysroot}/include/w32api" \
   CFLAGS='-D_WIN64' \
-  CXXFLAGS="-D_WIN64 -nostdinc++ -isystem ${generic_include} -isystem ${target_include} -isystem ${backward_include} -Wno-error=register -Wno-error=sign-compare -Wno-error=c++20-compat -Wno-error=comment -Wno-error" \
+  CXXFLAGS="-D_WIN64 -I${sysroot}/include -nostdinc++ -isystem ${generic_include} -isystem ${target_include} -isystem ${backward_include} -Wno-error=register -Wno-error=sign-compare -Wno-error=c++20-compat -Wno-error=comment -Wno-error" \
   LDFLAGS="-L${sysroot}/usr/lib" \
   ac_cv_lib_sframe_sframe_decode=no \
   ac_cv_lib_zstd_ZSTD_isError=no \
@@ -452,6 +471,7 @@ mark "ownership-ok"
 
 cp \
     "$work/compiler-macros.txt" \
+    "$work/stage0-compiler-macros.txt" \
     "$work/header-macros.txt" \
     "$work/include-search.txt" \
     "$report_dir/"
@@ -491,7 +511,7 @@ report = {
     "schema_version": 1,
     "package": "mingw-w64-cross-msysarm64-libstdc++-headers",
     "target": "aarch64-pc-msys",
-    "gcc_source_commit": "bd1d77ba35e2820df5387cca5213925adb07a0ee",
+    "gcc_source_commit": "50bcb1fbfb31a4a51b6cf0a517ecf3c668d00506",
     "runtime_validation_commit": "c7932d64f13d51deacdcbfdab8df79bcb35ebd92",
     "header_count": header_count,
     "installed_target_libraries": 0,
@@ -501,7 +521,10 @@ report = {
         "cpu": "aarch64",
         "thread_model": "posix",
         "stage0_reported_thread_model": "posix",
-        "stage0_predefines_win64": False,
+        "stage0_predefines_win64": True,
+        "stage0_predefines_msys": False,
+        "validation_compiler_predefines_win64": True,
+        "validation_compiler_predefines_msys": True,
         "controlled_win64_define": True,
         "libstdcxx_tls": False,
         "libstdcxx_tls_reason": "target link probe cannot succeed before target libgcc and newlib libraries exist",
