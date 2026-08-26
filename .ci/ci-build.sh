@@ -70,10 +70,13 @@ install_packages() {
 prepare_gcc_dependencies() {
     local srcinfo_file dependency dependency_name self_package is_self
     local requirement requirement_name requirement_version actual_identity
-    local missing_external external_rc missing_self self_rc
+    local missing_external external_rc final_missing final_rc
+    local missing_self self_rc missing_dependency external_dependency found
+    local local_only_dependency
     local -a raw_self_packages self_packages raw_declared_dependencies
     local -a declared_dependencies self_dependencies external_dependencies
     local -a expected_external_dependencies ci_requirements
+    local -a local_only_dependencies missing_dependencies
 
     if compgen -G "$package/*.pkg.tar.*" > /dev/null; then
         failure 'Stale GCC package archives exist'
@@ -176,15 +179,61 @@ prepare_gcc_dependencies() {
             "ci|$requirement_name|$requirement_version"
     done
 
-    execute 'Installing GCC non-self dependencies' \
-        pacman -S --needed --asdeps --noconfirm --noprogressbar -- \
-        "${external_dependencies[@]}"
+    local_only_dependencies=(
+        mingw-w64-cross-cygwinarm64-binutils\>=2.44.50
+        mingw-w64-cross-cygwinarm64-gcc-stage1=15.0.1dev-2
+    )
+    test "$(pacman -Q mingw-w64-cross-cygwinarm64-binutils)" = \
+        'mingw-w64-cross-cygwinarm64-binutils 2.44.50-1'
+    test "$(pacman -Q mingw-w64-cross-cygwinarm64-gcc-stage1)" = \
+        'mingw-w64-cross-cygwinarm64-gcc-stage1 15.0.1dev-2'
+
     set +e
     missing_external=$(pacman -T -- "${external_dependencies[@]}")
     external_rc=$?
     set -e
-    test "$external_rc" -eq 0
-    test -z "$missing_external"
+    missing_dependencies=()
+    case "$external_rc" in
+        0)
+            test -z "$missing_external"
+            ;;
+        127)
+            test -n "$missing_external"
+            readarray -t missing_dependencies <<< "$missing_external"
+            test "${#missing_dependencies[@]}" -gt 0
+            test "${#missing_dependencies[@]}" -eq \
+                "$(printf '%s\n' "${missing_dependencies[@]}" |
+                    LC_ALL=C sort -u | wc -l)"
+            for missing_dependency in "${missing_dependencies[@]}"; do
+                test -n "$missing_dependency"
+                found=0
+                for external_dependency in "${external_dependencies[@]}"; do
+                    if [[ "$missing_dependency" == "$external_dependency" ]]; then
+                        found=1
+                        break
+                    fi
+                done
+                test "$found" -eq 1
+                for local_only_dependency in "${local_only_dependencies[@]}"; do
+                    test "$missing_dependency" != "$local_only_dependency"
+                done
+            done
+            ;;
+        *)
+            false
+            ;;
+    esac
+    if [[ "${#missing_dependencies[@]}" -gt 0 ]]; then
+        execute 'Installing missing GCC non-self dependencies' \
+            pacman -S --needed --asdeps --noconfirm --noprogressbar -- \
+            "${missing_dependencies[@]}"
+    fi
+    set +e
+    final_missing=$(pacman -T -- "${external_dependencies[@]}")
+    final_rc=$?
+    set -e
+    test "$final_rc" -eq 0
+    test -z "$final_missing"
     if pacman -Q mingw-w64-cross-msysarm64-gcc-libs \
             > /dev/null 2>&1; then
         failure 'GCC sibling dependency is unexpectedly installed'
