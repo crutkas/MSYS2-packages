@@ -467,6 +467,7 @@ package_mingw-w64-cross-msysarm64-gcc() {
 
   MSYS=winsymlinks:sys cp -a "${_stage_dir}/." "${pkgdir}/"
   rm -rf "${pkgdir}/opt/lib/gcc/${_target}/${_gcc_version}"
+  rm -f "${pkgdir}/opt/lib/gcc/${_target}/msys-gcc_s-seh-1.dll"
   rm -f "${pkgdir}/opt/bin/"*.dll
   rm -rf "${pkgdir}/opt/share"
 
