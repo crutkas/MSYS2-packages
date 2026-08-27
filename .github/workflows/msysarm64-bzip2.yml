@@ -244,17 +244,17 @@ jobs:
                 ($rightFiles | ForEach-Object Name)) {
               throw "file sets differ: $Left and $Right"
             }
-            foreach ($left in $leftFiles) {
-              $right = Join-Path $Right $left.Name
+            foreach ($leftFile in $leftFiles) {
+              $rightPath = Join-Path $Right $leftFile.Name
               $leftHash = (
-                Get-FileHash -LiteralPath $left.FullName -Algorithm SHA256
+                Get-FileHash -LiteralPath $leftFile.FullName -Algorithm SHA256
               ).Hash.ToLowerInvariant()
               $rightHash = (
-                Get-FileHash -LiteralPath $right -Algorithm SHA256
+                Get-FileHash -LiteralPath $rightPath -Algorithm SHA256
               ).Hash.ToLowerInvariant()
-              if ($left.Length -ne (Get-Item $right).Length -or
+              if ($leftFile.Length -ne (Get-Item $rightPath).Length -or
                   $leftHash -ne $rightHash) {
-                throw "reproducibility mismatch: $($left.Name)"
+                throw "reproducibility mismatch: $($leftFile.Name)"
               }
             }
           }
