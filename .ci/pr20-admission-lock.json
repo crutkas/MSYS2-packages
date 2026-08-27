@@ -1,0 +1,430 @@
+{
+  "schema": 1,
+  "branch": "crutkas-apr-arm64-prereqs",
+  "base_ref": "crutkas-congenial-system",
+  "cutoff": {
+    "timestamp": "2026-08-27T08:55:35-07:00",
+    "log_sha256": "925ce045782b49e6454956eae9ee0a5b700b17c805843d18329509f4e2a492c8",
+    "db_manifest_sha256": "93a39fb4e4105489b733275fa94e8cc718f25c239f0064cd64c4a68832a68c34"
+  },
+  "private_paths": {
+    "root": "{PRIVATE_ROOT}",
+    "dbpath": "{PRIVATE_ROOT}\\var\\lib\\pacman",
+    "cachedir": "{PRIVATE_ROOT}\\var\\cache\\pacman\\pkg",
+    "logfile": "{PRIVATE_ROOT}\\var\\log\\pacman.log",
+    "config": "{PRIVATE_ROOT}\\etc\\pacman.conf",
+    "hooksdir": "{PRIVATE_ROOT}\\etc\\pacman.d\\hooks",
+    "gpgdir": "{PRIVATE_ROOT}\\etc\\pacman.d\\gnupg",
+    "pacman": "{PRIVATE_ROOT}\\usr\\bin\\pacman.exe",
+    "bash": "{PRIVATE_ROOT}\\usr\\bin\\bash.exe",
+    "gpg": "{PRIVATE_ROOT}\\usr\\bin\\gpg.exe"
+  },
+  "toolchain": {
+    "compiler": {
+      "cc": "/opt/bin/aarch64-pc-msys-gcc.exe",
+      "cxx": "/opt/bin/aarch64-pc-msys-g++.exe"
+    },
+    "target_tools": {
+      "ar": "/opt/bin/aarch64-pc-cygwin-ar.exe",
+      "ranlib": "/opt/bin/aarch64-pc-cygwin-ranlib.exe",
+      "nm": "/opt/bin/aarch64-pc-cygwin-nm.exe",
+      "objdump": "/opt/bin/aarch64-pc-cygwin-objdump.exe",
+      "strip": "/opt/bin/aarch64-pc-cygwin-strip.exe"
+    },
+    "scanner": {
+      "script": ".ci/check-aarch64-pseudo-relocs.ps1",
+      "source": "https://raw.githubusercontent.com/crutkas/MSYS2-packages/3356eec1411983cc252b04afac32bca5f3b8d824/.ci/check-aarch64-pseudo-relocs.ps1",
+      "sha256": "888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9",
+      "argv": [
+        "-PePath",
+        "<AA64 PE>",
+        "-OutputPath",
+        "<json>",
+        "-Objdump",
+        "/opt/bin/aarch64-pc-cygwin-objdump.exe",
+        "-Nm",
+        "/opt/bin/aarch64-pc-cygwin-nm.exe"
+      ],
+      "coverage": [
+        "PePath",
+        "OutputPath",
+        "objdump",
+        "nm"
+      ]
+    }
+  },
+  "admitted_inputs": [
+    {
+      "stage": "bootstrap",
+      "role": "binutils",
+      "package": "mingw-w64-cross-cygwinarm64-binutils",
+      "version": "2.44.50-2",
+      "archive": "mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst",
+      "bytes": 6545114,
+      "sha256": "3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b",
+      "release_tag": "cygwinarm64-binutils-pr21-3356eec-20260827",
+      "release_asset_id": 532446043,
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/cygwinarm64-binutils-pr21-3356eec-20260827/mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst",
+      "provides": [
+        "mingw-w64-cross-cygwinarm64-binutils=2.44.50-2",
+        "aarch64-pc-cygwin-binutils=2.44.50-2"
+      ],
+      "admitted": true
+    },
+    {
+      "stage": "bootstrap",
+      "role": "gcc-libs-stage1",
+      "package": "mingw-w64-cross-cygwinarm64-gcc-libs-stage1",
+      "version": "15.0.1dev-2",
+      "archive": "mingw-w64-cross-cygwinarm64-gcc-libs-stage1-15.0.1dev-2-x86_64.pkg.tar.zst",
+      "bytes": 357954,
+      "sha256": "17a8fbc22227c541ff3179179d307045302f6b18fbc6207cf9d863a9e4dad98c",
+      "release_tag": "cygwinarm64-gcc-static-runtime-20260815",
+      "release_asset_id": 516560604,
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/cygwinarm64-gcc-static-runtime-20260815/mingw-w64-cross-cygwinarm64-gcc-libs-stage1-15.0.1dev-2-x86_64.pkg.tar.zst",
+      "provides": [
+        "mingw-w64-cross-cygwinarm64-gcc-libs-stage1=15.0.1dev-2"
+      ],
+      "admitted": true
+    },
+    {
+      "stage": "bootstrap",
+      "role": "gcc-stage1",
+      "package": "mingw-w64-cross-cygwinarm64-gcc-stage1",
+      "version": "15.0.1dev-2",
+      "archive": "mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-2-x86_64.pkg.tar.zst",
+      "bytes": 43966034,
+      "sha256": "063579211851ed69370a6362f2795e39d9be0235a2bfe2f58da1bbd73a1d108e",
+      "release_tag": "cygwinarm64-gcc-static-runtime-20260815",
+      "release_asset_id": 516560608,
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/cygwinarm64-gcc-static-runtime-20260815/mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-2-x86_64.pkg.tar.zst",
+      "provides": [
+        "mingw-w64-cross-cygwinarm64-gcc-stage1=15.0.1dev-2"
+      ],
+      "admitted": true
+    },
+    {
+      "stage": "bootstrap",
+      "role": "headers",
+      "package": "mingw-w64-cross-cygwinarm64-headers",
+      "version": "3.6.10.r0.gee50e0223-1",
+      "archive": "mingw-w64-cross-cygwinarm64-headers-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst",
+      "bytes": 9319165,
+      "sha256": "5266346cc10b142f871704ce4277699b1a5daa3121dc869990b4bedce69c0611",
+      "release_tag": "cygwinarm64-sysroot-pr3-20260813",
+      "release_asset_id": 513799035,
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/cygwinarm64-sysroot-pr3-20260813/mingw-w64-cross-cygwinarm64-headers-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst",
+      "provides": [
+        "mingw-w64-cross-cygwinarm64-headers=3.6.10.r0.gee50e0223-1"
+      ],
+      "admitted": true
+    },
+    {
+      "stage": "bootstrap",
+      "role": "windows-default-manifest",
+      "package": "mingw-w64-cross-cygwinarm64-windows-default-manifest",
+      "version": "3.6.10.r0.gee50e0223-1",
+      "archive": "mingw-w64-cross-cygwinarm64-windows-default-manifest-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst",
+      "bytes": 4841,
+      "sha256": "cc089511fede6042a25f83fcb5903fddeede89ddd9655360741513ee9015e3dc",
+      "release_tag": "cygwinarm64-sysroot-pr3-20260813",
+      "release_asset_id": 513799037,
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/cygwinarm64-sysroot-pr3-20260813/mingw-w64-cross-cygwinarm64-windows-default-manifest-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst",
+      "provides": [
+        "mingw-w64-cross-cygwinarm64-windows-default-manifest=3.6.10.r0.gee50e0223-1"
+      ],
+      "admitted": true
+    },
+    {
+      "stage": "bootstrap",
+      "role": "sysroot",
+      "package": "mingw-w64-cross-cygwinarm64-sysroot",
+      "version": "3.6.10.r0.gee50e0223-1",
+      "archive": "mingw-w64-cross-cygwinarm64-sysroot-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst",
+      "bytes": 87021,
+      "sha256": "4ed8a30f592317bf7e4def6f3c773139f2565b0f8afaedd820f7ee46d33cad20",
+      "release_tag": "cygwinarm64-sysroot-pr3-20260813",
+      "release_asset_id": 513799036,
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/cygwinarm64-sysroot-pr3-20260813/mingw-w64-cross-cygwinarm64-sysroot-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst",
+      "provides": [
+        "mingw-w64-cross-cygwinarm64-sysroot=3.6.10.r0.gee50e0223-1"
+      ],
+      "admitted": true
+    },
+    {
+      "stage": "bootstrap",
+      "role": "w32api-runtime",
+      "package": "mingw-w64-cross-cygwinarm64-w32api-runtime",
+      "version": "14.0.0.r0.g9b3dd0125-1",
+      "archive": "mingw-w64-cross-cygwinarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst",
+      "bytes": 4186012,
+      "sha256": "53478f9a60e2fdad7d3b4357fa4fb937a1afab16af16a55e5a25ae9fac308fa7",
+      "release_tag": "cygwinarm64-w32api-20260813",
+      "release_asset_id": 513956620,
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/cygwinarm64-w32api-20260813/mingw-w64-cross-cygwinarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst",
+      "provides": [
+        "mingw-w64-cross-cygwinarm64-w32api-runtime=14.0.0.r0.g9b3dd0125-1"
+      ],
+      "admitted": true
+    },
+    {
+      "stage": "bootstrap",
+      "role": "libstdc++-headers",
+      "package": "mingw-w64-cross-cygwinarm64-libstdc++-headers",
+      "version": "15.0.1dev-1",
+      "archive": "mingw-w64-cross-cygwinarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst",
+      "bytes": 2184212,
+      "sha256": "1e018d384e5e16b76524b69677819b660e6611480a85a7f7b8a412403bf15ea6",
+      "release_tag": "cygwinarm64-libstdcxx-headers-pr7-20260815",
+      "release_asset_id": 515502515,
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/cygwinarm64-libstdcxx-headers-pr7-20260815/mingw-w64-cross-cygwinarm64-libstdc%2B%2B-headers-15.0.1dev-1-x86_64.pkg.tar.zst",
+      "provides": [
+        "mingw-w64-cross-cygwinarm64-libstdc++-headers=15.0.1dev-1"
+      ],
+      "admitted": true
+    },
+    {
+      "stage": "runtime",
+      "role": "headers",
+      "package": "mingw-w64-cross-msysarm64-headers",
+      "version": "3.6.10.r0.ga527ace21-1",
+      "archive": "mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "bytes": 9319013,
+      "sha256": "263f8f7e3614ac41337ce3a223f2bb26b6459aef6f34670525cdd4c03ec3ae21",
+      "release_tag": "msysarm64-runtime-pr10-a527-20260824",
+      "release_asset_id": 528366622,
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-runtime-pr10-a527-20260824/mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "provides": [
+        "mingw-w64-cross-msysarm64-headers=3.6.10.r0.ga527ace21-1"
+      ],
+      "admitted": true
+    },
+    {
+      "stage": "runtime",
+      "role": "runtime",
+      "package": "mingw-w64-cross-msysarm64-runtime",
+      "version": "3.6.10.r0.ga527ace21-1",
+      "archive": "mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "bytes": 9893043,
+      "sha256": "158c505f45025a466950faa7c85c9fd85e9d32384dd27b53586ffc75d71ca78e",
+      "release_tag": "msysarm64-runtime-pr10-a527-20260824",
+      "release_asset_id": 528366620,
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-runtime-pr10-a527-20260824/mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "provides": [
+        "mingw-w64-cross-msysarm64-runtime=3.6.10.r0.ga527ace21-1"
+      ],
+      "admitted": true
+    },
+    {
+      "stage": "runtime",
+      "role": "runtime-devel",
+      "package": "mingw-w64-cross-msysarm64-runtime-devel",
+      "version": "3.6.10.r0.ga527ace21-1",
+      "archive": "mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "bytes": 4426157,
+      "sha256": "c18b51e483991770b8e06cc2d8f7002d06784d3071ac213a8fee24bb831267d1",
+      "release_tag": "msysarm64-runtime-pr10-a527-20260824",
+      "release_asset_id": 528366619,
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-runtime-pr10-a527-20260824/mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "provides": [
+        "mingw-w64-cross-msysarm64-runtime-devel=3.6.10.r0.ga527ace21-1"
+      ],
+      "admitted": true
+    },
+    {
+      "stage": "runtime",
+      "role": "sysroot",
+      "package": "mingw-w64-cross-msysarm64-sysroot",
+      "version": "3.6.10.r0.ga527ace21-1",
+      "archive": "mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "bytes": 86822,
+      "sha256": "e30609e09eab2fa07aba2e6196b05f34e5e9107abc4ab8832966684758c743ca",
+      "release_tag": "msysarm64-runtime-pr10-a527-20260824",
+      "release_asset_id": 528366621,
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-runtime-pr10-a527-20260824/mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "provides": [
+        "mingw-w64-cross-msysarm64-sysroot=3.6.10.r0.ga527ace21-1"
+      ],
+      "admitted": true
+    },
+    {
+      "stage": "runtime",
+      "role": "windows-default-manifest",
+      "package": "mingw-w64-cross-msysarm64-windows-default-manifest",
+      "version": "3.6.10.r0.ga527ace21-1",
+      "archive": "mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "bytes": 4743,
+      "sha256": "33861708e7f981b4eef5b93ef135ab3a43d2757533f64df6f61a146d823c355f",
+      "release_tag": "msysarm64-runtime-pr10-a527-20260824",
+      "release_asset_id": 528366618,
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-runtime-pr10-a527-20260824/mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "provides": [
+        "mingw-w64-cross-msysarm64-windows-default-manifest=3.6.10.r0.ga527ace21-1"
+      ],
+      "admitted": true
+    },
+    {
+      "stage": "runtime",
+      "role": "gcc",
+      "package": "mingw-w64-cross-msysarm64-gcc",
+      "version": "15.0.1dev-1",
+      "archive": "mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst",
+      "bytes": 83876291,
+      "sha256": "a74887c76a933ec424933bf662729d94975b83138af783bd93f2e7acd95c3a22",
+      "release_tag": "msysarm64-gcc-pr13-20260826",
+      "release_asset_id": 531491795,
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-gcc-pr13-20260826/mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst",
+      "provides": [
+        "mingw-w64-cross-msysarm64-gcc=15.0.1dev-1"
+      ],
+      "admitted": true
+    },
+    {
+      "stage": "runtime",
+      "role": "gcc-libs",
+      "package": "mingw-w64-cross-msysarm64-gcc-libs",
+      "version": "15.0.1dev-1",
+      "archive": "mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst",
+      "bytes": 4963824,
+      "sha256": "990f163cacf9ffce1b58445be91fedc57f135cc26a88d7dba109806446b41438",
+      "release_tag": "msysarm64-gcc-pr13-20260826",
+      "release_asset_id": 531491794,
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-gcc-pr13-20260826/mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst",
+      "provides": [
+        "mingw-w64-cross-msysarm64-gcc-libs=15.0.1dev-1"
+      ],
+      "admitted": true
+    },
+    {
+      "stage": "apr-stack",
+      "role": "leaf",
+      "package": "mingw-w64-cross-msysarm64-libuuid",
+      "version": null,
+      "archive": null,
+      "bytes": null,
+      "sha256": null,
+      "release_tag": null,
+      "release_asset_id": null,
+      "url": null,
+      "provides": [
+        "mingw-w64-cross-msysarm64-libuuid"
+      ],
+      "admitted": false,
+      "provisional": true,
+      "reason": "dependency todo not yet admitted"
+    },
+    {
+      "stage": "apr-stack",
+      "role": "leaf",
+      "package": "mingw-w64-cross-msysarm64-libxcrypt",
+      "version": "4.5.2-1",
+      "archive": "mingw-w64-cross-msysarm64-libxcrypt-4.5.2-1-x86_64.pkg.tar.zst",
+      "bytes": 104909,
+      "sha256": "31fd3bd06d4605761910d4b25c93459adffc5fc0fa33c183976462acf1994685",
+      "release_tag": "msysarm64-libxcrypt-pr23-20260827",
+      "release_asset_id": 532505142,
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-libxcrypt-pr23-20260827/mingw-w64-cross-msysarm64-libxcrypt-4.5.2-1-x86_64.pkg.tar.zst",
+      "provides": [
+        "mingw-w64-cross-msysarm64-libxcrypt=4.5.2-1"
+      ],
+      "admitted": true
+    },
+    {
+      "stage": "apr-stack",
+      "role": "leaf",
+      "package": "mingw-w64-cross-msysarm64-libexpat",
+      "version": "2.7.1-1",
+      "archive": "mingw-w64-cross-msysarm64-libexpat-2.7.1-1-x86_64.pkg.tar.zst",
+      "bytes": 75869,
+      "sha256": "d110697181bda5539d5334b3e9406ceb07aa61a4a39458b8838220be18aac9c8",
+      "release_tag": "msysarm64-expat-pr24-20260827",
+      "release_asset_id": 532614612,
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-expat-pr24-20260827/mingw-w64-cross-msysarm64-libexpat-2.7.1-1-x86_64.pkg.tar.zst",
+      "provides": [
+        "mingw-w64-cross-msysarm64-libexpat=2.7.1-1"
+      ],
+      "admitted": true
+    },
+    {
+      "stage": "apr-stack",
+      "role": "leaf",
+      "package": "mingw-w64-cross-msysarm64-libsqlite",
+      "version": null,
+      "archive": null,
+      "bytes": null,
+      "sha256": null,
+      "release_tag": null,
+      "release_asset_id": null,
+      "url": null,
+      "provides": [
+        "mingw-w64-cross-msysarm64-libsqlite"
+      ],
+      "admitted": false,
+      "provisional": true,
+      "reason": "dependency todo not yet admitted"
+    },
+    {
+      "stage": "apr-stack",
+      "role": "leaf",
+      "package": "mingw-w64-cross-msysarm64-libiconv",
+      "version": null,
+      "archive": null,
+      "bytes": null,
+      "sha256": null,
+      "release_tag": null,
+      "release_asset_id": null,
+      "url": null,
+      "provides": [
+        "mingw-w64-cross-msysarm64-libiconv"
+      ],
+      "admitted": false,
+      "provisional": true,
+      "reason": "dependency todo not yet admitted"
+    },
+    {
+      "stage": "apr-stack",
+      "role": "leaf",
+      "package": "mingw-w64-cross-msysarm64-zlib",
+      "version": null,
+      "archive": null,
+      "bytes": null,
+      "sha256": null,
+      "release_tag": null,
+      "release_asset_id": null,
+      "url": null,
+      "provides": [
+        "mingw-w64-cross-msysarm64-zlib"
+      ],
+      "admitted": false,
+      "provisional": true,
+      "reason": "dependency todo not yet admitted"
+    },
+    {
+      "stage": "apr-stack",
+      "role": "leaf",
+      "package": "mingw-w64-cross-msysarm64-libopenssl",
+      "version": null,
+      "archive": null,
+      "bytes": null,
+      "sha256": null,
+      "release_tag": null,
+      "release_asset_id": null,
+      "url": null,
+      "provides": [
+        "mingw-w64-cross-msysarm64-libopenssl"
+      ],
+      "admitted": false,
+      "provisional": true,
+      "reason": "dependency todo not yet admitted"
+    }
+  ],
+  "build_gate": {
+    "requires_all_leafs_admitted": true,
+    "requires_scanner": true,
+    "requires_candidate_owned_ar": true,
+    "requires_candidate_owned_ranlib": true,
+    "requires_candidate_owned_nm": true,
+    "requires_no_shared_c_msys64_paths": true,
+    "requires_full_private_root_paths": true
+  }
+}

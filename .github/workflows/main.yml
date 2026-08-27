@@ -56,6 +56,13 @@ jobs:
           filter: blob:none
           persist-credentials: false
 
+      - name: Validate APR admission lock
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-apr-arm64-prereqs' || github.head_ref == 'crutkas-apr-arm64-prereqs') }}
+        shell: pwsh
+        run: |
+          .\.ci\validate-pr20-admission.ps1 -LockPath .\.ci\pr20-admission-lock.json -SelfTest
+          .\.ci\validate-pr20-admission.ps1 -LockPath .\.ci\pr20-admission-lock.json -RequireAdmission
+
       - name: Add staging repo
         shell: pwsh
         run: |
