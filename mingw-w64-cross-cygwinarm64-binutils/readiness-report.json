@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "ready_for_source_admission": true,
+  "ready_for_production": false,
+  "production_actions_performed": [
+    "materialized exact frozen-source recipe",
+    "mandatory local cleanbuild",
+    "fresh isolated package lifecycle and consumer validation"
+  ],
+  "current_package": {
+    "name": "mingw-w64-cross-cygwinarm64-binutils",
+    "version": "2.44.50-1",
+    "recipe_commit": "692d9d5af41a676df2d060517fbb68d0549b6ce3",
+    "asset_size": 6525338,
+    "asset_sha256": "8908cb690952788153b60bc4fb659826bbd8a03a26c1073f76c0be7ed6f97518",
+    "source_base_commit": "44335833f8f734f978211b082b15aed14efcf958",
+    "source_patch_commits": [
+      "9df1438fd25b08fecdbdf9fc96d30939714cc5cb",
+      "71d45656ca7aaf6895332ce9ef7cabc81ad3eaf0"
+    ],
+    "owned_prefixes": [
+      "/opt/bin/aarch64-pc-cygwin-*",
+      "/opt/aarch64-pc-cygwin/bin/*",
+      "/opt/aarch64-pc-cygwin/lib/ldscripts/*"
+    ]
+  },
+  "candidate_package": {
+    "name": "mingw-w64-cross-cygwinarm64-binutils",
+    "version": "2.44.50-2",
+    "filename": "mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst",
+    "size": 6423367,
+    "sha256": "6ab1c61336a68a2d621127aa0155852c6279fbefb0c50670e052a270af84b51d",
+    "linker_sha256": "0e65d9c9a0fb5ffb1dbc759c345e0e0abbb2afbef7de661c680a3b89b83acc75",
+    "host_executables": 31,
+    "package_owned_relative_aliases": 20
+  },
+  "final_gcc_resolution": {
+    "package": "mingw-w64-cross-msysarm64-gcc 15.0.1dev-1",
+    "ld": "/opt/bin/aarch64-pc-cygwin-ld",
+    "as": "/opt/bin/aarch64-pc-cygwin-as",
+    "ar": "/opt/aarch64-pc-msys/bin/ar.exe -> ../../aarch64-pc-cygwin/bin/ar.exe",
+    "nm": "/opt/aarch64-pc-msys/bin/nm.exe -> ../../aarch64-pc-cygwin/bin/nm.exe",
+    "ranlib": "/opt/aarch64-pc-msys/bin/ranlib.exe -> ../../aarch64-pc-cygwin/bin/ranlib.exe"
+  },
+  "solver_proof": {
+    "declared_dependency": "mingw-w64-cross-cygwinarm64-binutils>=2.44.50",
+    "baseline_satisfies": true,
+    "exact_baseline_satisfies": true,
+    "version_2_44_51_required_negative_fails": true,
+    "gcc_metadata_rebuild_required_for_2_44_50_pkgrel_bump": false,
+    "bootstrap_filename_and_sha_repin_required": true
+  },
+  "candidate_identity_policy": {
+    "if_source_version_remains_2_44_50": "2.44.50-2",
+    "otherwise": "reviewed source-derived pkgver with pkgrel 1",
+    "final_identity_selected": true
+  },
+  "local_preparation_evidence": {
+    "controlled_shared_database_window_before": "000011961477a6ce5262375e4230dfc6a0ff06833a00ba7767ee68a00b181dfb",
+    "controlled_shared_database_window_after": "000011961477a6ce5262375e4230dfc6a0ff06833a00ba7767ee68a00b181dfb",
+    "controlled_shared_database_window_unchanged": true,
+    "current_shared_database_after_external_apr_install": "13524433a6598fed6ae8b0aa2dd4c1f6d87c825164c36847e182c0e127b94688",
+    "external_shared_database_change_attributed_to_this_lane": false,
+    "scanner_v2_adaptation_sha256_nonfinal": "888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9",
+    "scanner_tests_sha256_nonfinal": "e3faf54c98f0f26e4e507ce1826812dbe7c4984158c83a80213589f91b3afc91",
+    "scanner_raw_and_five_real_fixtures": "pass",
+    "consumer_harness_path": "C:\\Users\\crutkas\\.copilot\\session-state\\f696f084-b574-4edf-bb4d-7ac7a1f3862d\\files\\a527-reuse-proof\\prove-fixed-binutils-a527.ps1",
+    "consumer_harness_sha256": "380f5db1f63d5792299b3742d76f4816d81ee0afcc3fdb13819621c40ad047e3",
+    "consumer_harness_synthetic_negative_summary_sha256": "036361cce9a41d5045ccac711daa31a60553e543905fe422f0c681a653aa6e4f",
+    "consumer_harness_nonproduction_clone_result": "candidate lifecycle passed; unchanged old linker rejected at flags 64,21,12,21,12; exact baseline package/linker/package-list restored",
+    "native_lane_patch_path": "C:\\Users\\crutkas\\.copilot\\session-state\\f1267ad3-725e-42f6-9d4a-be12b3d36cc6\\files\\fixed-binutils-native-lane-patch\\fixed-binutils-native-lane.patch",
+    "native_lane_patch_sha256": "454250e0893001a3eee02a97736423057808294d7eef01fa06794070b73f865a",
+    "native_lane_patch_bundle_sha256": "e32b4256be00286ddffa3c99f7d1749993c97b10fdbd031015961979b7d37166",
+    "native_lane_patch_activation": "retired; native owner will generate a new post-package patch only after exact-head CI admission",
+    "source_v2_status": "frozen and dual-approved at commit 3f05fc4d3e0eeab265f2157e3257a7067b6e7223; tree ecca625d45883e13128283a8c1750dac7997f729; archive SHA-256 d11c2b4453318a6168287fe74655c54aa15bf12f415f9ffe3f0ea32e30a3411e",
+    "baseline_alias_negative": "pass",
+    "synthetic_complete_alias_positive": "pass",
+    "mandatory_cleanbuild": {
+      "result": "pass",
+      "log_sha256": "9b05e3aa82624e50d192cce657e69e9126864bff05285e73d6bd64a590dc0fc6",
+      "source_ld_tests": "22 PASS, 1 approved baseline FAIL, 1 approved baseline XPASS, 2 XFAIL, 6 unsupported"
+    },
+    "isolated_transaction": {
+      "result": "pass",
+      "report_sha256": "764cea6e3396cad4b0b31050acefc82ed24edcfd6497084e2dc18a9aac2b3702",
+      "consumer_summary_sha256": "e7178a17956059003b23fab65c047734086cf79a40fec9e6aaf7f9e3ea4721d6",
+      "shared_database_unchanged": true
+    },
+    "production_candidate_executed": true
+  },
+  "validation_prepared": [
+    "Exact-head terminal-green source CI admission",
+    "Independent source archive SHA-256 verification",
+    "All packaged executables are x86_64 PE host tools",
+    "Complete package-owned AArch64 MSYS alias lifecycle",
+    "Fresh isolated pacman root and database",
+    "Baseline to candidate upgrade",
+    "Real AArch64 C and dynamic C++ std::cout/thread/constinit/process links",
+    "AArch64 ADR auto-import fatal-negative using IMAGE_REL_ARM64_REL21",
+    "AArch64 object/archive/image audits",
+    "Reusable v1/v2 pseudo-reloc parser with flags 12/21 rejection",
+    "Canonical scanner V2 raw and five-real-fixture replay",
+    "Independent zlib baseline negative seal bc2403d4054eb1880f69e5f241610cc6bbbdffd262f217136beffa04aa6b7de1",
+    "Independent source-design review seal 43ef9b9a1331d96304c1b232e6adf3b89fc3ccb1a6e71ea56390cd4368c50a58",
+    "Dependency-aware removal negative and forced-removal solver proof",
+    "Baseline rollback and candidate reinstall",
+    "Shared C:\\msys64 package database immutability",
+    "Admission-blocked native handoff manifest"
+  ],
+  "blockers": [
+    "Terminal-green package exact-head CI run",
+    "Coordinator admission of the exact CI artifact",
+    "Native Windows 11 ARM execution seal"
+  ]
+}

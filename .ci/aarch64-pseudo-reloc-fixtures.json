@@ -1,0 +1,68 @@
+[
+  {
+    "name": "positive-fixed-stub-no-table",
+    "format": "empty",
+    "flags": [],
+    "expected_exit": 0,
+    "expected_result": "pass"
+  },
+  {
+    "name": "positive-empty-v2",
+    "format": "v2",
+    "flags": [],
+    "expected_exit": 0,
+    "expected_result": "pass"
+  },
+  {
+    "name": "positive-scalar64",
+    "format": "v2",
+    "flags": [64],
+    "expected_exit": 0,
+    "expected_result": "pass"
+  },
+  {
+    "name": "negative-64-21-12-21-12",
+    "format": "v2",
+    "flags": [64, 21, 12, 21, 12],
+    "expected_exit": 1,
+    "expected_result": "fail"
+  },
+  {
+    "name": "negative-unknown-flag",
+    "format": "v2",
+    "flags": [99],
+    "expected_exit": 1,
+    "expected_result": "fail"
+  },
+  {
+    "name": "negative-legacy-v1",
+    "format": "v1",
+    "records": [
+      {"addend": 4, "target_rva": 4096}
+    ],
+    "flags": [],
+    "expected_exit": 1,
+    "expected_result": "fail"
+  },
+  {
+    "name": "malformed-header",
+    "format": "malformed-header",
+    "flags": [],
+    "expected_exit": 2,
+    "expected_result": "error"
+  },
+  {
+    "name": "malformed-short-header",
+    "format": "malformed-short-header",
+    "flags": [],
+    "expected_exit": 2,
+    "expected_result": "error"
+  },
+  {
+    "name": "malformed-length",
+    "format": "malformed-length",
+    "flags": [],
+    "expected_exit": 2,
+    "expected_result": "error"
+  }
+]

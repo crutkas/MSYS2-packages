@@ -1,0 +1,163 @@
+name: fixed-aarch64-binutils-candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Reviewed exact binutils source commit
+        required: true
+        type: string
+      source_archive_sha256:
+        description: Independently reviewed GitHub source archive SHA-256
+        required: true
+        type: string
+      source_archive_size:
+        description: Independently reviewed GitHub source archive size
+        required: true
+        type: string
+      source_tree:
+        description: Reviewed exact binutils source tree
+        required: true
+        type: string
+      package_version:
+        description: Source-derived package version (2.44.50 if unchanged)
+        required: true
+        default: 2.44.50
+        type: string
+      package_release:
+        description: Package release (2 when version remains 2.44.50)
+        required: true
+        default: '2'
+        type: string
+      coordinator_admission:
+        description: Exact admission phrase from the coordinator
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: fixed-aarch64-binutils-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    runs-on: windows-2025
+    env:
+      PACKAGE_DIR: mingw-w64-cross-cygwinarm64-binutils
+      SOURCE_CI_RUN_ID: ${{ github.run_id }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify pseudo-reloc scanners
+        shell: pwsh
+        run: |
+          $sourceScanner = '.\.ci\source-scanner-v2\check-aarch64-pseudo-relocs.ps1'
+          $sourceHash = (Get-FileHash -Algorithm SHA256 $sourceScanner).Hash.ToLowerInvariant()
+          if ($sourceHash -ne 'fb437d60202cd818642082fc2b86adf7ccc98cc5ce147c674efc1a46520621bd') {
+            throw "Source scanner hash mismatch: $sourceHash"
+          }
+          pwsh -NoLogo -NoProfile -File `
+            '.\.ci\source-scanner-v2\test-check-aarch64-pseudo-relocs.ps1'
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Source scanner tests failed.'
+          }
+          & '.\.ci\test-check-aarch64-pseudo-relocs.ps1'
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Hardened scanner tests failed.'
+          }
+
+      - name: Enforce coordinator and source admission
+        id: admission
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ('${{ inputs.coordinator_admission }}' -ne 'ADMIT_FIXED_AARCH64_BINUTILS') {
+            throw 'Coordinator admission phrase does not match.'
+          }
+          $params = @{
+            SourceCommit = '${{ inputs.source_commit }}'
+            SourceArchiveSha256 = '${{ inputs.source_archive_sha256 }}'
+            SourceArchiveSize = [long] '${{ inputs.source_archive_size }}'
+            SourceTree = '${{ inputs.source_tree }}'
+            PackageVersion = '${{ inputs.package_version }}'
+            PackageRelease = [int] '${{ inputs.package_release }}'
+            PackageExactHeadCiAuthority = $true
+          }
+          & ".\$env:PACKAGE_DIR\materialize-candidate.ps1" @params
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          install: >-
+            base-devel
+            bc
+            dejagnu
+            gettext-devel
+            libiconv-devel
+            libzstd-devel
+            python
+            zlib-devel
+          update: true
+
+      - name: Build source-admitted candidate
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          cd "$PACKAGE_DIR"
+          makepkg --noconfirm --noprogressbar --syncdeps --cleanbuild
+
+      - name: Locate candidate
+        id: candidate
+        shell: pwsh
+        run: |
+          $candidates = @(
+            Get-ChildItem ".\$env:PACKAGE_DIR" `
+              -Filter 'mingw-w64-cross-cygwinarm64-binutils-*.pkg.tar.zst'
+          )
+          if ($candidates.Count -ne 1) {
+            throw "Expected one candidate archive, found $($candidates.Count)."
+          }
+          $candidate = $candidates[0]
+          "path=$($candidate.FullName)" >> $env:GITHUB_OUTPUT
+
+      - name: Run isolated transaction and consumer gates
+        shell: pwsh
+        run: |
+          $work = Join-Path $env:RUNNER_TEMP 'fixed-binutils-transaction'
+          $report = Join-Path $env:GITHUB_WORKSPACE 'fixed-binutils-report'
+          & ".\$env:PACKAGE_DIR\isolated-transaction.ps1" `
+            -CandidatePackage '${{ steps.candidate.outputs.path }}' `
+            -WorkRoot $work `
+            -ReportRoot $report
+
+      - name: Write admission-blocked handoff
+        shell: pwsh
+        run: |
+          $runUrl = '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
+          & ".\$env:PACKAGE_DIR\write-handoff.ps1" `
+            -CandidatePackage '${{ steps.candidate.outputs.path }}' `
+            -ReportRoot '.\fixed-binutils-report' `
+            -PackageCommit '${{ github.sha }}' `
+            -WorkflowRunId '${{ github.run_id }}' `
+            -WorkflowRunUrl $runUrl `
+            -WorkflowHeadSha '${{ github.sha }}' `
+            -SourceCommit '${{ inputs.source_commit }}' `
+            -SourceTree '${{ inputs.source_tree }}' `
+            -SourceArchiveSize '${{ inputs.source_archive_size }}' `
+            -SourceArchiveSha256 '${{ inputs.source_archive_sha256 }}'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fixed-aarch64-binutils-candidate
+          if-no-files-found: error
+          path: |
+            ${{ steps.candidate.outputs.path }}
+            fixed-binutils-report/**

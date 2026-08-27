@@ -1,0 +1,45 @@
+[
+  {
+    "name": "positive-zero-length",
+    "header": [],
+    "flags": [],
+    "expected_exit": 0,
+    "expected_result": "pass"
+  },
+  {
+    "name": "positive-empty",
+    "header": [0, 0, 1],
+    "flags": [],
+    "expected_exit": 0,
+    "expected_result": "pass"
+  },
+  {
+    "name": "positive-scalar64",
+    "header": [0, 0, 1],
+    "flags": [64],
+    "expected_exit": 0,
+    "expected_result": "pass"
+  },
+  {
+    "name": "negative-64-21-12-21-12",
+    "header": [0, 0, 1],
+    "flags": [64, 21, 12, 21, 12],
+    "expected_exit": 1,
+    "expected_result": "fail"
+  },
+  {
+    "name": "malformed-header",
+    "header": [0, 0, 2],
+    "flags": [],
+    "expected_exit": 2,
+    "expected_result": "error"
+  },
+  {
+    "name": "malformed-length",
+    "header": [0, 0, 1],
+    "flags": [],
+    "trailing_bytes": [255],
+    "expected_exit": 2,
+    "expected_result": "error"
+  }
+]

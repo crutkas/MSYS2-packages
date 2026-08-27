@@ -1,0 +1,17 @@
+!PKGBUILD
+!PKGBUILD.fixed.in
+!aarch64-cygwin.exp
+!0002-check-for-unusual-file-harder.patch
+!0010-bfd-Increase-_bfd_coff_max_nscns-to-65279.patch
+!9999-workarounds.patch
+!candidate-inputs.json
+!candidate-handoff.template.json
+!alias-contract.json
+!downstream-impact.json
+!isolated-transaction.ps1
+!materialize-candidate.ps1
+!readiness-report.json
+!validate-binutils-package.sh
+!validate-consumers.sh
+!write-handoff.ps1
+!.gitignore

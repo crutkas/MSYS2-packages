@@ -1,0 +1,32 @@
+check-aarch64-pseudo-relocs.ps1 is a parser/filter only. It never changes an image
+or applies runtime pseudo relocations.
+
+PE mode:
+  pwsh -File check-aarch64-pseudo-relocs.ps1 \
+    -PePath INPUT.exe -OutputPath findings.json \
+    [-Objdump PATH] [-Nm PATH]
+
+When MSYS-linked objdump/nm executables are launched from PowerShell, the matching
+MSYS root's usr/bin directory must be on PATH so their runtime DLL is resolvable.
+
+Raw-table mode:
+  pwsh -File check-aarch64-pseudo-relocs.ps1 \
+    -TablePath table.bin -OutputPath findings.json
+
+Exit codes:
+  0  valid v2 table with only 8/16/32/64 records, or no PE table
+  1  structurally valid table containing rejected/unknown flags
+  2  malformed input, out-of-bounds table, wrong PE architecture, or tool error
+
+The JSON result has schema=1, table bounds/header/records/flags, policy violations,
+and result=pass|fail|error. Empty and scalar64-only tables pass. Flags 12 and 21
+always fail. Unknown flags also fail closed.
+
+Tests:
+  pwsh -File test-check-aarch64-pseudo-relocs.ps1
+
+Optional real-image gates:
+  pwsh -File test-check-aarch64-pseudo-relocs.ps1 \
+    -NegativePePath current-linker.exe \
+    -PositivePePath fixed-linker.exe \
+    -Objdump PATH -Nm PATH

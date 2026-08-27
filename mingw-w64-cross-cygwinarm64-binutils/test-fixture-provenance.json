@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "license_relation": "Unmodified GNU binutils tests from the same GPL-licensed source repository.",
+  "fixtures": [
+    {
+      "path": "arm64-addr32-overflow.d",
+      "source_commit": "71d45656ca7aaf6895332ce9ef7cabc81ad3eaf0",
+      "source_url": "https://raw.githubusercontent.com/crutkas/binutils-woarm64/71d45656ca7aaf6895332ce9ef7cabc81ad3eaf0/ld/testsuite/ld-pe/arm64-addr32-overflow.d",
+      "size": 195,
+      "sha256": "2dddccd0d21a4bd985e69c0715a009d3c1b2d3898283338110a6051597678797"
+    },
+    {
+      "path": "arm64-addr32-overflow.s",
+      "source_commit": "71d45656ca7aaf6895332ce9ef7cabc81ad3eaf0",
+      "source_url": "https://raw.githubusercontent.com/crutkas/binutils-woarm64/71d45656ca7aaf6895332ce9ef7cabc81ad3eaf0/ld/testsuite/ld-pe/arm64-addr32-overflow.s",
+      "size": 47,
+      "sha256": "434c6b478d4bad43c98b37f14de04b70fe8c37d1def261251f21a00e7c55eb5d"
+    }
+  ]
+}

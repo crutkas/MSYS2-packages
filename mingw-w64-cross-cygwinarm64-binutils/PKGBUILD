@@ -1,0 +1,176 @@
+# Maintainer: Chris Reddington <crutkas@microsoft.com>
+
+# Materialize this file only with materialize-candidate.ps1. The source commit,
+# archive checksum, and exact-head green CI run are one admission unit.
+_realname=binutils
+_target=aarch64-pc-cygwin
+_public_target=aarch64-pc-msys
+_source_commit=3f05fc4d3e0eeab265f2157e3257a7067b6e7223
+_source_tree=ecca625d45883e13128283a8c1750dac7997f729
+_source_archive_size=66204943
+_source_archive_sha256=d11c2b4453318a6168287fe74655c54aa15bf12f415f9ffe3f0ea32e30a3411e
+_source_ci_authority=package-exact-head
+_source_ci_run_id="${SOURCE_CI_RUN_ID:-local-preflight}"
+_source_root="${_realname}-woarm64-${_source_commit}"
+pkgname=mingw-w64-cross-cygwinarm64-${_realname}
+pkgver=2.44.50
+pkgrel=2
+pkgdesc="GNU binary utilities for an x86_64 MSYS host and AArch64 MSYS/Cygwin targets"
+arch=('x86_64')
+url="https://github.com/crutkas/binutils-woarm64"
+msys2_repository_url="https://github.com/crutkas/binutils-woarm64"
+license=('GPL')
+groups=('mingw-w64-cross-toolchain' 'mingw-w64-cross')
+depends=('libiconv' 'libintl' 'zlib' 'libzstd')
+makedepends=('gcc' 'gettext-devel' 'libiconv-devel' 'libzstd-devel'
+             'zlib-devel')
+checkdepends=('bc' 'dejagnu')
+provides=("aarch64-pc-cygwin-binutils=${pkgver}"
+          "aarch64-pc-msys-binutils=${pkgver}"
+          "mingw-w64-cross-cygwin-arm64-binutils=${pkgver}")
+conflicts=('aarch64-pc-cygwin-binutils'
+           'aarch64-pc-msys-binutils'
+           'mingw-w64-cross-cygwin-arm64-binutils')
+options=('staticlibs' '!distcc' '!ccache' '!buildflags')
+source=("${_realname}-${_source_commit}.tar.gz::https://github.com/crutkas/binutils-woarm64/archive/${_source_commit}.tar.gz"
+        aarch64-cygwin.exp
+        arm64-addr32-overflow.d
+        arm64-addr32-overflow.s
+        0002-check-for-unusual-file-harder.patch
+        0010-bfd-Increase-_bfd_coff_max_nscns-to-65279.patch
+        9999-workarounds.patch)
+sha256sums=("${_source_archive_sha256}"
+            'b88e038610953358f9d06ad05c310a1288d768aae1803370feb5ba63a912d742'
+            '2dddccd0d21a4bd985e69c0715a009d3c1b2d3898283338110a6051597678797'
+            '434c6b478d4bad43c98b37f14de04b70fe8c37d1def261251f21a00e7c55eb5d'
+            '8a29a639c222c17565bed351f3c47ad26a474a6b745e5d51dcbdefba15820b46'
+            '4e8ac055df61b1b5d6ae29dc87e1154737c2e87c7b244b44866702cabf1a5d18'
+            '261eef15d27d0bf8fcbb0e68a1e6a0f58b5f7ceeb55fd10b39f2352502b3690e')
+
+prepare() {
+  cd "${srcdir}/${_source_root}"
+
+  local _patch
+  for _patch in \
+    0002-check-for-unusual-file-harder.patch \
+    0010-bfd-Increase-_bfd_coff_max_nscns-to-65279.patch \
+    9999-workarounds.patch
+  do
+    patch -Np1 -i "${srcdir}/${_patch}"
+  done
+
+  install -m644 \
+    "${srcdir}/arm64-addr32-overflow.d" \
+    "${srcdir}/arm64-addr32-overflow.s" \
+    ld/testsuite/ld-pe/
+  install -m644 \
+    "${srcdir}/aarch64-cygwin.exp" \
+    ld/testsuite/ld-pe/aarch64-package.exp
+}
+
+build() {
+  mkdir -p "${srcdir}/build-${_target}"
+  cd "${srcdir}/build-${_target}"
+
+  export MSYSTEM=CYGWIN
+  "${srcdir}/${_source_root}/configure" \
+    --build="${CHOST}" \
+    --host="${CHOST}" \
+    --target="${_target}" \
+    --prefix=/opt \
+    --with-sysroot="/opt/${_target}" \
+    --with-build-sysroot="/opt/${_target}" \
+    --with-libiconv-prefix=/usr \
+    --with-system-zlib \
+    --enable-64-bit-bfd \
+    --enable-deterministic-archives \
+    --enable-lto \
+    --enable-plugins \
+    --disable-dependency-tracking \
+    --disable-gdb \
+    --disable-gdbserver \
+    --disable-gprofng \
+    --disable-sim \
+    --disable-werror
+
+  # Texinfo 7.2 rejects these manuals. Disable only info generation; make,
+  # compiler, linker, and test failures still propagate.
+  make MAKEINFO=true
+}
+
+check() {
+  cd "${srcdir}/build-${_target}"
+
+  make -C bfd LDFLAGS="" MAKEINFO=true check
+
+  local _bfd_object="${srcdir}/bfd-aarch64-pe.o"
+  ./gas/as-new -o "${_bfd_object}" \
+    "${srcdir}/arm64-addr32-overflow.s"
+  ./binutils/objdump -f "${_bfd_object}" | grep -F "file format pe-aarch64-little"
+  ./binutils/objdump -f "${_bfd_object}" | grep -F "architecture: aarch64"
+  rm -f "${_bfd_object}"
+
+  make -C binutils LDFLAGS="" MAKEINFO=true check \
+    RUNTESTFLAGS="binutils-all/aarch64/aarch64.exp"
+  make -C ld LDFLAGS="" MAKEINFO=true check \
+    RUNTESTFLAGS="ld-pe/aarch64-package.exp"
+
+  rm -f ld/ld.log ld/ld.sum
+  local _source_status=0
+  make -C ld LDFLAGS="" MAKEINFO=true check \
+    RUNTESTFLAGS="ld-pe/pe.exp" || _source_status=$?
+  test "${_source_status}" -ne 0
+  grep -E '^(FAIL|XPASS|ERROR|UNRESOLVED):' ld/ld.sum \
+    | sort > "${srcdir}/source-unexpected-actual.txt"
+  cat > "${srcdir}/source-unexpected-expected.txt" <<'EOF'
+FAIL: ld-pe/symbols-ordinals-hints-imports-ld
+XPASS: ld-pe/symbols-ordinals-hints-exports-dlltool
+EOF
+  sort -o "${srcdir}/source-unexpected-expected.txt" \
+    "${srcdir}/source-unexpected-expected.txt"
+  diff -u \
+    "${srcdir}/source-unexpected-expected.txt" \
+    "${srcdir}/source-unexpected-actual.txt"
+}
+
+package() {
+  cd "${srcdir}/build-${_target}"
+
+  make MAKEINFO=true DESTDIR="${pkgdir}" install
+  rm -rf "${pkgdir}/opt/include"
+  rm -rf "${pkgdir}/opt/lib"
+  rm -rf "${pkgdir}/opt/share/gdb"
+  rm -rf "${pkgdir}/opt/share/info"
+  rm -rf "${pkgdir}/opt/share/locale"
+
+  local _cygwin_tool _tool
+  local _alias_manifest="${srcdir}/alias-manifest.tsv"
+  printf 'tool\talias\ttarget\n' > "${_alias_manifest}"
+  for _cygwin_tool in "${pkgdir}/opt/bin/${_target}-"*.exe; do
+    test -f "${_cygwin_tool}"
+    _tool=${_cygwin_tool##*/}
+    _tool=${_tool#"${_target}-"}
+    _tool=${_tool%.exe}
+    MSYS=winsymlinks:sys ln -s \
+      "${_target}-${_tool}.exe" \
+      "${pkgdir}/opt/bin/${_public_target}-${_tool}.exe"
+    printf '%s\t/opt/bin/%s-%s.exe\t%s-%s.exe\n' \
+      "${_tool}" "${_public_target}" "${_tool}" "${_target}" "${_tool}" \
+      >> "${_alias_manifest}"
+  done
+
+  local _docdir="${pkgdir}/opt/share/doc/${pkgname}"
+  install -d "${_docdir}"
+  install -m644 "${_alias_manifest}" "${_docdir}/alias-manifest.tsv"
+  {
+    printf 'package\t%s\n' "${pkgname}"
+    printf 'version\t%s-%s\n' "${pkgver}" "${pkgrel}"
+    printf 'source-repository\t%s\n' "${msys2_repository_url}"
+    printf 'source-commit\t%s\n' "${_source_commit}"
+    printf 'source-archive-sha256\t%s\n' "${_source_archive_sha256}"
+    printf 'source-ci-run-id\t%s\n' "${_source_ci_run_id}"
+    printf 'host\tx86_64-pc-msys\n'
+    printf 'target\t%s\n' "${_target}"
+    printf 'public-alias-target\t%s\n' "${_public_target}"
+  } > "${_docdir}/source-identity.tsv"
+}
