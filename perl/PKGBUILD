@@ -66,6 +66,7 @@ build() {
 
   local perl_cc=gcc
   local perl_ld=g++
+  local perl_gcc_version=
   if [[ ${CARCH} == aarch64 ]]; then
     # Native ARM64 Configure still emits this warning in the generated probe;
     # keep the existing x86 builds strict.
@@ -102,6 +103,8 @@ build() {
       printf 'unexpected compiler sysroot: %s\n' "$("${perl_cc}" -print-sysroot)" >&2
       return 1
     fi
+    perl_gcc_version=$("${perl_cc}" -dumpversion)
+
     local probe_dir
     probe_dir=$(mktemp -d)
     trap '[[ -n ${probe_dir:-} ]] && rm -rf -- "${probe_dir}"' RETURN
@@ -205,6 +208,8 @@ EOF
     -Dmyarchname=${ARCH}-cygwin \
     -Dlibperl=msys-perl"$(echo "${pkgver%.[0-9]*}" | tr . _)".dll \
     -Dcc="${perl_cc}" -Dld="${perl_ld}" \
+    -Dgccversion="${perl_gcc_version}" \
+    -Dgccosandvers="${perl_gcc_version}" \
     -Accflags="$CFLAGS -fwrapv" \
     -Ud_setproctitle > "${configure_log}" 2>&1; then
       cat "${configure_log}"
