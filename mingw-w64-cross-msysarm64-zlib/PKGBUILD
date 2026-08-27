@@ -1,0 +1,288 @@
+# Maintainer: Chris Reddington <crutkas@microsoft.com>
+
+_realname=zlib
+_target=aarch64-pc-msys
+_runtime_version=3.6.10.r0.ga527ace21
+_runtime_pkgrel=1
+_runtime_release_tag=msysarm64-runtime-pr10-a527-20260824
+_sysroot_version=3.6.10.r0.ga527ace21
+_sysroot_pkgrel=1
+_w32api_version=14.0.0.r0.g9b3dd0125
+_gcc_version=15.0.1dev
+_gcc_pkgrel=1
+_gcc_release_tag=msysarm64-gcc-pr13-20260826
+_support_release_tag=msysarm64-gcc-pr13-support-20260826
+_binutils_version=2.44.50
+_binutils_pkgrel=2
+_binutils_release_tag=cygwinarm64-binutils-pr21-3356eec-20260827
+_binutils_sha256=3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b
+_binutils_linker_sha256=075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f
+_binutils_producer_head=3356eec1411983cc252b04afac32bca5f3b8d824
+_binutils_producer_run=33044771291
+_pseudo_reloc_scanner_sha256=888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9
+
+pkgbase=mingw-w64-cross-msysarm64-zlib
+pkgname=(
+  mingw-w64-cross-msysarm64-zlib
+  mingw-w64-cross-msysarm64-zlib-devel
+  mingw-w64-cross-msysarm64-zlib-minigzip
+)
+pkgver=1.3.1
+pkgrel=1
+pkgdesc="Compression library for aarch64-pc-msys"
+arch=('x86_64')
+url="https://www.zlib.net/"
+msys2_repository_url="https://github.com/madler/zlib"
+msys2_references=(
+  "cpe: cpe:/a:gnu:zlib"
+  "cpe: cpe:/a:zlib:zlib"
+)
+license=('spdx:Zlib')
+groups=('mingw-w64-cross-toolchain' 'mingw-w64-cross')
+makedepends=(
+  'gcc'
+  'make'
+  "mingw-w64-cross-cygwinarm64-binutils=${_binutils_version}-${_binutils_pkgrel}"
+  "mingw-w64-cross-msysarm64-gcc=${_gcc_version}-${_gcc_pkgrel}"
+  "mingw-w64-cross-msysarm64-gcc-libs=${_gcc_version}-${_gcc_pkgrel}"
+  "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
+  "mingw-w64-cross-msysarm64-sysroot=${_sysroot_version}-${_sysroot_pkgrel}"
+  "mingw-w64-cross-msysarm64-w32api-runtime=${_w32api_version}-1"
+  'python'
+)
+options=('!strip' '!buildflags' '!emptydirs')
+source=(
+  "https://github.com/madler/zlib/releases/download/v${pkgver}/zlib-${pkgver}.tar.xz"{,.asc}
+  zlib-1.2.13-configure.patch
+  zlib-1.2.13-gzopen_w.patch
+  zlib-1.2.13-minizip-fixuncrypt.patch
+  validate-zlib.sh
+  README.md
+)
+sha256sums=(
+  '38ef96b8dfe510d42707d9c781877914792541133e1870841463bfa73f883e32'
+  'SKIP'
+  '43726a2170b298059391c0faec0c893aa7ca59b1201afd9f807c49d39ce25527'
+  '3c5186940741cf380ab598362c564c792965e9d25906ef75087e9e7389becbc5'
+  '7c60bc88074ca0d5b806d6b39ee183206f4697749ce96d81fcef9cad3df76eca'
+  'fe1f039f5e7179610fcdebd8f3dd1af3c05ff4d48de7808e42ea61de568cc39a'
+  '20d65d9c2fe0cedc1ff62e34a8cde337254c1ffa1f5e3e5ad6a2db2f05c813ff'
+)
+validpgpkeys=('5ED46A6721D365587791E2AA783FCD8E58BCAFBA')
+
+export SOURCE_DATE_EPOCH=1703203200
+export TZ=UTC
+
+prepare() {
+  cd "${srcdir}/${_realname}-${pkgver}"
+
+  patch -p2 -i "${srcdir}/zlib-1.2.13-configure.patch"
+  patch -p2 -i "${srcdir}/zlib-1.2.13-gzopen_w.patch"
+  patch -p2 -i "${srcdir}/zlib-1.2.13-minizip-fixuncrypt.patch"
+
+  tr -d '\r' < "${srcdir}/validate-zlib.sh" \
+    > "${srcdir}/validate-zlib.lf.sh"
+  chmod 755 "${srcdir}/validate-zlib.lf.sh"
+}
+
+build() {
+  local _source="${srcdir}/${_realname}-${pkgver}"
+  local _dest="${srcdir}/dest"
+  local _report="${srcdir}/zlib-report"
+  local _sysroot="/opt/${_target}"
+  local _specs="${_sysroot}/lib/cygwin-compile-only.specs"
+  local _cc="/opt/bin/${_target}-gcc.exe"
+  local _cxx="/opt/bin/${_target}-g++.exe"
+  local _binutils_root="/opt/bin"
+  local _tool_prefix="${_binutils_root}/aarch64-pc-cygwin"
+  local _ar="${_tool_prefix}-ar.exe"
+  local _ld="${_tool_prefix}-ld.exe"
+  local _nm="${_tool_prefix}-nm.exe"
+  local _objdump="${_tool_prefix}-objdump.exe"
+  local _ranlib="${_tool_prefix}-ranlib.exe"
+  local _rc="${_tool_prefix}-windres.exe"
+  local _scanner="${startdir}/../.ci/check-aarch64-pseudo-relocs.ps1"
+  local _prefix_map="-ffile-prefix-map=${srcdir}=. -fdebug-prefix-map=${srcdir}=. -fmacro-prefix-map=${srcdir}=."
+  local _target_cflags="-O2 -pipe -D__MSYS__ --sysroot=${_sysroot} -specs=${_specs} ${_prefix_map}"
+  local _target_ldflags="--sysroot=${_sysroot} -L${_sysroot}/lib -L${_sysroot}/usr/lib -Wl,--no-insert-timestamp"
+
+  export PATH="/opt/bin:/usr/bin:${PATH}"
+  test "$("${_cc}" -dumpmachine)" = "${_target}"
+  test "$(pacman -Qoq "${_cc}")" = mingw-w64-cross-msysarm64-gcc
+  test "$(sha256sum "${_ld}" | cut -d' ' -f1)" = \
+    "${_binutils_linker_sha256}"
+  test "$(sha256sum "${_scanner}" | cut -d' ' -f1)" = \
+    "${_pseudo_reloc_scanner_sha256}"
+  test "$(pacman -Q mingw-w64-cross-cygwinarm64-binutils)" = \
+    "mingw-w64-cross-cygwinarm64-binutils ${_binutils_version}-${_binutils_pkgrel}"
+  test "$(pacman -Qoq "${_ar}")" = \
+    mingw-w64-cross-cygwinarm64-binutils
+  test -f "${_sysroot}/bin/msys-2.0.dll"
+  test -f "${_sysroot}/lib/libmsys-2.0.a"
+  test -f "${_sysroot}/usr/lib/libkernel32.a"
+  test -f "${_specs}"
+
+  rm -rf "${_dest}" "${_report}"
+  mkdir -p "${_dest}" "${_report}"
+  make -C "${_source}" -f win32/Makefile.gcc clean
+  (
+    cd "${_source}"
+    CHOST="${_target}" \
+    CC="${_cc}" \
+    AR="${_ar}" \
+    RANLIB="${_ranlib}" \
+    NM="${_nm}" \
+    CFLAGS="${_target_cflags}" \
+    LDFLAGS="${_target_ldflags}" \
+      ./configure --prefix=/usr --static
+  )
+  make -C "${_source}" -j1 -f win32/Makefile.gcc \
+    CC="${_cc}" \
+    LD="${_cc}" \
+    AR="${_ar}" \
+    ARFLAGS=rcsD \
+    RANLIB="${_ranlib}" \
+    RC="${_rc}" \
+    RCFLAGS="--define GCC_WINDRES --define _WIN64 --include-dir=${_sysroot}/include --include-dir=${_sysroot}/include/w32api --preprocessor=${_cc} --preprocessor-arg=-E --preprocessor-arg=-xc-header --preprocessor-arg=-DRC_INVOKED --preprocessor-arg=--sysroot=${_sysroot} --preprocessor-arg=-specs=${_specs} --preprocessor-arg=-D__MSYS__" \
+    STRIP=/usr/bin/true \
+    CFLAGS="${_target_cflags}" \
+    LDFLAGS="${_target_ldflags}" \
+    SHAREDLIB=msys-z.dll
+  "${_ranlib}" -D "${_source}/libz.dll.a"
+
+  make -C "${_source}" -f win32/Makefile.gcc install \
+    DESTDIR="${_dest}" \
+    SHAREDLIB=msys-z.dll \
+    BINARY_PATH=/usr/bin \
+    INCLUDE_PATH=/usr/include \
+    LIBRARY_PATH=/usr/lib \
+    prefix=/usr \
+    SHARED_MODE=1
+
+  install -Dm755 "${_source}/minigzip_d.exe" \
+    "${_dest}/usr/bin/minigzip.exe"
+  install -Dm644 "${_source}/zlib.3" \
+    "${_dest}/usr/share/man/man3/zlib.3"
+  sed -i 's| -L${sharedlibdir}||g' \
+    "${_dest}/usr/lib/pkgconfig/zlib.pc"
+
+  TARGET="${_target}" \
+  TARGET_CC="${_cc}" \
+  TARGET_CXX="${_cxx}" \
+  TARGET_AR="${_ar}" \
+  TARGET_NM="${_nm}" \
+  TARGET_OBJDUMP="${_objdump}" \
+  TARGET_BINUTILS_ROOT="${_binutils_root}" \
+  TARGET_BUILD_DIR="${_source}" \
+  PSEUDO_RELOC_SCANNER="${_scanner}" \
+    "${srcdir}/validate-zlib.lf.sh" "${_dest}/usr" "${_report}"
+
+  cat > "${_report}/source-identity.txt" <<EOF
+package-version	${pkgver}-${pkgrel}
+source-repository	${msys2_repository_url}
+source-release	v${pkgver}
+source-archive-sha256	38ef96b8dfe510d42707d9c781877914792541133e1870841463bfa73f883e32
+target	${_target}
+runtime-version	${_runtime_version}-${_runtime_pkgrel}
+sysroot-version	${_sysroot_version}-${_sysroot_pkgrel}
+w32api-version	${_w32api_version}-1
+gcc-version	${_gcc_version}-${_gcc_pkgrel}
+runtime-release	${_runtime_release_tag}
+gcc-release	${_gcc_release_tag}
+gcc-support-release	${_support_release_tag}
+binutils-release	${_binutils_release_tag}
+binutils-version	${_binutils_version}-${_binutils_pkgrel}
+binutils-package-sha256	${_binutils_sha256}
+binutils-linker-sha256	${_binutils_linker_sha256}
+binutils-producer-head	${_binutils_producer_head}
+binutils-producer-run	${_binutils_producer_run}
+pseudo-reloc-scanner-sha256	${_pseudo_reloc_scanner_sha256}
+EOF
+}
+
+check() {
+  local _source="${srcdir}/${_realname}-${pkgver}"
+  local _host_check="${srcdir}/host-check"
+  local _payload="${_host_check}/roundtrip.txt"
+
+  rm -rf "${_host_check}"
+  cp -a "${_source}" "${_host_check}"
+  (
+    cd "${_host_check}"
+    unset AR AS CC CXX LD NM OBJDUMP RANLIB RC STRIP
+    make -f win32/Makefile.gcc clean
+    ./configure --prefix=/usr --static
+    make -j1
+    make test
+    printf 'native aarch64-pc-msys zlib roundtrip\n' > "${_payload}"
+    ./minigzip < "${_payload}" > "${_payload}.gz"
+    ./minigzip -d < "${_payload}.gz" > "${_payload}.out"
+    cmp "${_payload}" "${_payload}.out"
+  )
+}
+
+package_mingw-w64-cross-msysarm64-zlib() {
+  local _dest="${srcdir}/dest/usr"
+  local _docdir="${pkgdir}/opt/${_target}/usr/share/doc/${pkgbase}"
+  local _licensedir="${pkgdir}/usr/share/licenses/${pkgname}"
+
+  pkgdesc="zlib runtime library for aarch64-pc-msys"
+  depends=(
+    "mingw-w64-cross-msysarm64-runtime=${_runtime_version}-${_runtime_pkgrel}"
+  )
+  provides=("aarch64-pc-msys-zlib=${pkgver}")
+  conflicts=('aarch64-pc-msys-zlib')
+
+  install -Dm755 "${_dest}/bin/msys-z.dll" \
+    "${pkgdir}/opt/${_target}/usr/bin/msys-z.dll"
+  install -d "${_docdir}"
+  cp -a "${srcdir}/zlib-report/." "${_docdir}/"
+  rm -f "${_docdir}/"*.exe
+  install -Dm755 "${srcdir}/validate-zlib.lf.sh" \
+    "${_docdir}/validate-zlib.sh"
+  install -Dm644 "${srcdir}/README.md" "${_docdir}/README.md"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE" \
+    "${_licensedir}/LICENSE"
+}
+
+package_mingw-w64-cross-msysarm64-zlib-devel() {
+  local _dest="${srcdir}/dest/usr"
+  local _pkgroot="${pkgdir}/opt/${_target}/usr"
+  local _licensedir="${pkgdir}/usr/share/licenses/${pkgname}"
+
+  pkgdesc="zlib headers and libraries for aarch64-pc-msys"
+  groups=('development')
+  depends=(
+    "mingw-w64-cross-msysarm64-zlib=${pkgver}-${pkgrel}"
+    "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
+    "mingw-w64-cross-msysarm64-sysroot=${_sysroot_version}-${_sysroot_pkgrel}"
+  )
+  provides=("aarch64-pc-msys-zlib-devel=${pkgver}")
+  conflicts=('aarch64-pc-msys-zlib-devel')
+  options=('!strip' 'staticlibs')
+
+  install -d "${_pkgroot}"
+  cp -a "${_dest}/include" "${_pkgroot}/"
+  cp -a "${_dest}/lib" "${_pkgroot}/"
+  cp -a "${_dest}/share" "${_pkgroot}/"
+  rm -rf "${_pkgroot}/share/doc"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE" \
+    "${_licensedir}/LICENSE"
+}
+
+package_mingw-w64-cross-msysarm64-zlib-minigzip() {
+  local _licensedir="${pkgdir}/usr/share/licenses/${pkgname}"
+
+  pkgdesc="minigzip compression smoke utility for aarch64-pc-msys"
+  depends=(
+    "mingw-w64-cross-msysarm64-zlib=${pkgver}-${pkgrel}"
+    "mingw-w64-cross-msysarm64-runtime=${_runtime_version}-${_runtime_pkgrel}"
+  )
+  provides=("aarch64-pc-msys-minigzip=${pkgver}")
+  conflicts=('aarch64-pc-msys-minigzip')
+
+  install -Dm755 "${srcdir}/dest/usr/bin/minigzip.exe" \
+    "${pkgdir}/opt/${_target}/usr/bin/minigzip.exe"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE" \
+    "${_licensedir}/LICENSE"
+}
