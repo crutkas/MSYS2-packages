@@ -220,10 +220,8 @@ jobs:
           $input_dir = Join-Path $env:RUNNER_TEMP 'msysarm64-gcc-inputs'
           & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -U `
             "$input_dir\mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst" `
-            "$input_dir\mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst"
-          & 'C:\msys64\usr\bin\pacman.exe' -D --asexplicit `
-            mingw-w64-cross-msysarm64-gcc-libs `
-            mingw-w64-cross-msysarm64-gcc
+            "$input_dir\mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst" `
+            --nodeps
 
       - name: Add MSYS tool aliases
         if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-native-arm64-npth' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-native-arm64-npth') }}
