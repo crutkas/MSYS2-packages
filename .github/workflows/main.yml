@@ -10,7 +10,13 @@ on:
 
 jobs:
   build:
-    if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/master'}}
+    if: >-
+      ${{
+        (github.event_name != 'push' || github.ref != 'refs/heads/master') &&
+        !(github.repository == 'crutkas/MSYS2-packages' &&
+          (github.ref_name == 'crutkas-arm64-gettext-libintl' ||
+           github.head_ref == 'crutkas-arm64-gettext-libintl'))
+      }}
     strategy:
       fail-fast: false
       matrix:

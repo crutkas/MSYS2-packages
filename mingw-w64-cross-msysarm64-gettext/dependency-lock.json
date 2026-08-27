@@ -1,0 +1,140 @@
+{
+  "schema_version": 1,
+  "target": "aarch64-pc-msys",
+  "personality": "MSYS",
+  "abi": {
+    "data_model": "LP64",
+    "calling_convention": "AAPCS64",
+    "exception_model": "SEH"
+  },
+  "coordination": {
+    "coreutils_session_id": "f861b5ca",
+    "coreutils_pr_head": "a2be2108e203cfb24d58dbad32856ca751ee32cd",
+    "coreutils_runtime_requirement": "mingw-w64-cross-msysarm64-libintl=0.22.5-1",
+    "coreutils_devel_requirement": "mingw-w64-cross-msysarm64-libintl-devel=0.22.5-1",
+    "libiconv_session_id": "47f325f1",
+    "libiconv_pr_head": "cfd0c4491b03089c1c7a17c48db570b99156957c",
+    "libiconv_runtime_requirement": "mingw-w64-cross-msysarm64-libiconv=1.18-1",
+    "libiconv_devel_requirement": "mingw-w64-cross-msysarm64-libiconv-devel=1.18-1"
+  },
+  "toolchain": {
+    "binutils_commit": "3356eec1411983cc252b04afac32bca5f3b8d824",
+    "linker_sha256": "075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f",
+    "pseudo_reloc_scanner_url": "https://raw.githubusercontent.com/crutkas/MSYS2-packages/3356eec1411983cc252b04afac32bca5f3b8d824/.ci/check-aarch64-pseudo-relocs.ps1",
+    "pseudo_reloc_scanner_size": 10569,
+    "pseudo_reloc_scanner_sha256": "888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9"
+  },
+  "sources": [
+    {
+      "name": "gettext-0.22.5.tar.gz",
+      "url": "https://ftp.gnu.org/pub/gnu/gettext/gettext-0.22.5.tar.gz",
+      "size": 26861674,
+      "sha256": "ec1705b1e969b83a9f073144ec806151db88127f5e40fe5a94cb6c8fa48996a0",
+      "signature": "gettext-0.22.5.tar.gz.sig",
+      "signature_size": 833,
+      "signature_sha256": "5829b36cdf582df81ca2ec0919b9a671f5cab7bb09adb23c96ada32e9b20168f",
+      "signing_key": "9001B85AF9E1B83DF1BDA942F5BE8B267C6A406D"
+    }
+  ],
+  "private_host_base": {
+    "name": "msys2-base-x86_64-20260611.tar.xz",
+    "url": "https://repo.msys2.org/distrib/x86_64/msys2-base-x86_64-20260611.tar.xz",
+    "size": 53555380,
+    "sha256": "a2d047e8ee213c3c6a49a8de427eb1069df12207c0422ff1b3cbb5c905c34221",
+    "signature_url": "https://repo.msys2.org/distrib/x86_64/msys2-base-x86_64-20260611.tar.xz.sig",
+    "signature_size": 566,
+    "signature_sha256": "076f5623b702d5016cf0253e1d14a6bd4870a90243243e96409b227f0d5bf70f",
+    "signing_key": "E0AA0F031DBD80FFBA57B06D5A62D0CAB6264964",
+    "admitted": true
+  },
+  "admitted_assets": [
+    {
+      "tag": "cygwinarm64-binutils-pr21-3356eec-20260827",
+      "name": "mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst",
+      "size": 6545114,
+      "sha256": "3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b"
+    },
+    {
+      "tag": "msysarm64-runtime-pr10-a527-20260824",
+      "name": "mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "size": 9319013,
+      "sha256": "263f8f7e3614ac41337ce3a223f2bb26b6459aef6f34670525cdd4c03ec3ae21"
+    },
+    {
+      "tag": "msysarm64-runtime-pr10-a527-20260824",
+      "name": "mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "size": 4743,
+      "sha256": "33861708e7f981b4eef5b93ef135ab3a43d2757533f64df6f61a146d823c355f"
+    },
+    {
+      "tag": "msysarm64-runtime-pr10-a527-20260824",
+      "name": "mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "size": 86822,
+      "sha256": "e30609e09eab2fa07aba2e6196b05f34e5e9107abc4ab8832966684758c743ca"
+    },
+    {
+      "tag": "msysarm64-runtime-pr10-a527-20260824",
+      "name": "mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "size": 9893043,
+      "sha256": "158c505f45025a466950faa7c85c9fd85e9d32384dd27b53586ffc75d71ca78e"
+    },
+    {
+      "tag": "msysarm64-runtime-pr10-a527-20260824",
+      "name": "mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "size": 4426157,
+      "sha256": "c18b51e483991770b8e06cc2d8f7002d06784d3071ac213a8fee24bb831267d1"
+    },
+    {
+      "tag": "msysarm64-gcc-pr13-20260826",
+      "name": "mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst",
+      "size": 83876291,
+      "sha256": "a74887c76a933ec424933bf662729d94975b83138af783bd93f2e7acd95c3a22"
+    },
+    {
+      "tag": "msysarm64-gcc-pr13-20260826",
+      "name": "mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst",
+      "size": 4963824,
+      "sha256": "990f163cacf9ffce1b58445be91fedc57f135cc26a88d7dba109806446b41438"
+    },
+    {
+      "tag": "msysarm64-gcc-pr13-support-20260826",
+      "name": "mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst",
+      "size": 1520166,
+      "sha256": "9715aab6894379bf5ab936a3a559f286fb4aedbb64f0774d7457182e00648e08"
+    },
+    {
+      "tag": "msysarm64-gcc-pr13-support-20260826",
+      "name": "mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst",
+      "size": 2349635,
+      "sha256": "7727936f4212e5af04e9739eca60f157c0875796c1e82fcfb79fd4398b111e24"
+    }
+  ],
+  "target_dependency_assets": [
+    {
+      "package": "mingw-w64-cross-msysarm64-libiconv",
+      "required_version": "1.18-1",
+      "release_tag": null,
+      "asset_name": null,
+      "size": null,
+      "sha256": null,
+      "admitted": false
+    },
+    {
+      "package": "mingw-w64-cross-msysarm64-libiconv-devel",
+      "required_version": "1.18-1",
+      "release_tag": null,
+      "asset_name": null,
+      "size": null,
+      "sha256": null,
+      "admitted": false
+    }
+  ],
+  "bundled_dependencies": {
+    "libunistring": "gettext-0.22.5 source archive",
+    "libxml2": "gettext-0.22.5 source archive",
+    "libcroco": "gettext-0.22.5 source archive",
+    "glib": "gettext-0.22.5 source archive",
+    "gettext": "gettext-0.22.5 source archive"
+  },
+  "final_build_admitted": false
+}
