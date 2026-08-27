@@ -1,0 +1,283 @@
+# Maintainer: Chris Reddington <crutkas@microsoft.com>
+
+_realname=openssl
+_target=aarch64-pc-msys
+_tool_target=aarch64-pc-cygwin
+_binutils_release_tag=cygwinarm64-binutils-pr21-3356eec-20260827
+_binutils_version=2.44.50
+_binutils_pkgrel=2
+_linker_sha256=075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f
+_runtime_release_tag=msysarm64-runtime-pr10-a527-20260824
+_runtime_version=3.6.10.r0.ga527ace21
+_runtime_pkgrel=1
+_gcc_release_tag=msysarm64-gcc-pr13-20260826
+_gcc_version=15.0.1dev
+_gcc_pkgrel=1
+
+export SOURCE_DATE_EPOCH=1786817435
+
+pkgbase=mingw-w64-cross-msysarm64-openssl
+pkgname=(
+  mingw-w64-cross-msysarm64-openssl
+  mingw-w64-cross-msysarm64-libopenssl
+  mingw-w64-cross-msysarm64-openssl-devel
+  mingw-w64-cross-msysarm64-openssl-docs
+)
+pkgver=3.5.1
+pkgrel=1
+pkgdesc="OpenSSL for the native aarch64-pc-msys POSIX ABI"
+arch=('x86_64')
+url='https://openssl-library.org'
+msys2_repository_url="https://github.com/openssl/openssl"
+msys2_references=(
+  "cpe: cpe:/a:openssl:openssl"
+)
+license=('spdx:Apache-2.0')
+groups=('mingw-w64-cross-toolchain' 'mingw-w64-cross')
+makedepends=(
+  'diffutils'
+  'gcc'
+  'make'
+  "mingw-w64-cross-cygwinarm64-binutils=${_binutils_version}-${_binutils_pkgrel}"
+  "mingw-w64-cross-msysarm64-gcc=${_gcc_version}-${_gcc_pkgrel}"
+  "mingw-w64-cross-msysarm64-gcc-libs=${_gcc_version}-${_gcc_pkgrel}"
+  "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
+  "mingw-w64-cross-msysarm64-sysroot=${_runtime_version}-${_runtime_pkgrel}"
+  'mingw-w64-cross-msysarm64-w32api-runtime=14.0.0.r0.g9b3dd0125-1'
+  'perl'
+  'pkgconf'
+  'tar'
+)
+checkdepends=('python')
+options=('!strip' '!buildflags' '!emptydirs')
+noextract=("${_realname}-${pkgver}.tar.gz")
+source=(
+  "https://github.com/openssl/openssl/releases/download/${_realname}-${pkgver}/${_realname}-${pkgver}.tar.gz"
+  "https://github.com/openssl/openssl/releases/download/${_realname}-${pkgver}/${_realname}-${pkgver}.tar.gz.asc"
+  '0001-Use-usr-ssl-as-ca-dir-instead-of-.-demoCA.patch'
+  '0002-Support-MSYS2.patch'
+  '0004-Override-engines-directory.patch'
+  '0005-skip-dllmain-detach.patch'
+  '0006-Add-Cygwin-aarch64-target.patch'
+  '0007-Fix-AArch64-Cygwin-LP64-detection.patch'
+  'check-aarch64-pseudo-relocs.ps1'
+  'dlopen-generic.c'
+  'dlopen-nodllmain.c'
+  'dlopen-crypto.c'
+  'dlopen-smoke.c'
+  'loadlibrary-smoke.c'
+  'provider-minimal.c'
+  'openssl-smoke.c'
+  'validate-openssl.sh'
+  'native-smoke.ps1'
+  'native-smoke.sh'
+  'README.md'
+)
+sha256sums=(
+  '529043b15cffa5f36077a4d0af83f3de399807181d607441d734196d889b641f'
+  'SKIP'
+  '7ff3213d8d085238695f076d254f16d15b16a9baca1f9393c1bed0057006da2c'
+  'b73a45cf26830bbb3c110a8f9e042ea5c71a9627204d5d172b04c43aff5b0f1a'
+  '345350546bf55dd069133e0c56b2c5f7e037db237a30f7ad38159bd61b6d4daf'
+  '79b56c97da803493eb9bbc04dc67ddf3662a8486efb9ec7b15e668b8c0fa4e0f'
+  '04a695fe4b2d70ac8174c7312233c84aac353a7453bcf6d5b035d7cdf5f40930'
+  '9553ece2fb6579c204282410378dfccb0314815281c3e67476fa6093a04b6237'
+  '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9'
+  '4c1b821738e3fdaecab47d60884e3983885e0cff09c4bb11287254f8fd557b02'
+  '244011144c0802428a057cd47a788f1bf94ddb6a39f7a0185479c3e2cddd389b'
+  '2dbc21472019ec102225386bf9a98d295f862422ab37ed339de23415577eec27'
+  'c3d582742363075c7be7e2fd941095627875cf65d47c8d90bee9375a7a3d66ba'
+  '3a145007f9d4ebc937fa08c1acd525c2091b8fa3bd7b5000da1c3b37088642a9'
+  '209da461eed6715882e6dacd47d3ed0117b7d7f5ee9e1040ab199fc4b0a09790'
+  '5a1e12688cbf045f5af572b2d695976564ded4675d075b3fe42e0cc0e949911b'
+  'a5fb15cf7304c67843587fce111e279e77d5e1e46c21ddf2412c7a500a1efc5f'
+  'b77e349e397f5f5a13fb9c06f85618bd65252f580f27c103e32ee11211a4d6d5'
+  '0e7577e62be4360868092284f659ec7b058f8d5f5d221bc8ce031383872b7120'
+  '9b6ee992136357adc72320cbf9723e22dc2f644ed42cb20f2c08753c372dd01b'
+)
+validpgpkeys=(
+  'BA5473A2B0587B07FB27CF2D216094DFD0CB81EF' # openssl@openssl.org
+)
+
+_source_root="${_realname}-${pkgver}"
+_dest_name="dest-${_target}"
+_report_name=openssl-report
+
+prepare() {
+  [[ -d "${srcdir}/${_source_root}" ]] \
+    || tar -xzf "${srcdir}/${_realname}-${pkgver}.tar.gz" -C "${srcdir}"
+  cd "${srcdir}/${_source_root}"
+
+  patch -Np1 -i "${srcdir}/0001-Use-usr-ssl-as-ca-dir-instead-of-.-demoCA.patch"
+  patch -Np1 -i "${srcdir}/0002-Support-MSYS2.patch"
+  patch -Np1 -i "${srcdir}/0004-Override-engines-directory.patch"
+  patch -Np1 -i "${srcdir}/0005-skip-dllmain-detach.patch"
+  patch -Np1 -i "${srcdir}/0006-Add-Cygwin-aarch64-target.patch"
+  patch -Np1 -i "${srcdir}/0007-Fix-AArch64-Cygwin-LP64-detection.patch"
+}
+
+build() {
+  local _dest="${srcdir}/${_dest_name}"
+  local _report="${srcdir}/${_report_name}"
+
+  cd "${srcdir}/${_source_root}"
+
+  rm -rf "${_dest}" "${_report}"
+  mkdir -p "${_dest}" "${_report}"
+
+  export PATH="/opt/bin:/usr/bin/core_perl:${PATH}"
+  export MSYSTEM=CYGWIN
+  export CPPFLAGS="${CPPFLAGS:-} -D__MSYS__"
+  export CFLAGS="${CFLAGS:-} -O2 -pipe"
+
+  if [[ ! -f configdata.pm ]] \
+      || ! grep -Eq 'target.*Cygwin-aarch64' configdata.pm; then
+    ./Configure \
+      "--cross-compile-prefix=${_target}-" \
+      --prefix=/usr \
+      --openssldir=/usr/ssl \
+      --libdir=lib \
+      shared \
+      no-asm \
+      no-tests \
+      Cygwin-aarch64
+    make depend
+  fi
+
+  make -j8 all
+  make \
+    DESTDIR="${_dest}" \
+    MANDIR=/usr/share/man \
+    MANSUFFIX=ssl \
+    -j1 \
+    install_sw \
+    install_ssldirs \
+    install_man_docs
+}
+
+check() {
+  local _dest="${srcdir}/${_dest_name}"
+  local _report="${srcdir}/${_report_name}"
+
+  export PATH="/opt/bin:${PATH}"
+
+  TARGET="${_target}" \
+  TOOL_TARGET="${_tool_target}" \
+  BINUTILS_RELEASE_TAG="${_binutils_release_tag}" \
+  BINUTILS_VERSION="${_binutils_version}-${_binutils_pkgrel}" \
+  LINKER_SHA256="${_linker_sha256}" \
+  OPENSSL_VERSION="${pkgver}" \
+  RUNTIME_RELEASE_TAG="${_runtime_release_tag}" \
+  RUNTIME_VERSION="${_runtime_version}-${_runtime_pkgrel}" \
+  GCC_RELEASE_TAG="${_gcc_release_tag}" \
+  GCC_VERSION="${_gcc_version}-${_gcc_pkgrel}" \
+  SMOKE_SOURCES_DIR="${srcdir}" \
+    bash "${srcdir}/validate-openssl.sh" \
+      "${_dest}" \
+      "${srcdir}/${_source_root}" \
+      "${srcdir}/openssl-smoke.c" \
+      "${_report}" \
+      "${srcdir}/check-aarch64-pseudo-relocs.ps1"
+}
+
+package_mingw-w64-cross-msysarm64-openssl() {
+  local _dest="${srcdir}/${_dest_name}"
+  local _pkgroot="${pkgdir}/opt/${_target}/usr"
+  local _staged="${_dest}/usr"
+
+  pkgdesc="OpenSSL command-line tools for aarch64-pc-msys"
+  depends=(
+    "mingw-w64-cross-msysarm64-libopenssl=${pkgver}-${pkgrel}"
+    "mingw-w64-cross-msysarm64-runtime=${_runtime_version}-${_runtime_pkgrel}"
+  )
+  optdepends=('aarch64-pc-msys-perl: c_rehash support')
+  provides=("aarch64-pc-msys-openssl=${pkgver}")
+  conflicts=('aarch64-pc-msys-openssl')
+
+  install -d "${_pkgroot}/bin" "${_pkgroot}/share/man"
+  install -m755 "${_staged}/bin/openssl.exe" "${_pkgroot}/bin/"
+  install -m755 "${_staged}/bin/c_rehash" "${_pkgroot}/bin/"
+  cp -a "${_staged}/share/man/man1" "${_pkgroot}/share/man/"
+  cp -a "${_staged}/share/man/man5" "${_pkgroot}/share/man/"
+  cp -a "${_staged}/ssl" "${_pkgroot}/"
+}
+
+package_mingw-w64-cross-msysarm64-libopenssl() {
+  local _dest="${srcdir}/${_dest_name}"
+  local _pkgroot="${pkgdir}/opt/${_target}/usr"
+  local _staged="${_dest}/usr"
+  local _licensedir="${pkgdir}/usr/share/licenses/${pkgname}"
+
+  pkgdesc="OpenSSL runtime libraries and providers for aarch64-pc-msys"
+  depends=("mingw-w64-cross-msysarm64-runtime=${_runtime_version}-${_runtime_pkgrel}")
+  groups=('libraries')
+  provides=("aarch64-pc-msys-libopenssl=${pkgver}")
+  conflicts=('aarch64-pc-msys-libopenssl')
+
+  install -d "${_pkgroot}/bin" "${_pkgroot}/lib"
+  install -m755 "${_staged}/bin/"*.dll "${_pkgroot}/bin/"
+  cp -a "${_staged}/lib/openssl" "${_pkgroot}/lib/"
+  cp -a "${_staged}/lib/ossl-modules" "${_pkgroot}/lib/"
+  chmod -R 755 "${_pkgroot}/lib/openssl" "${_pkgroot}/lib/ossl-modules"
+  install -Dm644 "${srcdir}/${_source_root}/LICENSE.txt" \
+    "${_licensedir}/LICENSE.txt"
+}
+
+package_mingw-w64-cross-msysarm64-openssl-devel() {
+  local _dest="${srcdir}/${_dest_name}"
+  local _report="${srcdir}/${_report_name}"
+  local _pkgroot="${pkgdir}/opt/${_target}/usr"
+  local _staged="${_dest}/usr"
+  local _licensedir="${pkgdir}/usr/share/licenses/${pkgname}"
+  local _reportdir="${pkgdir}/opt/${_target}/share/msys-sysroot/openssl"
+
+  pkgdesc="OpenSSL headers and libraries for aarch64-pc-msys"
+  depends=(
+    "mingw-w64-cross-msysarm64-libopenssl=${pkgver}-${pkgrel}"
+    "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
+    "mingw-w64-cross-msysarm64-sysroot=${_runtime_version}-${_runtime_pkgrel}"
+  )
+  groups=('development')
+  options=('staticlibs' '!strip' '!buildflags' '!emptydirs')
+  provides=("aarch64-pc-msys-openssl-devel=${pkgver}")
+  conflicts=('aarch64-pc-msys-openssl-devel')
+
+  install -d "${_pkgroot}" "${_reportdir}"
+  cp -a "${_staged}/include" "${_pkgroot}/"
+  install -d "${_pkgroot}/lib"
+  cp -a "${_staged}/lib/pkgconfig" "${_pkgroot}/lib/"
+  install -m644 "${_staged}/lib/"*.a "${_pkgroot}/lib/"
+  cp -a "${_report}/." "${_reportdir}/"
+  install -m755 "${srcdir}/validate-openssl.sh" "${_reportdir}/"
+  install -m644 "${srcdir}/check-aarch64-pseudo-relocs.ps1" "${_reportdir}/"
+  install -m755 "${srcdir}/native-smoke.sh" "${_reportdir}/"
+  install -m644 "${srcdir}/openssl-smoke.c" "${_reportdir}/"
+  install -m644 \
+    "${srcdir}/dlopen-generic.c" \
+    "${srcdir}/dlopen-nodllmain.c" \
+    "${srcdir}/dlopen-crypto.c" \
+    "${srcdir}/dlopen-smoke.c" \
+    "${srcdir}/loadlibrary-smoke.c" \
+    "${srcdir}/provider-minimal.c" \
+    "${_reportdir}/"
+  install -m644 "${srcdir}/README.md" "${_reportdir}/"
+  install -Dm644 "${srcdir}/${_source_root}/LICENSE.txt" \
+    "${_licensedir}/LICENSE.txt"
+}
+
+package_mingw-w64-cross-msysarm64-openssl-docs() {
+  local _dest="${srcdir}/${_dest_name}"
+  local _pkgroot="${pkgdir}/opt/${_target}/usr"
+  local _staged="${_dest}/usr"
+  local _licensedir="${pkgdir}/usr/share/licenses/${pkgname}"
+
+  pkgdesc="OpenSSL API documentation for aarch64-pc-msys"
+  provides=("aarch64-pc-msys-openssl-docs=${pkgver}")
+  conflicts=('aarch64-pc-msys-openssl-docs')
+
+  install -d "${_pkgroot}/share/man"
+  cp -a "${_staged}/share/man/man3" "${_pkgroot}/share/man/"
+  cp -a "${_staged}/share/man/man7" "${_pkgroot}/share/man/"
+  install -Dm644 "${srcdir}/${_source_root}/LICENSE.txt" \
+    "${_licensedir}/LICENSE.txt"
+}
