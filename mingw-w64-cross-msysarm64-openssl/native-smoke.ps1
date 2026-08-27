@@ -6,7 +6,9 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ScannerPath,
     [Parameter(Mandatory = $true)]
-    [string]$HostMsysRoot
+    [string]$HostMsysRoot,
+    [Parameter(Mandatory = $true)]
+    [string]$NativeHarnessPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -20,7 +22,8 @@ if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne
 $work = Join-Path $env:RUNNER_TEMP 'msysarm64-openssl-native'
 $payload = Join-Path $work 'payload'
 $root = Join-Path $work 'root'
-New-Item -ItemType Directory -Force -Path $payload, $root | Out-Null
+$evidence = Join-Path $work 'evidence'
+New-Item -ItemType Directory -Force -Path $payload, $root, $evidence | Out-Null
 
 $archives = @(
     Get-ChildItem -File -Recurse $PackagesDirectory -Filter '*.pkg.tar.zst'
@@ -65,7 +68,7 @@ $scannerHash = (Get-FileHash -Algorithm SHA256 $ScannerPath).Hash.ToLowerInvaria
 if ($scannerHash -ne '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9') {
     throw "Unexpected pseudo-reloc scanner hash: $scannerHash"
 }
-$pseudoRelocReports = Join-Path $work 'pseudo-relocs'
+$pseudoRelocReports = Join-Path $evidence 'pseudo-relocs'
 New-Item -ItemType Directory -Force -Path $pseudoRelocReports | Out-Null
 $smokePayload = Join-Path $target 'share\msys-sysroot\openssl\smoke'
 $peFiles = @(
@@ -98,100 +101,31 @@ if ($scanReports.Count -ne $peFiles.Count -or
     throw 'Native OpenSSL pseudo-reloc policy failed.'
 }
 
-$env:PATH = "$bin;$env:PATH"
-$env:MSYSTEM = 'MSYS'
-$env:MSYS = 'winsymlinks:sys'
-$env:OPENSSL_CONF = '/usr/ssl/openssl.cnf'
-$env:OPENSSL_MODULES = '/usr/lib/ossl-modules'
-
 $dynamicSmoke = Join-Path $bin 'openssl-dynamic-smoke.exe'
 $staticSmoke = Join-Path $bin 'openssl-static-smoke.exe'
 Copy-Item -Force (Join-Path $smokePayload 'openssl-smoke.exe') $dynamicSmoke
 Copy-Item -Force (Join-Path $smokePayload 'openssl-static-smoke.exe') $staticSmoke
-& $dynamicSmoke
-if ($LASTEXITCODE -ne 0) {
-    throw 'Native dynamic OpenSSL API smoke failed.'
-}
-& $staticSmoke
-if ($LASTEXITCODE -ne 0) {
-    throw 'Native static OpenSSL API smoke failed.'
-}
-
-$version = & $openssl version -a 2>&1 | Out-String
-if ($LASTEXITCODE -ne 0 -or $version -notmatch 'OpenSSL 3\.5\.1') {
-    throw "Unexpected OpenSSL version output: $version"
-}
-if ($version -notmatch 'OPENSSLDIR: "/usr/ssl"') {
-    throw "Unexpected OpenSSL configuration directory: $version"
-}
-1..3 | ForEach-Object {
-    & $openssl version | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw "OpenSSL lifecycle invocation $_ failed."
-    }
+$bash = Join-Path $HostMsysRoot 'usr\bin\bash.exe'
+$cygpath = Join-Path $HostMsysRoot 'usr\bin\cygpath.exe'
+$rootMsys = (& $cygpath -u $root | Select-Object -Last 1).Trim()
+$evidenceMsys = (& $cygpath -u $evidence | Select-Object -Last 1).Trim()
+$harnessMsys = (& $cygpath -u $NativeHarnessPath | Select-Object -Last 1).Trim()
+$nativeOutput = & $bash --noprofile --norc $harnessMsys $rootMsys $evidenceMsys 2>&1 |
+    Out-String
+if ($LASTEXITCODE -ne 0 -or $nativeOutput -notmatch 'native-arm64-openssl=pass') {
+    throw "Native OpenSSL harness failed: $nativeOutput"
 }
 
-$providers = & $openssl list -providers -provider default -provider legacy 2>&1 | Out-String
-if ($LASTEXITCODE -ne 0 -or
-    $providers -notmatch '(?m)^\s+default\s*$' -or
-    $providers -notmatch '(?m)^\s+legacy\s*$') {
-    throw "Provider loading failed: $providers"
-}
+@{
+    schema = 1
+    host_architecture = 'ARM64'
+    openssl_version = '3.5.1'
+    pe_scans = $scanReports.Count
+    rejected_pseudo_reloc_flags = @(12, 21)
+    result = 'pass'
+} | ConvertTo-Json -Depth 4 |
+    Set-Content -Encoding utf8 (Join-Path $evidence 'native-summary.json')
 
-$data = Join-Path $work 'digest-input.txt'
-[System.IO.File]::WriteAllText($data, "native aarch64-pc-msys OpenSSL`n")
-$expected = (Get-FileHash -Algorithm SHA256 $data).Hash.ToLowerInvariant()
-$digest = & $openssl dgst -sha256 $data 2>&1 | Out-String
-if ($LASTEXITCODE -ne 0 -or $digest.ToLowerInvariant() -notmatch [regex]::Escape($expected)) {
-    throw "SHA-256 smoke failed: $digest"
-}
-
-$speed = & $openssl speed -seconds 1 -bytes 1024 sha256 2>&1 | Out-String
-if ($LASTEXITCODE -ne 0 -or $speed -notmatch 'sha256') {
-    throw "Native SHA-256 speed smoke failed: $speed"
-}
-
-$tls = Join-Path $work 'tls'
-New-Item -ItemType Directory -Force -Path $tls | Out-Null
-Push-Location $tls
-try {
-    & $openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem `
-        -sha256 -days 1 -nodes -subj '/CN=localhost' 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Failed to create the TLS smoke certificate.'
-    }
-
-    $serverOut = Join-Path $tls 'server.out'
-    $serverErr = Join-Path $tls 'server.err'
-    $server = Start-Process -FilePath $openssl -ArgumentList @(
-        's_server', '-accept', '127.0.0.1:44330',
-        '-cert', 'cert.pem', '-key', 'key.pem', '-www'
-    ) -WorkingDirectory $tls -RedirectStandardOutput $serverOut `
-      -RedirectStandardError $serverErr -PassThru
-    try {
-        Start-Sleep -Seconds 2
-        $client = "GET / HTTP/1.0`r`n`r`n" |
-            & $openssl s_client -connect '127.0.0.1:44330' `
-                -CAfile cert.pem -verify_return_error 2>&1 | Out-String
-        if ($LASTEXITCODE -ne 0 -or
-            $client -notmatch 'Verification: OK' -or
-            $client -notmatch 'Protocol\s*: TLSv1\.[23]') {
-            throw "Native TLS handshake failed: $client"
-        }
-    }
-    finally {
-        if (-not $server.HasExited) {
-            Stop-Process -Id $server.Id
-            $server.WaitForExit()
-        }
-    }
-}
-finally {
-    Pop-Location
-}
-
-Write-Output $version
-Write-Output $providers
-Write-Output $speed
+Write-Output $nativeOutput
 Write-Output "Native pseudo-reloc scans passed: $($scanReports.Count)"
 Write-Output 'Native ARM64 crypto, provider, and TLS smoke tests passed.'

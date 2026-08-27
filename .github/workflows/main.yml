@@ -486,7 +486,17 @@ jobs:
             -PackagesDirectory (Resolve-Path .\packages) `
             -InputsDirectory (Join-Path $env:RUNNER_TEMP 'native-inputs') `
             -ScannerPath (Resolve-Path .\mingw-w64-cross-msysarm64-openssl\check-aarch64-pseudo-relocs.ps1) `
-            -HostMsysRoot '${{ steps.native-msys2.outputs.msys2-location }}'
+            -HostMsysRoot '${{ steps.native-msys2.outputs.msys2-location }}' `
+            -NativeHarnessPath (Resolve-Path .\mingw-w64-cross-msysarm64-openssl\native-smoke.sh)
+
+      - name: Upload native ARM64 evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: native-arm64-openssl-${{ github.run_id }}
+          path: ${{ runner.temp }}/msysarm64-openssl-native/evidence
+          retention-days: 30
 
   package-grokker:
     if: ${{ !(github.repository == 'crutkas/MSYS2-packages' && github.head_ref == 'crutkas-package-aarch64-static-libgcc') }}

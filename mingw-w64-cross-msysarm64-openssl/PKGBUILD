@@ -64,6 +64,7 @@ source=(
   'openssl-smoke.c'
   'validate-openssl.sh'
   'native-smoke.ps1'
+  'native-smoke.sh'
   'README.md'
 )
 sha256sums=(
@@ -78,7 +79,8 @@ sha256sums=(
   '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9'
   '5a1e12688cbf045f5af572b2d695976564ded4675d075b3fe42e0cc0e949911b'
   'ddbdf30941410b4894be6d60ca6a8e8c58b26730213b054666503b502908cc9e'
-  'b644468f183a6c839595546a346c6d15f7f9d87c2815aa2eb40d25f21ea4baee'
+  '5300ce21b1328464766988447616b122bcfc1fc73690bd0b5c1ebc6e4c589eeb'
+  '57493a8e8466dce8b542b0a5a3583fc3774f23ab997f39b2ec7b9d787d27aa5c'
   '9b6ee992136357adc72320cbf9723e22dc2f644ed42cb20f2c08753c372dd01b'
 )
 validpgpkeys=(
@@ -235,6 +237,7 @@ package_mingw-w64-cross-msysarm64-openssl-devel() {
   cp -a "${_report}/." "${_reportdir}/"
   install -m755 "${srcdir}/validate-openssl.sh" "${_reportdir}/"
   install -m644 "${srcdir}/check-aarch64-pseudo-relocs.ps1" "${_reportdir}/"
+  install -m755 "${srcdir}/native-smoke.sh" "${_reportdir}/"
   install -m644 "${srcdir}/openssl-smoke.c" "${_reportdir}/"
   install -m644 "${srcdir}/README.md" "${_reportdir}/"
   install -Dm644 "${srcdir}/${_source_root}/LICENSE.txt" \
