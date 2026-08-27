@@ -69,8 +69,7 @@ run_client (void)
   assuan_release (ctx);
   if (err)
     {
-      fprintf (stderr, "client failed: %s (%u)\n",
-               gpg_strerror (err), (unsigned int) err);
+      fprintf (stderr, "client failed: %u\n", (unsigned int) err);
       return 20;
     }
   if (status)
