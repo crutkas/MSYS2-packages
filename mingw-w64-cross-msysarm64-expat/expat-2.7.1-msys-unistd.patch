@@ -1,0 +1,9 @@
+--- a/xmlwf/readfilemap.c
++++ b/xmlwf/readfilemap.c
+@@ -46,4 +46,5 @@
+ /* Functions close(2) and read(2) */
+-#if ! defined(_WIN32) && ! defined(_WIN64)
++#if (! defined(_WIN32) && ! defined(_WIN64))                                \
++    || defined(__MSYS__)
+ #  include <unistd.h>
+ #endif
