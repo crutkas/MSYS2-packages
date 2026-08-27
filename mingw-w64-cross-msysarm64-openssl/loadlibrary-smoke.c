@@ -45,6 +45,7 @@ int main(int argc, char **argv)
             return 7;
         }
     }
+    puts("freelibrary-before");
     if (!FreeLibrary(module))
         return 8;
     puts("freelibrary-after");

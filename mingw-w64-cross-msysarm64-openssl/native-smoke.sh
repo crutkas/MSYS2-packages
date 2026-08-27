@@ -37,7 +37,9 @@ cp "${bin}/dlopen-generic.dll" "${bin}/dlopen-lazy.dll"
 run_loader_control() {
   local name=$1
   shift
-  rm -f "${bin}/dllmain-attached.marker"
+  rm -f \
+    "${bin}/dllmain-attached.marker" \
+    "${bin}/dllmain-detached.marker"
   set +e
   (
     cd "${bin}"
@@ -45,10 +47,12 @@ run_loader_control() {
   ) > "${report}/${name}.out" 2> "${report}/${name}.err"
   local status=$?
   set -e
-  if [[ -f "${bin}/dllmain-attached.marker" ]]; then
-    cp "${bin}/dllmain-attached.marker" \
-      "${report}/${name}.dllmain.marker"
-  fi
+  for phase in attached detached; do
+    if [[ -f "${bin}/dllmain-${phase}.marker" ]]; then
+      cp "${bin}/dllmain-${phase}.marker" \
+        "${report}/${name}.dllmain-${phase}.marker"
+    fi
+  done
   printf '%s\t%s\n' "${name}" "${status}" \
     >> loader-controls.tsv
   return "${status}"

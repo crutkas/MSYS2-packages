@@ -223,8 +223,16 @@ if ($LASTEXITCODE -ne 0 -or $nativeOutput -notmatch 'native-arm64-openssl=pass')
     }
     if ($null -ne $dump -and $null -ne $cdb) {
         & $cdb -z $dump.FullName `
-            -c '!analyze -v; .ecxr; k; lm; q' *>&1 |
+            -c '!analyze -v; .exr -1; .ecxr; r; ln @pc; ub @pc; u @pc; kb; dps @sp L20; lmv m msys*; lmv m loadlibrary*; q' *>&1 |
             Set-Content -Encoding utf8 (Join-Path $evidence 'crash-analysis.txt')
+    }
+    elseif ($null -eq $dump -and $null -ne $cdb) {
+        $loader = Join-Path $bin 'loadlibrary-smoke.exe'
+        $module = Join-Path $bin 'loadlibrary-normal.dll'
+        & $cdb -o `
+            -c 'sxe av; bu KERNELBASE!FreeLibrary; g; .echo FREE_LIBRARY_ENTRY; r; kb; g; .echo FAULT; .exr -1; .ecxr; r; ln @pc; ub @pc; u @pc; kb; dps @sp L20; lmv m msys*; lmv m loadlibrary*; q' `
+            $loader $module normal *>&1 |
+            Set-Content -Encoding utf8 (Join-Path $evidence 'crash-analysis-live.txt')
     }
     throw "Native OpenSSL harness failed: $nativeOutput"
 }

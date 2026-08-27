@@ -1,26 +1,31 @@
 #include <windows.h>
 
-BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)
+static void write_marker(const char *name, const char *message)
 {
     HANDLE marker;
     DWORD written;
-    static const char message[] = "dllmain-process-attach\n";
 
+    marker = CreateFileA(name,
+                         GENERIC_WRITE,
+                         FILE_SHARE_READ,
+                         NULL,
+                         CREATE_ALWAYS,
+                         FILE_ATTRIBUTE_NORMAL,
+                         NULL);
+    if (marker != INVALID_HANDLE_VALUE) {
+        WriteFile(marker, message, lstrlenA(message), &written, NULL);
+        CloseHandle(marker);
+    }
+}
+
+BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)
+{
     (void)instance;
     (void)reserved;
-    if (reason == DLL_PROCESS_ATTACH) {
-        marker = CreateFileA("dllmain-attached.marker",
-                             GENERIC_WRITE,
-                             FILE_SHARE_READ,
-                             NULL,
-                             CREATE_ALWAYS,
-                             FILE_ATTRIBUTE_NORMAL,
-                             NULL);
-        if (marker != INVALID_HANDLE_VALUE) {
-            WriteFile(marker, message, sizeof(message) - 1, &written, NULL);
-            CloseHandle(marker);
-        }
-    }
+    if (reason == DLL_PROCESS_ATTACH)
+        write_marker("dllmain-attached.marker", "dllmain-process-attach\n");
+    else if (reason == DLL_PROCESS_DETACH)
+        write_marker("dllmain-detached.marker", "dllmain-process-detach\n");
     return TRUE;
 }
 

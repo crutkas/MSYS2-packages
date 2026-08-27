@@ -38,8 +38,10 @@ int main(int argc, char **argv)
     puts("dlsym-after");
     result = smoke();
     puts("callback-after");
+    puts("dlclose-before");
     if (dlclose(handle) != 0)
         return 5;
+    puts("dlclose-after");
     if (result != 42)
         return 6;
     puts("dlopen-smoke=pass");
