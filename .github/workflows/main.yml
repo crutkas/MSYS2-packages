@@ -179,6 +179,12 @@ jobs:
             "$input_dir\mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst" `
             "$input_dir\mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst" `
             "$input_dir\mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst"
+          & 'C:\msys64\usr\bin\pacman.exe' -D --asexplicit `
+            mingw-w64-cross-msysarm64-headers `
+            mingw-w64-cross-msysarm64-windows-default-manifest `
+            mingw-w64-cross-msysarm64-sysroot `
+            mingw-w64-cross-msysarm64-runtime `
+            mingw-w64-cross-msysarm64-runtime-devel
 
       - name: Download fork-local AArch64 MSYS GCC release
         if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-native-arm64-npth' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-native-arm64-npth') }}
@@ -215,6 +221,9 @@ jobs:
           & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -U `
             "$input_dir\mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst" `
             "$input_dir\mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst"
+          & 'C:\msys64\usr\bin\pacman.exe' -D --asexplicit `
+            mingw-w64-cross-msysarm64-gcc-libs `
+            mingw-w64-cross-msysarm64-gcc
 
       - name: Add MSYS tool aliases
         if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-native-arm64-npth' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-native-arm64-npth') }}

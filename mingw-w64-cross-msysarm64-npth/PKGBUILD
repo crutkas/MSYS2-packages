@@ -77,7 +77,7 @@ build() {
       --host="${_target}" \
       --target="${_target}" \
       --prefix="${_prefix}" \
-      --enable-shared \
+      --disable-shared \
       --enable-static \
       --enable-install-npth-config
   )
@@ -179,7 +179,7 @@ package_mingw-w64-cross-msysarm64-npth() {
   local pkgroot="${srcdir}/dest${_prefix}"
   local license_dir="${pkgdir}/usr/share/licenses/${pkgname}"
 
-  pkgdesc="nPth runtime library for aarch64-pc-msys"
+  pkgdesc="nPth static archive for aarch64-pc-msys"
   depends=("mingw-w64-cross-msysarm64-runtime=3.6.10.r0.ga527ace21-1")
   provides=("aarch64-pc-msys-npth=${pkgver}")
   conflicts=("aarch64-pc-msys-npth")
@@ -195,7 +195,7 @@ package_mingw-w64-cross-msysarm64-npth-devel() {
   local pkgroot="${srcdir}/dest${_prefix}"
   local license_dir="${pkgdir}/usr/share/licenses/${pkgname}"
 
-  pkgdesc="nPth headers, config script, and libraries for aarch64-pc-msys"
+  pkgdesc="nPth headers, config script, and pkg-config files for aarch64-pc-msys"
   depends=(
     "mingw-w64-cross-msysarm64-npth=${pkgver}-${pkgrel}"
     "mingw-w64-cross-msysarm64-runtime=3.6.10.r0.ga527ace21-1"
