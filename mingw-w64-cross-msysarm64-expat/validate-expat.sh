@@ -175,23 +175,20 @@ pc_version=$(
   PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1 \
   PKG_CONFIG_ALLOW_SYSTEM_LIBS=1 \
   PKG_CONFIG_LIBDIR="${libdir}/pkgconfig" \
-  PKG_CONFIG_SYSROOT_DIR="${root}" \
-    "${pkg_config}" --modversion expat
+    "${pkg_config}" --define-variable=prefix="${tree}" --modversion expat
 )
 test "${pc_version}" = "${expected_version}"
 pc_cflags=$(
   PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1 \
   PKG_CONFIG_ALLOW_SYSTEM_LIBS=1 \
   PKG_CONFIG_LIBDIR="${libdir}/pkgconfig" \
-  PKG_CONFIG_SYSROOT_DIR="${root}" \
-    "${pkg_config}" --cflags expat
+    "${pkg_config}" --define-variable=prefix="${tree}" --cflags expat
 )
 pc_libs=$(
   PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1 \
   PKG_CONFIG_ALLOW_SYSTEM_LIBS=1 \
   PKG_CONFIG_LIBDIR="${libdir}/pkgconfig" \
-  PKG_CONFIG_SYSROOT_DIR="${root}" \
-    "${pkg_config}" --libs expat
+    "${pkg_config}" --define-variable=prefix="${tree}" --libs expat
 )
 case "${pc_cflags}" in
   *"${includedir}"*) ;;
