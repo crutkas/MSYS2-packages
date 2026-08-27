@@ -17,7 +17,8 @@ report_dir=$1
 source_dir="$report_dir/sources"
 binary_dir="$report_dir/binaries"
 audit_dir="$report_dir/audits"
-mkdir -p "$source_dir" "$binary_dir" "$audit_dir"
+negative_dir="$report_dir/negative-provider-fixtures"
+mkdir -p "$source_dir" "$binary_dir" "$audit_dir" "$negative_dir"
 
 target=aarch64-pc-msys
 cc="/opt/bin/${target}-gcc.exe"
@@ -53,6 +54,44 @@ require_import() {
     echo "missing dynamic import $import in $report" >&2
     return 1
   }
+}
+
+require_pe_directory() {
+  local report=$1 index=$2 label=$3
+  awk -v index="$index" -v label="$label" '
+    $1 == "Entry" && $2 == index {
+      found = 1
+      if ($3 !~ /[1-9a-fA-F]/ || $4 !~ /[1-9a-fA-F]/) {
+        printf "empty %s directory in %s\n", label, FILENAME > "/dev/stderr"
+        exit 1
+      }
+    }
+    END {
+      if (!found) {
+        printf "missing %s directory in %s\n", label, FILENAME > "/dev/stderr"
+        exit 1
+      }
+    }
+  ' "$report"
+}
+
+require_empty_pe_directory() {
+  local report=$1 index=$2 label=$3
+  awk -v index="$index" -v label="$label" '
+    $1 == "Entry" && $2 == index {
+      found = 1
+      if ($3 ~ /[1-9a-fA-F]/ || $4 ~ /[1-9a-fA-F]/) {
+        printf "unexpected %s directory in negative fixture %s\n", label, FILENAME > "/dev/stderr"
+        exit 1
+      }
+    }
+    END {
+      if (!found) {
+        printf "missing %s directory entry in %s\n", label, FILENAME > "/dev/stderr"
+        exit 1
+      }
+    }
+  ' "$report"
 }
 
 : > "$report_dir/installed-packages.txt"
@@ -189,7 +228,7 @@ int fixed_linker_lto_value(void);
 int main(void) { if (fixed_linker_lto_value() != 42) return 1; puts("lto-bridge-ok"); return 0; }
 EOF
 
-cat > "$source_dir/provider.S" <<'EOF'
+cat > "$source_dir/invalid-provider.S" <<'EOF'
 .text
 .global DllMainCRTStartup
 DllMainCRTStartup:
@@ -203,6 +242,32 @@ aarch64_near_value: .quad 0x1122334455667788
 .global aarch64_far_value
 aarch64_far_value: .quad 0x8877665544332211
 EOF
+cat > "$source_dir/near-provider.c" <<'EOF'
+#include <stdint.h>
+#include <windows.h>
+
+volatile uint64_t aarch64_near_value = UINT64_C(0x1122334455667788);
+
+BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
+  (void)instance;
+  (void)reason;
+  (void)reserved;
+  return TRUE;
+}
+EOF
+cat > "$source_dir/far-provider.c" <<'EOF'
+#include <stdint.h>
+#include <windows.h>
+
+volatile uint64_t aarch64_far_value = UINT64_C(0x8877665544332211);
+
+BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
+  (void)instance;
+  (void)reason;
+  (void)reserved;
+  return TRUE;
+}
+EOF
 cat > "$source_dir/near.def" <<'EOF'
 LIBRARY "aarch64-near-import.dll" BASE=0x140040000
 EXPORTS
@@ -212,6 +277,48 @@ cat > "$source_dir/far.def" <<'EOF'
 LIBRARY "aarch64-far-import.dll" BASE=0x600040000
 EXPORTS
   aarch64_far_value DATA
+EOF
+cat > "$source_dir/provider-preflight.c" <<'EOF'
+#include <stdint.h>
+#include <stdio.h>
+#include <windows.h>
+
+static uintptr_t distance(uintptr_t a, uintptr_t b) {
+  return a >= b ? a - b : b - a;
+}
+
+int main(void) {
+  HMODULE near_module =
+      LoadLibraryExA("aarch64-near-import.dll", NULL, 0);
+  DWORD near_error = near_module == NULL ? GetLastError() : ERROR_SUCCESS;
+  HMODULE far_module =
+      LoadLibraryExA("aarch64-far-import.dll", NULL, 0);
+  DWORD far_error = far_module == NULL ? GetLastError() : ERROR_SUCCESS;
+  if (near_module == NULL || far_module == NULL) {
+    fprintf(stderr, "provider-load-failure near=%lu far=%lu\n",
+            (unsigned long)near_error, (unsigned long)far_error);
+    return 1;
+  }
+  if (GetProcAddress(near_module, "aarch64_near_value") == NULL ||
+      GetProcAddress(far_module, "aarch64_far_value") == NULL)
+    return 2;
+
+  uintptr_t near_address = (uintptr_t)near_module;
+  uintptr_t far_address = (uintptr_t)far_module;
+  printf("provider-preflight-addresses near=0x%llx far=0x%llx delta=0x%llx\n",
+         (unsigned long long)near_address,
+         (unsigned long long)far_address,
+         (unsigned long long)distance(near_address, far_address));
+  if (near_address != UINT64_C(0x140040000) ||
+      far_address != UINT64_C(0x600040000))
+    return 3;
+  if (distance(near_address, far_address) <= UINT64_C(0x100000000))
+    return 4;
+  if (!FreeLibrary(far_module) || !FreeLibrary(near_module))
+    return 5;
+  puts("provider-preflight-ok");
+  return 0;
+}
 EOF
 cat > "$source_dir/far-map.c" <<'EOF'
 #include <stdint.h>
@@ -229,6 +336,8 @@ int main(void) {
   if (aarch64_near_value != UINT64_C(0x1122334455667788) || aarch64_far_value != UINT64_C(0x8877665544332211)) return 3;
   aarch64_near_value = UINT64_C(0xa5a55a5adeadbeef);
   if (aarch64_near_value != UINT64_C(0xa5a55a5adeadbeef)) return 4;
+  aarch64_far_value = UINT64_C(0x5a5aa5a5cafef00d);
+  if (aarch64_far_value != UINT64_C(0x5a5aa5a5cafef00d)) return 5;
   printf("far-map-addresses image=0x%llx near=0x%llx far=0x%llx delta=0x%llx\n", (unsigned long long)(uintptr_t)image, (unsigned long long)(uintptr_t)near_module, (unsigned long long)(uintptr_t)far_module, (unsigned long long)distance((uintptr_t)image, (uintptr_t)far_module));
   puts("far-map-ok");
   return 0;
@@ -246,9 +355,13 @@ aarch64-pc-msys-gcc-nm.exe "$binary_dir/liblto.a" > "$audit_dir/lto-nm.txt"
 aarch64-pc-msys-gcc-ranlib.exe "$binary_dir/liblto.a"
 "$cc" "${common[@]}" -flto "$source_dir/lto-main.c" "$binary_dir/liblto.a" -o "$binary_dir/lto-bridge.exe"
 
-"$cc" -c "$source_dir/provider.S" -o "$binary_dir/provider.o"
-"$cc" -shared -nostdlib -Wl,--no-insert-timestamp -Wl,--disable-dynamicbase -Wl,--image-base,0x140040000 -Wl,-e,DllMainCRTStartup -Wl,--out-implib,"$binary_dir/libnear.a" -o "$binary_dir/aarch64-near-import.dll" "$binary_dir/provider.o" "$source_dir/near.def"
-"$cc" -shared -nostdlib -Wl,--no-insert-timestamp -Wl,--disable-dynamicbase -Wl,--image-base,0x600040000 -Wl,-e,DllMainCRTStartup -Wl,--out-implib,"$binary_dir/libfar.a" -o "$binary_dir/aarch64-far-import.dll" "$binary_dir/provider.o" "$source_dir/far.def"
+"$cc" -c "$source_dir/invalid-provider.S" -o "$negative_dir/provider.o"
+"$cc" -shared -nostdlib -Wl,--no-insert-timestamp -Wl,--disable-dynamicbase -Wl,--image-base,0x140040000 -Wl,-e,DllMainCRTStartup -Wl,--out-implib,"$negative_dir/libnear.a" -o "$negative_dir/aarch64-near-import.dll" "$negative_dir/provider.o" "$source_dir/near.def"
+"$cc" -shared -nostdlib -Wl,--no-insert-timestamp -Wl,--disable-dynamicbase -Wl,--image-base,0x600040000 -Wl,-e,DllMainCRTStartup -Wl,--out-implib,"$negative_dir/libfar.a" -o "$negative_dir/aarch64-far-import.dll" "$negative_dir/provider.o" "$source_dir/far.def"
+
+"$cc" "${common[@]}" -shared -Wl,--disable-dynamicbase -Wl,--image-base,0x140040000 -Wl,--out-implib,"$binary_dir/libnear.a" -o "$binary_dir/aarch64-near-import.dll" "$source_dir/near-provider.c" "$source_dir/near.def"
+"$cc" "${common[@]}" -shared -Wl,--disable-dynamicbase -Wl,--image-base,0x600040000 -Wl,--out-implib,"$binary_dir/libfar.a" -o "$binary_dir/aarch64-far-import.dll" "$source_dir/far-provider.c" "$source_dir/far.def"
+"$cc" "${common[@]}" "$source_dir/provider-preflight.c" -o "$binary_dir/provider-preflight.exe"
 "$cc" "${common[@]}" -Wl,--disable-dynamicbase -Wl,--image-base,0x100400000 "$source_dir/far-map.c" -L"$binary_dir" -lnear -lfar -o "$binary_dir/far-map.exe"
 
 
@@ -317,6 +430,12 @@ done
 for name in aarch64-near-import aarch64-far-import; do
   audit_binary "$binary_dir/$name.dll" "$name"
   audit_no_ambiguous_pseudo "$binary_dir/$name.dll" "$name"
+  require_import "$audit_dir/$name.imports.txt" msys-2.0.dll
+  require_pe_directory "$audit_dir/$name.pe.txt" 3 exception
+  require_pe_directory "$audit_dir/$name.pe.txt" 5 base-relocation
+  "$objdump" -p "$negative_dir/$name.dll" > "$audit_dir/$name.invalid-negative.pe.txt"
+  require_empty_pe_directory "$audit_dir/$name.invalid-negative.pe.txt" 3 exception
+  require_empty_pe_directory "$audit_dir/$name.invalid-negative.pe.txt" 5 base-relocation
 done
 
 for label in cxx-runtime thread-runtime; do
@@ -327,6 +446,8 @@ done
 require_import "$audit_dir/far-map.imports.txt" aarch64-near-import.dll
 require_import "$audit_dir/far-map.imports.txt" aarch64-far-import.dll
 require_import "$audit_dir/far-map.imports.txt" msys-2.0.dll
+audit_binary "$binary_dir/provider-preflight.exe" provider-preflight
+audit_no_ambiguous_pseudo "$binary_dir/provider-preflight.exe" provider-preflight
 
 cat > "$report_dir/native-binaries.tsv" <<'EOF'
 basic-c.exe	basic-c-ok
@@ -334,6 +455,7 @@ cxx-runtime.exe	cxx-runtime-ok
 thread-runtime.exe	thread-runtime-ok
 process-runtime.exe	process-runtime-ok
 lto-bridge.exe	lto-bridge-ok
+provider-preflight.exe	provider-preflight-ok
 far-map.exe	far-map-ok
 EOF
 
@@ -341,5 +463,5 @@ cat > "$report_dir/bash-summary.txt" <<EOF
 target	$target
 candidate-binutils	$CANDIDATE_BINUTILS_VERSION
 ambiguous-pseudo-relocs	zero flags 12/21
-native-tests	basic,cxx,thread,constinit,process,lto,far-map
+native-tests	basic,cxx,thread,constinit,process,lto,provider-preflight,far-map
 EOF
