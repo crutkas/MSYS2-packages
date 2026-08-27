@@ -4,10 +4,10 @@ _sourcepkg=ncurses
 _base_ver=6.5
 _date_rev=20240831
 _source_root=${_sourcepkg}-${_base_ver}-${_date_rev}
-_runtime_release_tag=msysarm64-runtime-pr10-20260822
-_runtime_pkgver=3.6.10.r0.gc7932d64f
+_runtime_release_tag=msysarm64-runtime-pr10-a527-20260824
+_runtime_pkgver=3.6.10.r0.ga527ace21
 _runtime_pkgrel=1
-_sysroot_pkgver=3.6.10.r0.g6922c388b
+_sysroot_pkgver=3.6.10.r0.ga527ace21
 _sysroot_pkgrel=1
 _target=aarch64-pc-msys
 
@@ -33,7 +33,7 @@ makedepends=(
   'gcc'
   'mingw-w64-cross-cygwinarm64-binutils'
   'mingw-w64-cross-cygwinarm64-gcc-stage1'
-  'mingw-w64-cross-msysarm64-runtime-devel=3.6.10.r0.gc7932d64f-1'
+  "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_pkgver}-${_runtime_pkgrel}"
   'mingw-w64-cross-msysarm64-w32api-runtime=14.0.0.r0.g9b3dd0125-1'
 )
 depends=(
@@ -164,6 +164,8 @@ check() {
 
   test -x "${helper_build}/progs/tic.exe"
   test -x "${target_build}/progs/tic.exe"
+  test -x "/opt/bin/${_target}-gcc.exe"
+  test "$("${_target}-gcc" -dumpmachine)" = "${_target}"
   test -f "${target_prefix}/bin/tic.exe"
   test -f "${target_prefix}/lib/libncursesw.dll.a"
   test -f "${target_prefix}/lib/pkgconfig/ncursesw.pc"
