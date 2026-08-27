@@ -1,0 +1,373 @@
+name: ARM64 MSYS libgcrypt
+
+on:
+  push:
+    branches:
+      - crutkas-arm64-msys-libgcrypt
+    paths:
+      - mingw-w64-cross-msysarm64-libgcrypt/**
+      - .github/workflows/arm64-msys-libgcrypt.yml
+  pull_request:
+    paths:
+      - mingw-w64-cross-msysarm64-libgcrypt/**
+      - .github/workflows/arm64-msys-libgcrypt.yml
+  workflow_dispatch:
+    inputs:
+      libgpg_error_runtime_url:
+        description: Exact sealed ARM64 MSYS libgpg-error runtime candidate URL
+        required: false
+        type: string
+      libgpg_error_runtime_sha256:
+        description: SHA-256 of the libgpg-error runtime candidate
+        required: false
+        type: string
+      libgpg_error_devel_url:
+        description: Exact sealed ARM64 MSYS libgpg-error devel candidate URL
+        required: false
+        type: string
+      libgpg_error_devel_sha256:
+        description: SHA-256 of the libgpg-error devel candidate
+        required: false
+        type: string
+      fixed_binutils_url:
+        description: Exact reviewed fixed ARM64 binutils candidate URL
+        required: false
+        type: string
+      fixed_binutils_sha256:
+        description: SHA-256 of the reviewed fixed binutils candidate
+        required: false
+        type: string
+      run_native_smoke:
+        description: Run the strict windows-11-arm smoke (a527 is known blocked)
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: arm64-msys-libgcrypt-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cross-build:
+    if: ${{ github.repository == 'crutkas/MSYS2-packages' }}
+    runs-on: windows-2025
+    env:
+      LIBGPG_ERROR_RUNTIME_URL: ${{ inputs.libgpg_error_runtime_url || vars.MSYSARM64_LIBGPG_ERROR_RUNTIME_URL }}
+      LIBGPG_ERROR_RUNTIME_SHA256: ${{ inputs.libgpg_error_runtime_sha256 || vars.MSYSARM64_LIBGPG_ERROR_RUNTIME_SHA256 }}
+      LIBGPG_ERROR_DEVEL_URL: ${{ inputs.libgpg_error_devel_url || vars.MSYSARM64_LIBGPG_ERROR_DEVEL_URL }}
+      LIBGPG_ERROR_DEVEL_SHA256: ${{ inputs.libgpg_error_devel_sha256 || vars.MSYSARM64_LIBGPG_ERROR_DEVEL_SHA256 }}
+      FIXED_BINUTILS_URL: ${{ inputs.fixed_binutils_url || vars.MSYSARM64_FIXED_BINUTILS_URL }}
+      FIXED_BINUTILS_SHA256: ${{ inputs.fixed_binutils_sha256 || vars.MSYSARM64_FIXED_BINUTILS_SHA256 }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          install: base-devel git autotools pkgconf
+          update: true
+
+      - name: Create isolated MSYS build root
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sharedDb = 'C:\msys64\var\lib\pacman\local'
+          $manifest = Get-ChildItem -Recurse -File $sharedDb |
+            Sort-Object FullName |
+            ForEach-Object {
+              "$(Get-FileHash -Algorithm SHA256 $_.FullName | Select-Object -ExpandProperty Hash) $($_.FullName.Substring($sharedDb.Length))"
+            }
+          $manifest | Set-Content -NoNewline (Join-Path $env:RUNNER_TEMP 'shared-db.before')
+
+          $isolated = Join-Path $env:RUNNER_TEMP 'msys64-libgcrypt'
+          Copy-Item -Recurse -Force 'C:\msys64' $isolated
+          "ISOLATED_MSYS=$isolated" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          $output = Join-Path $env:RUNNER_TEMP 'libgcrypt-output'
+          New-Item -ItemType Directory -Force $output, "$output\evidence", "$output\inputs" | Out-Null
+          "LIBGCRYPT_OUTPUT=$output" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - name: Download and verify frozen ARM64 inputs
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $inputDir = Join-Path $env:RUNNER_TEMP 'arm64-inputs'
+          New-Item -ItemType Directory -Force $inputDir | Out-Null
+
+          gh release download msysarm64-runtime-pr10-a527-20260824 `
+            --repo crutkas/MSYS2-packages `
+            --pattern 'mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' `
+            --pattern 'mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' `
+            --pattern 'mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' `
+            --pattern 'mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' `
+            --pattern 'mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' `
+            --dir $inputDir
+          gh release download msysarm64-gcc-pr13-20260826 `
+            --repo crutkas/MSYS2-packages `
+            --pattern 'mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst' `
+            --pattern 'mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst' `
+            --dir $inputDir
+          gh release download msysarm64-gcc-pr13-support-20260826 `
+            --repo crutkas/MSYS2-packages `
+            --pattern 'mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst' `
+            --pattern 'mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst' `
+            --dir $inputDir
+
+          # a527 is immutable. Publication is instead gated on rebuilding with
+          # the separately sealed fixed-binutils candidate.
+          $expected = @{
+            'mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' = '263f8f7e3614ac41337ce3a223f2bb26b6459aef6f34670525cdd4c03ec3ae21'
+            'mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' = '158c505f45025a466950faa7c85c9fd85e9d32384dd27b53586ffc75d71ca78e'
+            'mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' = 'c18b51e483991770b8e06cc2d8f7002d06784d3071ac213a8fee24bb831267d1'
+            'mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' = 'e30609e09eab2fa07aba2e6196b05f34e5e9107abc4ab8832966684758c743ca'
+            'mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' = '33861708e7f981b4eef5b93ef135ab3a43d2757533f64df6f61a146d823c355f'
+            'mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst' = 'a74887c76a933ec424933bf662729d94975b83138af783bd93f2e7acd95c3a22'
+            'mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst' = '990f163cacf9ffce1b58445be91fedc57f135cc26a88d7dba109806446b41438'
+            'mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst' = '9715aab6894379bf5ab936a3a559f286fb4aedbb64f0774d7457182e00648e08'
+            'mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst' = '7727936f4212e5af04e9739eca60f157c0875796c1e82fcfb79fd4398b111e24'
+          }
+          foreach ($entry in $expected.GetEnumerator()) {
+            $path = Join-Path $inputDir $entry.Key
+            if (-not (Test-Path $path)) {
+              throw "Missing frozen input: $($entry.Key)"
+            }
+            $actual = (Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant()
+            if ($actual -ne $entry.Value) {
+              throw "SHA-256 mismatch: $($entry.Key)"
+            }
+          }
+          "ARM64_INPUT_DIR=$inputDir" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - name: Require exact libgpg-error candidates
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $required = @(
+            $env:LIBGPG_ERROR_RUNTIME_URL,
+            $env:LIBGPG_ERROR_RUNTIME_SHA256,
+            $env:LIBGPG_ERROR_DEVEL_URL,
+            $env:LIBGPG_ERROR_DEVEL_SHA256,
+            $env:FIXED_BINUTILS_URL,
+            $env:FIXED_BINUTILS_SHA256
+          )
+          if ($required.Where({ [string]::IsNullOrWhiteSpace($_) }).Count -ne 0) {
+            throw 'Exact sealed libgpg-error and reviewed fixed-binutils URLs/SHA-256 values are required.'
+          }
+
+          $runtime = Join-Path $env:ARM64_INPUT_DIR 'libgpg-error-runtime.pkg.tar.zst'
+          $devel = Join-Path $env:ARM64_INPUT_DIR 'libgpg-error-devel.pkg.tar.zst'
+          $binutils = Join-Path $env:ARM64_INPUT_DIR 'fixed-binutils.pkg.tar.zst'
+          curl.exe --fail --location --retry 5 `
+            --output $runtime $env:LIBGPG_ERROR_RUNTIME_URL
+          curl.exe --fail --location --retry 5 `
+            --output $devel $env:LIBGPG_ERROR_DEVEL_URL
+          curl.exe --fail --location --retry 5 `
+            --output $binutils $env:FIXED_BINUTILS_URL
+
+          $pairs = @(
+            @($runtime, $env:LIBGPG_ERROR_RUNTIME_SHA256),
+            @($devel, $env:LIBGPG_ERROR_DEVEL_SHA256),
+            @($binutils, $env:FIXED_BINUTILS_SHA256)
+          )
+          foreach ($pair in $pairs) {
+            $actual = (Get-FileHash -Algorithm SHA256 $pair[0]).Hash.ToLowerInvariant()
+            if ($actual -ne $pair[1].ToLowerInvariant()) {
+              throw "SHA-256 mismatch: $($pair[0])"
+            }
+          }
+
+          $bsdtar = Join-Path $env:ISOLATED_MSYS 'usr\bin\bsdtar.exe'
+          $runtimeInfo = & $bsdtar -xOf $runtime .PKGINFO
+          $develInfo = & $bsdtar -xOf $devel .PKGINFO
+          $binutilsInfo = & $bsdtar -xOf $binutils .PKGINFO
+          if ($runtimeInfo -notcontains 'provides = aarch64-pc-msys-libgpg-error=1.55') {
+            throw 'Runtime candidate does not provide exact native ARM64 MSYS libgpg-error 1.55.'
+          }
+          if ($develInfo -notcontains 'provides = aarch64-pc-msys-libgpg-error-devel=1.55') {
+            throw 'Devel candidate does not provide exact native ARM64 MSYS libgpg-error-devel 1.55.'
+          }
+          if ($binutilsInfo -notcontains 'pkgname = mingw-w64-cross-cygwinarm64-binutils') {
+            throw 'Fixed binutils candidate has the wrong package identity.'
+          }
+
+      - name: Install inputs only in isolated root
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pacman = Join-Path $env:ISOLATED_MSYS 'usr\bin\pacman.exe'
+          $packages = Get-ChildItem -File $env:ARM64_INPUT_DIR -Filter '*.pkg.tar.zst' |
+            Select-Object -ExpandProperty FullName
+          & $pacman --noconfirm -U $packages
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Isolated ARM64 input transaction failed.'
+          }
+          $objdump = Join-Path $env:ISOLATED_MSYS 'opt\bin\aarch64-pc-msys-objdump.exe'
+          if (-not (Test-Path $objdump)) {
+            throw 'Reviewed binutils did not install the aarch64-pc-msys tools.'
+          }
+
+      - name: Verify source signature and cross-build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bash = Join-Path $env:ISOLATED_MSYS 'usr\bin\bash.exe'
+          $cygpath = Join-Path $env:ISOLATED_MSYS 'usr\bin\cygpath.exe'
+          $workspace = (& $cygpath -u $env:GITHUB_WORKSPACE).Trim()
+          $pwsh = (& $cygpath -u (Get-Command pwsh.exe).Source).Trim()
+          $script = @"
+          set -euo pipefail
+          export PATH=/usr/bin:/opt/bin
+          export PWSH='${pwsh}'
+          gpg --keyserver hkps://keys.openpgp.org \
+            --recv-keys 6DAA6E64A76D2840571B4902528897B826403ADA \
+                        AC8E115BF73E2D8D47FA9908E98E9B2D19C6C8BD
+          cd '${workspace}/mingw-w64-cross-msysarm64-libgcrypt'
+          makepkg --verifysource
+          makepkg --cleanbuild --check --nodeps --noconfirm
+          "@
+          & $bash --login -lc $script 2>&1 |
+            Tee-Object "$env:LIBGCRYPT_OUTPUT\evidence\build.log"
+          $buildExit = $LASTEXITCODE
+          if ($buildExit -ne 0) {
+            throw 'ARM64 MSYS libgcrypt cross-build failed.'
+          }
+
+      - name: Audit archives and isolated transactions
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bash = Join-Path $env:ISOLATED_MSYS 'usr\bin\bash.exe'
+          $cygpath = Join-Path $env:ISOLATED_MSYS 'usr\bin\cygpath.exe'
+          $packageDir = Join-Path $env:GITHUB_WORKSPACE 'mingw-w64-cross-msysarm64-libgcrypt'
+          $evidence = Join-Path $env:RUNNER_TEMP 'libgcrypt-evidence'
+          $packageDirMsys = (& $cygpath -u $packageDir).Trim()
+          $evidenceMsys = (& $cygpath -u $evidence).Trim()
+          $inputMsys = (& $cygpath -u $env:ARM64_INPUT_DIR).Trim()
+          $pwsh = (& $cygpath -u (Get-Command pwsh.exe).Source).Trim()
+          $script = @"
+          set -euo pipefail
+          export PATH=/usr/bin:/opt/bin
+          export PWSH='${pwsh}'
+          cd '${packageDirMsys}'
+          ./audit-package-set.sh '${packageDirMsys}' '${evidenceMsys}' \
+            '${inputMsys}/mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' \
+            '${inputMsys}/libgpg-error-runtime.pkg.tar.zst' \
+            '${inputMsys}/libgpg-error-devel.pkg.tar.zst'
+          cp -a src/libgcrypt-audit '${evidenceMsys}/build-audit'
+          "@
+          & $bash --login -lc $script 2>&1 |
+            Tee-Object "$env:LIBGCRYPT_OUTPUT\evidence\package-audit.log"
+          $auditExit = $LASTEXITCODE
+          if ($auditExit -ne 0) {
+            throw 'Package or transaction audit failed.'
+          }
+
+          $sharedDb = 'C:\msys64\var\lib\pacman\local'
+          $manifest = Get-ChildItem -Recurse -File $sharedDb |
+            Sort-Object FullName |
+            ForEach-Object {
+              "$(Get-FileHash -Algorithm SHA256 $_.FullName | Select-Object -ExpandProperty Hash) $($_.FullName.Substring($sharedDb.Length))"
+            }
+          $after = Join-Path $env:RUNNER_TEMP 'shared-db.after'
+          $manifest | Set-Content -NoNewline $after
+          if ((Get-FileHash (Join-Path $env:RUNNER_TEMP 'shared-db.before')).Hash -ne
+              (Get-FileHash $after).Hash) {
+            throw 'Shared C:\msys64 package database changed.'
+          }
+          'status=green' | Set-Content "$env:LIBGCRYPT_OUTPUT\evidence\audit-complete.ok"
+
+      - name: Collect sealed evidence
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $packageDir = Join-Path $env:GITHUB_WORKSPACE 'mingw-w64-cross-msysarm64-libgcrypt'
+          $output = $env:LIBGCRYPT_OUTPUT
+          $evidence = Join-Path $env:RUNNER_TEMP 'libgcrypt-evidence'
+          Get-ChildItem -File $packageDir -Filter '*.pkg.tar.*' -ErrorAction SilentlyContinue |
+            Copy-Item -Destination $output
+          if (Test-Path $evidence) {
+            Copy-Item -Recurse -Force "$evidence\*" "$output\evidence\"
+          }
+          $buildAudit = Join-Path $packageDir 'src\libgcrypt-audit'
+          if (Test-Path $buildAudit) {
+            Copy-Item -Recurse -Force $buildAudit "$output\evidence\build-audit"
+          }
+          if ($env:ARM64_INPUT_DIR -and (Test-Path $env:ARM64_INPUT_DIR)) {
+            Get-ChildItem -File $env:ARM64_INPUT_DIR -Filter '*.pkg.tar.*' |
+              Copy-Item -Destination "$output\inputs\"
+          }
+          $packageArchives = @(Get-ChildItem -File $output -Filter '*.pkg.tar.*')
+          $packageArchives |
+            ForEach-Object {
+              "$((Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant()) $($_.Length) $($_.Name)"
+            } | Set-Content "$output\evidence\package-seal.sha256"
+          Get-ChildItem -File "$output\inputs" -Filter '*.pkg.tar.*' |
+            ForEach-Object {
+              "$((Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant()) $($_.Length) inputs/$($_.Name)"
+            } | Set-Content "$output\evidence\input-seal.sha256"
+          $status = if ($packageArchives.Count -eq 3 -and
+              (Test-Path "$output\evidence\summary.txt") -and
+              (Test-Path "$output\evidence\audit-complete.ok")) {
+            'provisional-green'
+          } else {
+            'failed-or-blocked'
+          }
+          @(
+            "status=$status",
+            'runtime=msysarm64-runtime-pr10-a527-20260824',
+            'publication_ready=0',
+            'hold=seal-libgpg-error-and-fixed-binutils; reject-ambiguous-21-12-records'
+          ) | Set-Content "$output\evidence\publication-status.txt"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: arm64-msys-libgcrypt-provisional
+          path: ${{ env.LIBGCRYPT_OUTPUT }}
+          if-no-files-found: error
+
+  native-smoke:
+    if: ${{ inputs.run_native_smoke == true && github.repository == 'crutkas/MSYS2-packages' }}
+    needs: cross-build
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: arm64-msys-libgcrypt-provisional
+          path: artifact
+
+      - name: Run strict native ARM64 MSYS API smoke
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'native-msys-root'
+          $unpacked = Join-Path $env:RUNNER_TEMP 'native-wrapper-payloads'
+          New-Item -ItemType Directory -Force $root, $unpacked | Out-Null
+          Get-ChildItem artifact -Recurse -File -Filter '*.pkg.tar.*' |
+            ForEach-Object {
+              tar.exe -xf $_.FullName -C $unpacked
+              if ($LASTEXITCODE -ne 0) {
+                throw "Failed to extract $($_.Name)"
+              }
+            }
+          $targetPayload = Join-Path $unpacked 'opt\aarch64-pc-msys'
+          if (-not (Test-Path $targetPayload)) {
+            throw 'Cross-package target payload is missing.'
+          }
+          Copy-Item -Recurse -Force "$targetPayload\*" $root
+          New-Item -ItemType Directory -Force "$root\usr\bin" | Out-Null
+          Copy-Item 'artifact\evidence\build-audit\version-smoke-dynamic.exe' "$root\usr\bin\"
+          $env:PATH = "$root\usr\bin;$env:PATH"
+          & "$root\usr\bin\version-smoke-dynamic.exe"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Native ARM64 MSYS libgcrypt smoke failed.'
+          }

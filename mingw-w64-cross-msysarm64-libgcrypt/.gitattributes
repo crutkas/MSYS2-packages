@@ -1,0 +1,3 @@
+audit-aarch64-pseudo-reloc.ps1 -text whitespace=cr-at-eol
+check-aarch64-pseudo-relocs.ps1 -text whitespace=cr-at-eol
+pseudo-reloc-decoder-v2.SHA256SUMS -text
