@@ -64,18 +64,44 @@ _EOF
 build() {
   cd ${srcdir}/${pkgname}-${pkgver}
 
+  local perl_cc=gcc
+  local perl_ld=g++
   if [[ ${CARCH} == aarch64 ]]; then
     # Native ARM64 Configure still emits this warning in the generated probe;
     # keep the existing x86 builds strict.
     CFLAGS+=" -Wno-int-conversion"
-    export PATH="/opt/bin:${PATH}"
-  fi
+    export PATH="/usr/bin:/opt/bin:${PATH}"
+    perl_cc=/opt/bin/aarch64-pc-msys-gcc
+    perl_ld=/opt/bin/aarch64-pc-msys-g++
 
-  local perl_cc=gcc
-  local perl_ld=g++
-  if [[ ${CARCH} == aarch64 ]]; then
-    perl_cc=aarch64-pc-msys-gcc
-    perl_ld=aarch64-pc-msys-g++
+    if [[ ! -x ${perl_cc} || ! -x ${perl_ld} ]]; then
+      printf 'missing ARM64 compiler binding: %s %s\n' "${perl_cc}" "${perl_ld}" >&2
+      return 1
+    fi
+    if ! file -L "${perl_cc}" | grep -Eq 'AArch64|ARM64'; then
+      printf 'unexpected compiler file type: %s\n' "$(file -L "${perl_cc}")" >&2
+      return 1
+    fi
+    if [[ "$("${perl_cc}" -dumpmachine)" != aarch64-pc-msys ]]; then
+      printf 'unexpected compiler target: %s\n' "$("${perl_cc}" -dumpmachine)" >&2
+      return 1
+    fi
+    if [[ "$("${perl_cc}" -print-sysroot)" != /opt/aarch64-pc-msys ]]; then
+      printf 'unexpected compiler sysroot: %s\n' "$("${perl_cc}" -print-sysroot)" >&2
+      return 1
+    fi
+    if ! printf '' | "${perl_cc}" -dM -E -xc - | grep -q '^#define __aarch64__ 1$'; then
+      printf 'missing __aarch64__ from compiler predefines\n' >&2
+      return 1
+    fi
+    if ! printf '' | "${perl_cc}" -dM -E -xc - | grep -q '^#define __LP64__ 1$'; then
+      printf 'missing __LP64__ from compiler predefines\n' >&2
+      return 1
+    fi
+    if ! printf '' | "${perl_cc}" -dM -E -xc - | grep -q '^#define __SEH__ 1$'; then
+      printf 'missing __SEH__ from compiler predefines\n' >&2
+      return 1
+    fi
   fi
 
   export MSYSTEM=CYGWIN
