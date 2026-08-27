@@ -3,7 +3,7 @@
 pkgbase=perl
 pkgname=('perl' 'perl-doc' 'perl-devel')
 pkgver=5.38.4
-pkgrel=3
+pkgrel=4
 pkgdesc="A highly capable, feature-rich programming language"
 arch=(i686 x86_64 aarch64)
 license=('GPL')
@@ -68,6 +68,14 @@ build() {
     # Native ARM64 Configure still emits this warning in the generated probe;
     # keep the existing x86 builds strict.
     CFLAGS+=" -Wno-int-conversion"
+    export PATH="/opt/bin:${PATH}"
+  fi
+
+  local perl_cc=gcc
+  local perl_ld=g++
+  if [[ ${CARCH} == aarch64 ]]; then
+    perl_cc=aarch64-pc-msys-gcc
+    perl_ld=aarch64-pc-msys-g++
   fi
 
   export MSYSTEM=CYGWIN
@@ -89,7 +97,7 @@ build() {
     -Darchname=${ARCH}-cygwin-threads \
     -Dmyarchname=${ARCH}-cygwin \
     -Dlibperl=msys-perl"$(echo "${pkgver%.[0-9]*}" | tr . _)".dll \
-    -Dcc=gcc -Dld=g++ \
+    -Dcc="${perl_cc}" -Dld="${perl_ld}" \
     -Accflags="$CFLAGS -fwrapv" \
     -Ud_setproctitle
 
@@ -172,8 +180,6 @@ _package() {
                   ${pkgdir}/usr/lib/perl5/core_perl/auto/XS/APItest/APItest.dll
   install -D -m755 ${srcdir}/${pkgname}-${pkgver}/lib/auto/XS/Typemap/Typemap.dll \
                   ${pkgdir}/usr/lib/perl5/core_perl/auto/XS/Typemap/Typemap.dll
-  install -D -m755 ${srcdir}/${pkgname}-${pkgver}/lib/auto/Win32CORE/Win32CORE.a \
-                  ${pkgdir}/usr/lib/perl5/core_perl/auto/Win32CORE/Win32CORE.a
 }
 
 _find_doc_files() {
@@ -322,6 +328,10 @@ provides=('perl-Archive-Tar=2.40'
   replaces=('perl-Scalar-List-Utils')
 
   cp -r "${srcdir}/_install/"* "${pkgdir}"
+  rm -rf "${pkgdir}/usr/lib/perl5/core_perl/CORE"
+  rm -rf "${pkgdir}/usr/lib/perl5/core_perl/auto/Win32CORE"
+  find "${pkgdir}/usr/lib/perl5/core_perl" -maxdepth 1 -type f \
+    \( -name '*.a' -o -name '*.dll.a' \) -delete
 
   for file in $(_find_doc_files ${srcdir}/_install); do
     rm -Rf "${pkgdir}/${file}"
@@ -341,4 +351,18 @@ package_perl-doc() {
 package_perl-devel() {
   pkgdesc="Perl headers and dev dependencies"
   depends=("perl=${pkgver}" 'libxcrypt-devel')
+
+  install -d "${pkgdir}/usr/lib/perl5/core_perl"
+  cp -r "${srcdir}/_install/usr/lib/perl5/core_perl/CORE" \
+    "${pkgdir}/usr/lib/perl5/core_perl/"
+  install -Dm644 \
+    "${srcdir}/${pkgname}-${pkgver}/lib/auto/Win32CORE/Win32CORE.a" \
+    "${pkgdir}/usr/lib/perl5/core_perl/auto/Win32CORE/Win32CORE.a"
+
+  while IFS= read -r file; do
+    install -Dm644 "${file}" "${pkgdir}${file#${srcdir}/_install}"
+  done < <(
+    find "${srcdir}/_install/usr/lib/perl5/core_perl" -maxdepth 1 -type f \
+      \( -name '*.a' -o -name '*.dll.a' \)
+  )
 }
