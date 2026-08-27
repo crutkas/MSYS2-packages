@@ -248,6 +248,83 @@ prepare_gcc_dependencies() {
     makepkg_args=(--noconfirm --noprogressbar --nodeps --cleanbuild)
 }
 
+validate_openssl_transaction() {
+    local target_root=/opt/aarch64-pc-msys/usr
+    local provider
+    local -a archives packages
+
+    packages=(
+        mingw-w64-cross-msysarm64-libopenssl
+        mingw-w64-cross-msysarm64-openssl
+        mingw-w64-cross-msysarm64-openssl-devel
+        mingw-w64-cross-msysarm64-openssl-docs
+    )
+    readarray -t archives < <(
+        find "$package" -maxdepth 1 -type f -name '*.pkg.tar.*' \
+            | LC_ALL=C sort
+    )
+    test "${#archives[@]}" -eq 4
+
+    MSYS=winsymlinks:sys pacman --noprogressbar --upgrade \
+        --noconfirm "${archives[@]}"
+    test "$(pacman -Q "${packages[0]}")" = \
+        "${packages[0]} 3.5.1-1"
+    test "$(pacman -Q "${packages[1]}")" = \
+        "${packages[1]} 3.5.1-1"
+    test "$(pacman -Q "${packages[2]}")" = \
+        "${packages[2]} 3.5.1-1"
+    test "$(pacman -Q "${packages[3]}")" = \
+        "${packages[3]} 3.5.1-1"
+
+    provider=$(
+        find "$target_root/lib/ossl-modules" -maxdepth 1 \
+            -type f -name '*.dll' -print -quit
+    )
+    test -n "$provider"
+    test "$(pacman -Qoq "$target_root/bin/msys-crypto-3.dll")" = \
+        "${packages[0]}"
+    test "$(pacman -Qoq "$provider")" = "${packages[0]}"
+    test "$(pacman -Qoq "$target_root/bin/openssl.exe")" = \
+        "${packages[1]}"
+    test "$(pacman -Qoq "$target_root/ssl/openssl.cnf")" = \
+        "${packages[1]}"
+    test "$(pacman -Qoq "$target_root/include/openssl/ssl.h")" = \
+        "${packages[2]}"
+    test "$(pacman -Qoq "$target_root/lib/libssl.dll.a")" = \
+        "${packages[2]}"
+    test "$(pacman -Qoq \
+        /opt/aarch64-pc-msys/share/msys-sysroot/openssl/summary.txt)" = \
+        "${packages[2]}"
+    test "$(pacman -Qoq \
+        "$target_root/share/man/man3/SSL_new.3ssl")" = \
+        "${packages[3]}"
+
+    test -z "$(pacman -T \
+        mingw-w64-cross-msysarm64-libopenssl=3.5.1-1 \
+        mingw-w64-cross-msysarm64-openssl=3.5.1-1 \
+        mingw-w64-cross-msysarm64-openssl-devel=3.5.1-1 \
+        mingw-w64-cross-msysarm64-openssl-docs=3.5.1-1 \
+        mingw-w64-cross-msysarm64-runtime=3.6.10.r0.ga527ace21-1 \
+        mingw-w64-cross-msysarm64-runtime-devel=3.6.10.r0.ga527ace21-1 \
+        mingw-w64-cross-msysarm64-sysroot=3.6.10.r0.ga527ace21-1)"
+
+    pacman -R --noprogressbar --noconfirm "${packages[@]}"
+    for installed in "${packages[@]}"; do
+        if pacman -Q "$installed" > /dev/null 2>&1; then
+            failure "OpenSSL package remained after atomic removal: $installed"
+        fi
+    done
+    test ! -e "$target_root/bin/openssl.exe"
+    test ! -e "$target_root/bin/msys-crypto-3.dll"
+    test ! -e "$target_root/include/openssl/ssl.h"
+
+    MSYS=winsymlinks:sys pacman --noprogressbar --upgrade \
+        --noconfirm "${archives[@]}"
+    for installed in "${packages[@]}"; do
+        pacman -Qk "$installed"
+    done
+}
+
 # Status functions
 failure() { local status="${1}"; local items=("${@:2}"); _status failure "${status}." "${items[@]}"; exit 1; }
 success() { local status="${1}"; local items=("${@:2}"); _status success "${status}." "${items[@]}"; exit 0; }
@@ -294,6 +371,9 @@ for package in "${packages[@]}"; do
     sync
     repo-add $PWD/artifacts/ci.db.tar.gz $PWD/artifacts/*.pkg.tar.*
     pacman -Sy
+    if [[ "$package" == mingw-w64-cross-msysarm64-openssl ]]; then
+        validate_openssl_transaction
+    fi
     echo "::endgroup::"
 
     cd "$package"

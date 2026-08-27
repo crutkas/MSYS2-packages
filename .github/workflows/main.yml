@@ -61,7 +61,7 @@ jobs:
         shell: pwsh
         run: |
           $branchCandidates = @('${{ github.ref_name }}', '${{ github.head_ref }}') | Where-Object { $_ }
-          $match = @('crutkas-package-aarch64-static-libgcc', 'crutkas-congenial-system', 'crutkas-aarch64-gcc-layer') |
+          $match = @('crutkas-package-aarch64-static-libgcc', 'crutkas-congenial-system', 'crutkas-aarch64-gcc-layer', 'crutkas-arm64-msys-openssl') |
             Where-Object { $branchCandidates -contains $_ } |
             Select-Object -First 1
           if (-not $match) {
@@ -70,6 +70,7 @@ jobs:
           }
 
           $baseRef = switch ($match) {
+            'crutkas-arm64-msys-openssl' { 'crutkas-aarch64-gcc-layer' }
             'crutkas-aarch64-gcc-layer' { 'crutkas-package-aarch64-static-libgcc' }
             'crutkas-congenial-system' { 'crutkas-package-aarch64-static-libgcc' }
             default { 'master' }
@@ -77,6 +78,7 @@ jobs:
           $prefixes = 'mingw-w64-cross-cygwinarm64- mingw-w64-cross-msysarm64-'
 
           "enabled=1" >> $env:GITHUB_OUTPUT
+          "openssl=$([int]($match -eq 'crutkas-arm64-msys-openssl'))" >> $env:GITHUB_OUTPUT
           "base_ref=$baseRef" >> $env:GITHUB_OUTPUT
           "package_prefixes=$prefixes" >> $env:GITHUB_OUTPUT
           "run_check=1" >> $env:GITHUB_OUTPUT
@@ -111,10 +113,17 @@ jobs:
         run: |
           $destination = Join-Path $env:RUNNER_TEMP 'cygwinarm64-inputs'
           New-Item -ItemType Directory -Force -Path $destination | Out-Null
-          gh release download cygwinarm64-gcc-static-runtime-20260815 `
-            --repo crutkas/MSYS2-packages `
-            --pattern 'mingw-w64-cross-cygwinarm64-binutils-*.pkg.tar.zst' `
-            --dir $destination
+          if ('${{ steps.arm64-settings.outputs.openssl }}' -eq '1') {
+            gh release download cygwinarm64-binutils-pr21-3356eec-20260827 `
+              --repo crutkas/MSYS2-packages `
+              --pattern 'mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst' `
+              --dir $destination
+          } else {
+            gh release download cygwinarm64-gcc-static-runtime-20260815 `
+              --repo crutkas/MSYS2-packages `
+              --pattern 'mingw-w64-cross-cygwinarm64-binutils-2.44.50-1-x86_64.pkg.tar.zst' `
+              --dir $destination
+          }
           gh release download cygwinarm64-gcc-static-runtime-20260815 `
             --repo crutkas/MSYS2-packages `
             --pattern 'mingw-w64-cross-cygwinarm64-gcc-stage1-*.pkg.tar.zst' `
@@ -136,7 +145,6 @@ jobs:
             --dir $destination
 
           $expected = @{
-            'mingw-w64-cross-cygwinarm64-binutils-2.44.50-1-x86_64.pkg.tar.zst' = '8908cb690952788153b60bc4fb659826bbd8a03a26c1073f76c0be7ed6f97518'
             'mingw-w64-cross-cygwinarm64-headers-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst' = '5266346cc10b142f871704ce4277699b1a5daa3121dc869990b4bedce69c0611'
             'mingw-w64-cross-cygwinarm64-windows-default-manifest-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst' = 'cc089511fede6042a25f83fcb5903fddeede89ddd9655360741513ee9015e3dc'
             'mingw-w64-cross-cygwinarm64-sysroot-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst' = '4ed8a30f592317bf7e4def6f3c773139f2565b0f8afaedd820f7ee46d33cad20'
@@ -144,6 +152,11 @@ jobs:
             'mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-2-x86_64.pkg.tar.zst' = '063579211851ed69370a6362f2795e39d9be0235a2bfe2f58da1bbd73a1d108e'
             'mingw-w64-cross-cygwinarm64-gcc-libs-stage1-15.0.1dev-2-x86_64.pkg.tar.zst' = '17a8fbc22227c541ff3179179d307045302f6b18fbc6207cf9d863a9e4dad98c'
             'mingw-w64-cross-cygwinarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst' = '1e018d384e5e16b76524b69677819b660e6611480a85a7f7b8a412403bf15ea6'
+          }
+          if ('${{ steps.arm64-settings.outputs.openssl }}' -eq '1') {
+            $expected['mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst'] = '3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b'
+          } else {
+            $expected['mingw-w64-cross-cygwinarm64-binutils-2.44.50-1-x86_64.pkg.tar.zst'] = '8908cb690952788153b60bc4fb659826bbd8a03a26c1073f76c0be7ed6f97518'
           }
           foreach ($entry in $expected.GetEnumerator()) {
             $path = Join-Path $destination $entry.Key
@@ -157,8 +170,16 @@ jobs:
         shell: pwsh
         run: |
           $input_dir = Join-Path $env:RUNNER_TEMP 'cygwinarm64-inputs'
+          $binutils = @(
+            Get-ChildItem -File $input_dir `
+              -Filter 'mingw-w64-cross-cygwinarm64-binutils-*.pkg.tar.zst'
+          )
+          if ($binutils.Count -ne 1) {
+            throw 'Expected exactly one AArch64 binutils package.'
+          }
+          $env:MSYS = 'winsymlinks:sys'
           & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -U `
-            "$input_dir\mingw-w64-cross-cygwinarm64-binutils-2.44.50-1-x86_64.pkg.tar.zst" `
+            $binutils[0].FullName `
             "$input_dir\mingw-w64-cross-cygwinarm64-headers-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst" `
             "$input_dir\mingw-w64-cross-cygwinarm64-windows-default-manifest-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst" `
             "$input_dir\mingw-w64-cross-cygwinarm64-sysroot-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst" `
@@ -195,7 +216,7 @@ jobs:
           & $bash --login -lc $script
 
       - name: Add MSYS tool aliases
-        if: ${{ steps.arm64-settings.outputs.enabled == '1' }}
+        if: ${{ steps.arm64-settings.outputs.enabled == '1' && steps.arm64-settings.outputs.openssl != '1' }}
         shell: pwsh
         run: |
           $binDir = 'C:\msys64\opt\bin'
@@ -206,6 +227,157 @@ jobs:
             if ((Test-Path $source) -and -not (Test-Path $dest)) {
               Copy-Item $source $dest
             }
+          }
+
+      - name: Download final aarch64-pc-msys toolchain
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && steps.arm64-settings.outputs.openssl == '1' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $destination = Join-Path $env:RUNNER_TEMP 'msysarm64-final-inputs'
+          New-Item -ItemType Directory -Force -Path $destination | Out-Null
+
+          gh release download msysarm64-runtime-pr10-a527-20260824 `
+            --repo crutkas/MSYS2-packages `
+            --pattern 'mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' `
+            --pattern 'mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' `
+            --pattern 'mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' `
+            --pattern 'mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' `
+            --pattern 'mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' `
+            --dir $destination
+          gh release download msysarm64-gcc-pr13-support-20260826 `
+            --repo crutkas/MSYS2-packages `
+            --pattern 'mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst' `
+            --pattern 'mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst' `
+            --dir $destination
+          gh release download msysarm64-gcc-pr13-20260826 `
+            --repo crutkas/MSYS2-packages `
+            --pattern 'mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst' `
+            --pattern 'mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst' `
+            --dir $destination
+
+          $expected = @{
+            'mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' = '263f8f7e3614ac41337ce3a223f2bb26b6459aef6f34670525cdd4c03ec3ae21'
+            'mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' = '33861708e7f981b4eef5b93ef135ab3a43d2757533f64df6f61a146d823c355f'
+            'mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' = 'e30609e09eab2fa07aba2e6196b05f34e5e9107abc4ab8832966684758c743ca'
+            'mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' = '158c505f45025a466950faa7c85c9fd85e9d32384dd27b53586ffc75d71ca78e'
+            'mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' = 'c18b51e483991770b8e06cc2d8f7002d06784d3071ac213a8fee24bb831267d1'
+            'mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst' = '7727936f4212e5af04e9739eca60f157c0875796c1e82fcfb79fd4398b111e24'
+            'mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst' = '9715aab6894379bf5ab936a3a559f286fb4aedbb64f0774d7457182e00648e08'
+            'mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst' = '990f163cacf9ffce1b58445be91fedc57f135cc26a88d7dba109806446b41438'
+            'mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst' = 'a74887c76a933ec424933bf662729d94975b83138af783bd93f2e7acd95c3a22'
+          }
+          if ((Get-ChildItem -File $destination).Count -ne $expected.Count) {
+            throw 'Unexpected final aarch64-pc-msys input asset count.'
+          }
+          foreach ($entry in $expected.GetEnumerator()) {
+            $path = Join-Path $destination $entry.Key
+            if ((Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant() -ne $entry.Value) {
+              throw "SHA-256 mismatch: $($entry.Key)"
+            }
+          }
+
+      - name: Install final aarch64-pc-msys toolchain atomically
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && steps.arm64-settings.outputs.openssl == '1' }}
+        shell: pwsh
+        run: |
+          $pacman = 'C:\msys64\usr\bin\pacman.exe'
+          $input = Join-Path $env:RUNNER_TEMP 'msysarm64-final-inputs'
+          $transitional = @(
+            'mingw-w64-cross-cygwinarm64-headers',
+            'mingw-w64-cross-cygwinarm64-windows-default-manifest',
+            'mingw-w64-cross-cygwinarm64-sysroot',
+            'mingw-w64-cross-cygwinarm64-w32api-runtime'
+          ) | Where-Object {
+            & $pacman -Q $_ 2>$null | Out-Null
+            $LASTEXITCODE -eq 0
+          }
+          if ($transitional.Count -gt 0) {
+            & $pacman --noconfirm -Rdd -- $transitional
+            if ($LASTEXITCODE -ne 0) {
+              throw 'Failed to remove transitional Cygwin sysroot packages.'
+            }
+          }
+
+          $env:MSYS = 'winsymlinks:sys'
+          & $pacman --noconfirm -U `
+            "$input\mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst" `
+            "$input\mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst" `
+            "$input\mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst" `
+            "$input\mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst" `
+            "$input\mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst" `
+            "$input\mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst" `
+            "$input\mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst" `
+            "$input\mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst" `
+            "$input\mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Atomic final aarch64-pc-msys toolchain transaction failed.'
+          }
+
+      - name: Preflight final aarch64-pc-msys toolchain
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && steps.arm64-settings.outputs.openssl == '1' }}
+        shell: pwsh
+        run: |
+          if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne
+              [System.Runtime.InteropServices.Architecture]::X64) {
+            throw 'The OpenSSL cross build requires an x64 Windows host.'
+          }
+          $pacman = 'C:\msys64\usr\bin\pacman.exe'
+          $expected = @(
+            'mingw-w64-cross-cygwinarm64-binutils 2.44.50-2',
+            'mingw-w64-cross-msysarm64-headers 3.6.10.r0.ga527ace21-1',
+            'mingw-w64-cross-msysarm64-windows-default-manifest 3.6.10.r0.ga527ace21-1',
+            'mingw-w64-cross-msysarm64-sysroot 3.6.10.r0.ga527ace21-1',
+            'mingw-w64-cross-msysarm64-runtime 3.6.10.r0.ga527ace21-1',
+            'mingw-w64-cross-msysarm64-runtime-devel 3.6.10.r0.ga527ace21-1',
+            'mingw-w64-cross-msysarm64-w32api-runtime 14.0.0.r0.g9b3dd0125-1',
+            'mingw-w64-cross-msysarm64-libstdc++-headers 15.0.1dev-1',
+            'mingw-w64-cross-msysarm64-gcc-libs 15.0.1dev-1',
+            'mingw-w64-cross-msysarm64-gcc 15.0.1dev-1'
+          )
+          foreach ($identity in $expected) {
+            $name = $identity.Split(' ')[0]
+            if ((& $pacman -Q $name) -ne $identity) {
+              throw "Unexpected installed identity for $name"
+            }
+          }
+
+          $bash = 'C:\msys64\usr\bin\bash.exe'
+          $script = @'
+          set -euo pipefail
+          export PATH=/opt/bin:$PATH
+          test "$(aarch64-pc-msys-gcc -dumpmachine)" = aarch64-pc-msys
+          test "$(aarch64-pc-msys-gcc -dumpversion)" = 15.0.1
+          test "$(sha256sum /opt/bin/aarch64-pc-cygwin-ld.exe | cut -d' ' -f1)" = 075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f
+          test "$(pacman -Qoq /opt/bin/aarch64-pc-cygwin-ld.exe)" = mingw-w64-cross-cygwinarm64-binutils
+          test "$(aarch64-pc-msys-gcc -print-prog-name=ld)" = /opt/bin/aarch64-pc-cygwin-ld
+          for tool in addr2line ar as c++filt dlltool dllwrap elfedit gprof ld ld.bfd nm objcopy objdump ranlib readelf size strings strip windmc windres; do
+            alias=/opt/bin/aarch64-pc-msys-$tool.exe
+            test -L "$alias"
+            test "$(readlink "$alias")" = aarch64-pc-cygwin-$tool.exe
+            test "$(pacman -Qoq "$alias")" = mingw-w64-cross-cygwinarm64-binutils
+          done
+          test -L /opt/aarch64-pc-msys/bin/ar.exe
+          test "$(readlink /opt/aarch64-pc-msys/bin/ar.exe)" = ../../aarch64-pc-cygwin/bin/ar.exe
+          for library in libmsys-2.0.a libcrypt32.a; do
+            path=$(aarch64-pc-msys-gcc -print-file-name="$library")
+            test -f "$path"
+            aarch64-pc-cygwin-objdump -f "$path" | grep -F 'architecture: aarch64'
+          done
+          work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
+          printf 'int main(void) { return 0; }\n' > "$work/probe.c"
+          aarch64-pc-msys-gcc "$work/probe.c" -o "$work/probe.exe"
+          aarch64-pc-cygwin-objdump -f -p "$work/probe.exe" > "$work/probe.audit"
+          grep -F 'file format pei-aarch64-little' "$work/probe.audit"
+          grep -F 'architecture: aarch64' "$work/probe.audit"
+          grep -F 'DLL Name: msys-2.0.dll' "$work/probe.audit"
+          ! grep -Ei 'cygwin1\.dll|x86_64|pei-x86-64' "$work/probe.audit"
+          '@
+          & $bash --login -lc $script
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Final aarch64-pc-msys compiler preflight failed.'
           }
 
       - name: Move Checkout
@@ -241,6 +413,80 @@ jobs:
           path: |
             ${{ steps.facts.outputs.drive }}/_/mingw-w64-cross-msysarm64-libstdcxx-headers/src/libstdcxx-headers-report/*
             ${{ steps.facts.outputs.drive }}/_/mingw-w64-cross-msysarm64-gcc/src/gcc-report/*
+
+  native-arm64-openssl:
+    if: >-
+      ${{
+        github.repository == 'crutkas/MSYS2-packages' &&
+        (github.ref_name == 'crutkas-arm64-msys-openssl' ||
+         github.head_ref == 'crutkas-arm64-msys-openssl')
+      }}
+    needs: build
+    runs-on: windows-11-arm
+    name: Native ARM64 OpenSSL
+
+    steps:
+      - uses: msys2/setup-msys2@v2
+        id: native-msys2
+        with:
+          cache: false
+          install: >-
+            libiconv
+            libintl
+            zlib
+            libzstd
+          msystem: MSYS
+          update: true
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: MSYS-packages
+          path: packages
+
+      - name: Download native runtime inputs
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $destination = Join-Path $env:RUNNER_TEMP 'native-inputs'
+          New-Item -ItemType Directory -Force -Path $destination | Out-Null
+          gh release download msysarm64-runtime-pr10-a527-20260824 `
+            --repo crutkas/MSYS2-packages `
+            --pattern 'mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' `
+            --dir $destination
+          gh release download msysarm64-gcc-pr13-20260826 `
+            --repo crutkas/MSYS2-packages `
+            --pattern 'mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst' `
+            --dir $destination
+          gh release download cygwinarm64-binutils-pr21-3356eec-20260827 `
+            --repo crutkas/MSYS2-packages `
+            --pattern 'mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst' `
+            --dir $destination
+
+          $expected = @{
+            'mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' = '158c505f45025a466950faa7c85c9fd85e9d32384dd27b53586ffc75d71ca78e'
+            'mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst' = '990f163cacf9ffce1b58445be91fedc57f135cc26a88d7dba109806446b41438'
+            'mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst' = '3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b'
+          }
+          foreach ($entry in $expected.GetEnumerator()) {
+            $path = Join-Path $destination $entry.Key
+            if ((Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant() -ne $entry.Value) {
+             throw "SHA-256 mismatch: $($entry.Key)"
+            }
+          }
+
+      - name: Run native ARM64 crypto and TLS smoke
+        shell: pwsh
+        run: |
+          .\mingw-w64-cross-msysarm64-openssl\native-smoke.ps1 `
+            -PackagesDirectory (Resolve-Path .\packages) `
+            -InputsDirectory (Join-Path $env:RUNNER_TEMP 'native-inputs') `
+            -ScannerPath (Resolve-Path .\mingw-w64-cross-msysarm64-openssl\check-aarch64-pseudo-relocs.ps1) `
+            -HostMsysRoot '${{ steps.native-msys2.outputs.msys2-location }}'
 
   package-grokker:
     if: ${{ !(github.repository == 'crutkas/MSYS2-packages' && github.head_ref == 'crutkas-package-aarch64-static-libgcc') }}

@@ -1,0 +1,16 @@
+--- a/Configurations/10-main.conf
++++ b/Configurations/10-main.conf
+@@ -1809,6 +1809,13 @@ my %targets = (
+         asm_arch         => 'x86_64',
+         perlasm_scheme   => "mingw64",
+     },
++    "Cygwin-aarch64" => {
++        inherit_from     => [ "Cygwin-common" ],
++        CC               => "gcc",
++        bn_ops           => "SIXTY_FOUR_BIT_LONG",
++        shared_rcflag    => "--target=pe-aarch64-little",
++    },
++
+     # Backward compatibility for those using this target
+     "Cygwin" => {
+ 	inherit_from     => [ "Cygwin-x86" ]
