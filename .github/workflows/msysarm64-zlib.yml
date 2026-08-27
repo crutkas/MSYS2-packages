@@ -85,6 +85,7 @@ jobs:
           $script = @'
           set -euo pipefail
           export PATH=/usr/bin:/opt/bin:/mingw64/bin:$PATH
+          mkdir -p "$HOME"
           cd "$1/mingw-w64-cross-msysarm64-zlib"
           dos2unix -q PKGBUILD README.md bootstrap-toolchain.ps1 canonicalize-packages.sh validate-zlib.sh validate-packages.sh ../.ci/check-aarch64-pseudo-relocs.ps1 *.patch
           bash -n PKGBUILD canonicalize-packages.sh validate-zlib.sh validate-packages.sh
