@@ -69,7 +69,7 @@ build() {
   local perl_gcc_version=
   if [[ ${CARCH} == aarch64 ]]; then
     perl -0pi -e 's{\.\/try\b(?!\.exe)}{./try.exe}g' Configure
-    perl -0pi -e 's{gccversion=`\$run \./try\.exe`}{gccversion=`\$run ./try`}g' Configure
+    perl -0pi -e 's{if \$cc -o try \$ccflags \$ldflags try\.c; then}{if \$cc -o try.exe \$ccflags \$ldflags try.c; then}g' Configure
     perl -0pi -e 's{if \$cc -o try \$flag \$ccflags \$ldflags try\.c 2>/dev/null && \./try\.exe; then}{if \$cc -o try.exe \$flag \$ccflags \$ldflags try.c 2>/dev/null; then}g' Configure
     perl -0pi -e 's{\$cc -o \${mc_file} \$optimize \$ccflags \$ldflags \$\* \${mc_file}\.c \$libs > /dev/null 2>&1;}{if \$cc -o \${mc_file} \$optimize \$ccflags \$ldflags \$\* \${mc_file}.c \$libs > /dev/null 2>&1; then cp -f \${mc_file} \${mc_file}.exe > /dev/null 2>&1 || return 1; else return 1; fi;}g' Configure
 
