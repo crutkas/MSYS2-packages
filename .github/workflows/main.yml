@@ -128,9 +128,12 @@ jobs:
             --pattern 'mingw-w64-cross-msysarm64-sysroot-*.pkg.tar.zst' `
             --pattern 'mingw-w64-cross-msysarm64-windows-default-manifest-*.pkg.tar.zst' `
             --dir $destination
-          gh release download cygwinarm64-gcc-static-runtime-20260815 `
+          gh release download cygwinarm64-gcc-stage0-pr4-20260813 `
             --repo crutkas/MSYS2-packages `
             --pattern 'mingw-w64-cross-cygwinarm64-gcc-stage1-*.pkg.tar.zst' `
+            --dir $destination
+          gh release download cygwinarm64-gcc-static-runtime-20260815 `
+            --repo crutkas/MSYS2-packages `
             --pattern 'mingw-w64-cross-cygwinarm64-binutils-*.pkg.tar.zst' `
             --dir $destination
           gh release download msysarm64-gcc-deps-20260826 `
