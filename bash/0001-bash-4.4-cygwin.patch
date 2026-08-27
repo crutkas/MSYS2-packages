@@ -7,10 +7,10 @@ index c85b05b..8f69bc6 100644
  #endif
  
 +#if __CYGWIN__
-+#  ifdef __x86_64__
-+#    define IMP(x) __imp_##x
-+#  else
++#  if defined (__i386__)
 +#    define IMP(x) _imp__##x
++#  else
++#    define IMP(x) __imp_##x
 +#  endif
 +#else
 +#  define IMP(x) x
