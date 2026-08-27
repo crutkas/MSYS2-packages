@@ -3,14 +3,137 @@ Set-StrictMode -Version Latest
 if (-not ('PrivatePacman.NativePath' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using Microsoft.Win32.SafeHandles;
 
 namespace PrivatePacman
 {
+    public sealed class TreeChangeMonitor : IDisposable
+    {
+        private readonly FileSystemWatcher watcher;
+        private readonly ConcurrentQueue<string> changes = new ConcurrentQueue<string>();
+        private readonly object callbackLock = new object();
+        private int activeCallbacks;
+        private DateTime lastCallbackUtc = DateTime.MinValue;
+
+        public bool Overflowed { get; private set; }
+
+        public TreeChangeMonitor(string root)
+        {
+            watcher = new FileSystemWatcher(root);
+            watcher.IncludeSubdirectories = true;
+            watcher.NotifyFilter =
+                NotifyFilters.FileName |
+                NotifyFilters.DirectoryName |
+                NotifyFilters.LastWrite |
+                NotifyFilters.Size |
+                NotifyFilters.Attributes |
+                NotifyFilters.Security;
+            watcher.InternalBufferSize = 65536;
+            watcher.Changed += OnChanged;
+            watcher.Created += OnChanged;
+            watcher.Deleted += OnChanged;
+            watcher.Renamed += OnRenamed;
+            watcher.Error += OnError;
+            watcher.EnableRaisingEvents = true;
+        }
+
+        public string[] Stop()
+        {
+            watcher.EnableRaisingEvents = false;
+            DateTime deadline = DateTime.UtcNow.AddSeconds(5);
+            lock (callbackLock)
+            {
+                lastCallbackUtc = DateTime.UtcNow;
+                while (activeCallbacks != 0 ||
+                    DateTime.UtcNow - lastCallbackUtc < TimeSpan.FromMilliseconds(250))
+                {
+                    TimeSpan remaining = deadline - DateTime.UtcNow;
+                    if (remaining <= TimeSpan.Zero)
+                    {
+                        Overflowed = true;
+                        changes.Enqueue("WatcherDrainTimeout");
+                        break;
+                    }
+                    Monitor.Wait(
+                        callbackLock,
+                        remaining < TimeSpan.FromMilliseconds(50)
+                            ? remaining
+                            : TimeSpan.FromMilliseconds(50));
+                }
+            }
+            return changes.ToArray();
+        }
+
+        private void OnChanged(object sender, FileSystemEventArgs args)
+        {
+            EnterCallback();
+            try
+            {
+                changes.Enqueue(args.ChangeType + "\t" + args.FullPath);
+            }
+            finally
+            {
+                ExitCallback();
+            }
+        }
+
+        private void OnRenamed(object sender, RenamedEventArgs args)
+        {
+            EnterCallback();
+            try
+            {
+                changes.Enqueue("Renamed\t" + args.OldFullPath + "\t" + args.FullPath);
+            }
+            finally
+            {
+                ExitCallback();
+            }
+        }
+
+        private void OnError(object sender, ErrorEventArgs args)
+        {
+            EnterCallback();
+            try
+            {
+                Overflowed = true;
+                changes.Enqueue("WatcherError\t" + args.GetException().GetType().FullName);
+            }
+            finally
+            {
+                ExitCallback();
+            }
+        }
+
+        private void EnterCallback()
+        {
+            lock (callbackLock)
+            {
+                activeCallbacks++;
+            }
+        }
+
+        private void ExitCallback()
+        {
+            lock (callbackLock)
+            {
+                lastCallbackUtc = DateTime.UtcNow;
+                activeCallbacks--;
+                Monitor.PulseAll(callbackLock);
+            }
+        }
+
+        public void Dispose()
+        {
+            watcher.Dispose();
+        }
+    }
+
     public static class NativePath
     {
         private const uint FileShareAll = 0x00000001 | 0x00000002 | 0x00000004;
@@ -39,6 +162,27 @@ namespace PrivatePacman
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool CreateDirectory(string path, IntPtr securityAttributes);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct BY_HANDLE_FILE_INFORMATION
+        {
+            public uint FileAttributes;
+            public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+            public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+            public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+            public uint VolumeSerialNumber;
+            public uint FileSizeHigh;
+            public uint FileSizeLow;
+            public uint NumberOfLinks;
+            public uint FileIndexHigh;
+            public uint FileIndexLow;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetFileInformationByHandle(
+            SafeFileHandle file,
+            out BY_HANDLE_FILE_INFORMATION information);
 
         public static void CreateDirectoryExclusive(string path)
         {
@@ -103,6 +247,35 @@ namespace PrivatePacman
             return NormalizeFinalPath(buffer.ToString());
         }
 
+        public static string GetFileIdentity(string path)
+        {
+            using (SafeFileHandle handle = CreateFile(
+                path,
+                0,
+                FileShareAll,
+                IntPtr.Zero,
+                OpenExisting,
+                BackupSemantics,
+                IntPtr.Zero))
+            {
+                if (handle.IsInvalid)
+                {
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), path);
+                }
+
+                BY_HANDLE_FILE_INFORMATION information;
+                if (!GetFileInformationByHandle(handle, out information))
+                {
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), path);
+                }
+                return String.Format(
+                    "{0:X8}:{1:X8}{2:X8}",
+                    information.VolumeSerialNumber,
+                    information.FileIndexHigh,
+                    information.FileIndexLow);
+            }
+        }
+
         private static string NormalizeFinalPath(string finalPath)
         {
             if (finalPath.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
@@ -139,6 +312,11 @@ class PrivatePacmanContext {
     [string] $SharedRoot
     [string] $SessionId
     [string] $ConfigHash
+    [string] $PrivatePacmanSeed
+    [string] $SeedManifestHash
+    [string] $PacmanHash
+    [string] $PacmanIdentity
+    [string[]] $ProtectedPacmanIdentities
     [string[]] $SharedToolTreePaths
 }
 
@@ -496,6 +674,27 @@ function Get-Sha256 {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash
 }
 
+function Get-ProtectedPacmanIdentities {
+    param(
+        [Parameter(Mandatory)]
+        [string] $ConfiguredSharedRoot
+    )
+
+    $identities = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::Ordinal
+    )
+    foreach ($protectedRoot in @('C:\msys64', $ConfiguredSharedRoot)) {
+        $canonicalProtectedRoot = Resolve-CanonicalPath -Path $protectedRoot
+        $protectedPacman = Join-Path $canonicalProtectedRoot 'usr\bin\pacman.exe'
+        if (Test-Path -LiteralPath $protectedPacman -PathType Leaf) {
+            [void]$identities.Add(
+                [PrivatePacman.NativePath]::GetFileIdentity($protectedPacman)
+            )
+        }
+    }
+    return @($identities | Sort-Object)
+}
+
 function Assert-PacmanConfigIntegrity {
     param(
         [Parameter(Mandatory)]
@@ -608,6 +807,7 @@ function New-PrivatePacmanContext {
     }
 
     $canonicalPacmanSeed = $null
+    $seedManifestHash = ''
     if (-not [string]::IsNullOrWhiteSpace($PrivatePacmanSeed)) {
         Assert-LocalFixedPath -Path $PrivatePacmanSeed -Name 'Private pacman seed'
         $canonicalPacmanSeed = Resolve-CanonicalPath -Path $PrivatePacmanSeed
@@ -622,6 +822,10 @@ function New-PrivatePacmanContext {
             }
         }
         Assert-NoEscapingReparsePoint -Root $canonicalPacmanSeed
+        $seedManifestHash = (Get-TreeManifest -Path $canonicalPacmanSeed -OmitManifest).manifestHash
+    }
+    elseif ($pacmanIsPrivate) {
+        throw 'A private PacmanPath requires constructor-established PrivatePacmanSeed provenance.'
     }
 
     $canonicalToolTrees = foreach ($toolTree in $SharedToolTreePaths) {
@@ -654,6 +858,16 @@ function New-PrivatePacmanContext {
         if ($null -ne $canonicalPacmanSeed) {
             Get-ChildItem -LiteralPath $canonicalPacmanSeed -Force -ErrorAction Stop |
                 Copy-Item -Destination $canonicalRoot -Recurse -Force -ErrorAction Stop
+            $postCopySeedHash = (
+                Get-TreeManifest -Path $canonicalPacmanSeed -OmitManifest
+            ).manifestHash
+            $copiedSeedHash = (
+                Get-TreeManifest -Path $canonicalRoot -OmitManifest
+            ).manifestHash
+            if ($postCopySeedHash -cne $seedManifestHash -or
+                $copiedSeedHash -cne $seedManifestHash) {
+                throw 'Private pacman seed changed during construction or did not copy exactly.'
+            }
         }
         $managedDirectories = @(
             $canonicalRoot
@@ -702,11 +916,26 @@ function New-PrivatePacmanContext {
         Set-Content -LiteralPath $layout.ConfigFile -Value $config -Encoding utf8 -ErrorAction Stop
         $configHash = Get-Sha256 -Path $layout.ConfigFile
 
+        $pacmanHash = Get-Sha256 -Path $canonicalPacmanPath
+        $pacmanIdentity = [PrivatePacman.NativePath]::GetFileIdentity($canonicalPacmanPath)
+        $protectedPacmanIdentities = @(
+            Get-ProtectedPacmanIdentities -ConfiguredSharedRoot $canonicalSharedRoot
+        )
+        if ($pacmanIdentity -cin $protectedPacmanIdentities) {
+            throw 'Private PacmanPath is a hardlink to a protected shared pacman executable.'
+        }
+
         $sentinel = [ordered]@{
             format = 1
             sessionId = $SessionId
             root = $canonicalRoot
             configHash = $configHash
+            privatePacmanSeed = $canonicalPacmanSeed
+            seedManifestHash = $seedManifestHash
+            pacmanHash = $pacmanHash
+            pacmanIdentity = $pacmanIdentity
+            protectedPacmanIdentities = $protectedPacmanIdentities
+            sharedRoot = $canonicalSharedRoot
             createdAtUtc = [DateTime]::UtcNow.ToString('o')
         }
         $sentinelPath = Join-Path -Path $canonicalRoot -ChildPath '.private-pacman-root.json'
@@ -726,6 +955,11 @@ function New-PrivatePacmanContext {
         $context.SharedRoot = $canonicalSharedRoot
         $context.SessionId = $SessionId
         $context.ConfigHash = $configHash
+        $context.PrivatePacmanSeed = $canonicalPacmanSeed
+        $context.SeedManifestHash = $seedManifestHash
+        $context.PacmanHash = $pacmanHash
+        $context.PacmanIdentity = $pacmanIdentity
+        $context.ProtectedPacmanIdentities = $protectedPacmanIdentities
         $context.SharedToolTreePaths = @($canonicalToolTrees)
         if (-not (Test-Path -LiteralPath $context.PacmanPath -PathType Leaf) -and
             $null -ne $canonicalPacmanSeed) {
@@ -771,7 +1005,9 @@ function Get-TreeManifest {
         [Parameter(Mandatory)]
         [string] $Path,
 
-        [switch] $OmitManifest
+        [switch] $OmitManifest,
+
+        [switch] $MetadataOnly
     )
 
     if (-not (Test-Path -LiteralPath $Path)) {
@@ -800,8 +1036,20 @@ function Get-TreeManifest {
             }
         }
         else {
-            $hash = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256 -ErrorAction Stop).Hash
-            "F`t$relative`t$($item.Length)`t$($item.LastWriteTimeUtc.Ticks)`t$hash"
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                $targets = @($item.Target) -join '|'
+                $finalTarget = Resolve-CanonicalPath -Path $item.FullName
+                "L`t$relative`t$($item.LinkType)`t$targets`t$finalTarget"
+            }
+            else {
+                if ($MetadataOnly) {
+                    "F`t$relative`t$($item.Length)`t$($item.LastWriteTimeUtc.Ticks)`t$([int]$item.Attributes)"
+                }
+                else {
+                    $hash = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256 -ErrorAction Stop).Hash
+                    "F`t$relative`t$($item.Length)`t$($item.LastWriteTimeUtc.Ticks)`t$hash"
+                }
+            }
         }
     }
     $manifest = @($lines) -join "`n"
@@ -827,7 +1075,9 @@ function Get-SharedPacmanState {
     param(
         [string] $SharedRoot = 'C:\msys64',
 
-        [string[]] $ToolTreePaths = @()
+        [string[]] $ToolTreePaths = @(),
+
+        [switch] $SkipProtectedRootScan
     )
 
     $canonicalSharedRoot = Resolve-CanonicalPath -Path $SharedRoot
@@ -862,14 +1112,168 @@ function Get-SharedPacmanState {
         $toolTrees[$canonicalToolTree] = Get-TreeManifest -Path $canonicalToolTree
     }
 
+    if ($SkipProtectedRootScan) {
+        $protectedRoot = [ordered]@{
+            exists = $true
+            entryCount = 0
+            manifest = ''
+            manifestHash = [PrivatePacman.NativePath]::GetFileIdentity($canonicalSharedRoot)
+        }
+    }
+    else {
+        $protectedRoot = Get-TreeManifest `
+            -Path $canonicalSharedRoot `
+            -OmitManifest `
+            -MetadataOnly
+    }
+
     return [ordered]@{
         sharedRoot = $canonicalSharedRoot
         observedAtUtc = [DateTime]::UtcNow.ToString('o')
         pacmanLog = $logState
         localDatabase = Get-TreeManifest -Path $localDbPath
-        protectedRoot = Get-TreeManifest -Path $canonicalSharedRoot -OmitManifest
+        protectedRoot = $protectedRoot
         toolTrees = $toolTrees
     }
+}
+
+function Get-ProtectedPacmanState {
+    param(
+        [Parameter(Mandatory)]
+        [PrivatePacmanContext] $Context
+    )
+
+    $systemRoot = Resolve-CanonicalPath -Path 'C:\msys64'
+    $systemState = Get-SharedPacmanState -SharedRoot $systemRoot -SkipProtectedRootScan
+    $configuredRoot = Resolve-CanonicalPath -Path $Context.SharedRoot
+    $configuredState = $null
+    if (Test-SamePath -Left $configuredRoot -Right $systemRoot) {
+        if ($Context.SharedToolTreePaths.Count -ne 0) {
+            $systemState = Get-SharedPacmanState `
+                -SharedRoot $systemRoot `
+                -ToolTreePaths $Context.SharedToolTreePaths `
+                -SkipProtectedRootScan
+        }
+    }
+    else {
+        $configuredState = Get-SharedPacmanState `
+            -SharedRoot $configuredRoot `
+            -ToolTreePaths $Context.SharedToolTreePaths `
+            -SkipProtectedRootScan
+    }
+
+    return [ordered]@{
+        systemRoot = $systemState
+        configuredRoot = $configuredState
+    }
+}
+
+function Start-ProtectedRootMonitors {
+    param(
+        [Parameter(Mandatory)]
+        [PrivatePacmanContext] $Context
+    )
+
+    $roots = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    [void]$roots.Add((Resolve-CanonicalPath -Path 'C:\msys64'))
+    [void]$roots.Add((Resolve-CanonicalPath -Path $Context.SharedRoot))
+
+    $monitors = [System.Collections.Generic.List[object]]::new()
+    try {
+        foreach ($root in @($roots | Sort-Object)) {
+            $monitors.Add([pscustomobject]@{
+                    Root = $root
+                    Monitor = [PrivatePacman.TreeChangeMonitor]::new($root)
+                })
+        }
+        return $monitors.ToArray()
+    }
+    catch {
+        foreach ($entry in $monitors) {
+            $entry.Monitor.Dispose()
+        }
+        throw
+    }
+}
+
+function Stop-ProtectedRootMonitors {
+    param(
+        [Parameter(Mandatory)]
+        [object[]] $Monitor
+    )
+
+    $result = [ordered]@{}
+    foreach ($entry in $Monitor) {
+        $events = @()
+        $captureError = $null
+        try {
+            $events = @($entry.Monitor.Stop() | Sort-Object)
+        }
+        catch {
+            $captureError = $_.Exception.ToString()
+        }
+        finally {
+            try {
+                $entry.Monitor.Dispose()
+            }
+            catch {
+                if ($null -eq $captureError) {
+                    $captureError = $_.Exception.ToString()
+                }
+                else {
+                    $captureError += "`nDispose failure: $($_.Exception)"
+                }
+            }
+        }
+
+        try {
+            $eventText = $events -join "`n"
+            $sha256 = [System.Security.Cryptography.SHA256]::Create()
+            try {
+                $hash = [BitConverter]::ToString(
+                    $sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($eventText))
+                ).Replace('-', '')
+            }
+            finally {
+                $sha256.Dispose()
+            }
+            $result[$entry.Root] = [ordered]@{
+                overflowed = $entry.Monitor.Overflowed
+                changeCount = $events.Count
+                changeHash = $hash
+                changes = $events
+                captureError = $captureError
+            }
+        }
+        catch {
+            $result[$entry.Root] = [ordered]@{
+                overflowed = $true
+                changeCount = $events.Count
+                changeHash = $null
+                changes = $events
+                captureError = $_.Exception.ToString()
+            }
+        }
+    }
+    return $result
+}
+
+function Get-ProtectedRootChangeSummary {
+    param(
+        [Parameter(Mandatory)]
+        [object] $RootChanges
+    )
+
+    $firstChange = @($RootChanges.changes | Select-Object -First 1)
+    if ($firstChange.Count -ne 0) {
+        return $firstChange[0]
+    }
+    if (-not [string]::IsNullOrWhiteSpace($RootChanges.captureError)) {
+        return "WatcherCaptureError: $($RootChanges.captureError)"
+    }
+    return 'WatcherOverflow'
 }
 
 function Assert-RootSentinel {
@@ -887,6 +1291,13 @@ function Assert-RootSentinel {
     if ($sentinel.format -ne 1 -or
         $sentinel.sessionId -cne $Context.SessionId -or
         $sentinel.configHash -cne $Context.ConfigHash -or
+        $sentinel.privatePacmanSeed -cne $Context.PrivatePacmanSeed -or
+        $sentinel.seedManifestHash -cne $Context.SeedManifestHash -or
+        $sentinel.pacmanHash -cne $Context.PacmanHash -or
+        $sentinel.pacmanIdentity -cne $Context.PacmanIdentity -or
+        (@($sentinel.protectedPacmanIdentities) -join '|') -cne
+            (@($Context.ProtectedPacmanIdentities) -join '|') -or
+        -not (Test-SamePath -Left ([string]$sentinel.sharedRoot) -Right $Context.SharedRoot) -or
         -not (Test-SamePath -Left ([string]$sentinel.root) -Right $Context.Root)) {
         throw "Root sentinel '$sentinelPath' is not owned by session '$($Context.SessionId)'."
     }
@@ -932,6 +1343,22 @@ function Assert-ContextIsolation {
     if (-not (Test-SamePath -Left $Context.PacmanPath -Right $pacmanPath) -or
         -not (Test-Path -LiteralPath $pacmanPath -PathType Leaf)) {
         throw 'Pacman executable changed or no longer resolves to its validated location.'
+    }
+    $pacmanHash = Get-Sha256 -Path $pacmanPath
+    $pacmanIdentity = [PrivatePacman.NativePath]::GetFileIdentity($pacmanPath)
+    if ($pacmanHash -cne $Context.PacmanHash -or
+        $pacmanIdentity -cne $Context.PacmanIdentity) {
+        throw 'Pacman executable no longer matches its constructor-established hash and file identity.'
+    }
+    $protectedPacmanIdentities = @(
+        Get-ProtectedPacmanIdentities -ConfiguredSharedRoot $Context.SharedRoot
+    )
+    if ((@($protectedPacmanIdentities) -join '|') -cne
+        (@($Context.ProtectedPacmanIdentities) -join '|')) {
+        throw 'Protected shared pacman identity set changed after context construction.'
+    }
+    if ($pacmanIdentity -cin $protectedPacmanIdentities) {
+        throw 'Pacman executable is a hardlink to a protected shared pacman executable.'
     }
     Assert-PacmanConfigIntegrity -Context $Context
 }
@@ -1070,6 +1497,11 @@ function Test-SupportsNoScriptlet {
     if ($ArgumentList.Count -eq 0) {
         return $false
     }
+    foreach ($argument in $ArgumentList) {
+        if ($argument -ceq '--print' -or $argument -cmatch '^-[^-]*p') {
+            return $false
+        }
+    }
 
     $selector = $ArgumentList[0]
     if ($selector -cin @('--sync', '--remove', '--upgrade')) {
@@ -1175,19 +1607,47 @@ function Compare-SharedPacmanState {
     )
 
     $beforeComparable = [ordered]@{
-        sharedRoot = $Before.sharedRoot
-        pacmanLog = $Before.pacmanLog
-        localDatabase = $Before.localDatabase
-        protectedRoot = $Before.protectedRoot
-        toolTrees = $Before.toolTrees
-    } | ConvertTo-Json -Depth 8 -Compress
+        systemRoot = [ordered]@{
+            sharedRoot = $Before.systemRoot.sharedRoot
+            pacmanLog = $Before.systemRoot.pacmanLog
+            localDatabase = $Before.systemRoot.localDatabase
+            protectedRoot = $Before.systemRoot.protectedRoot
+            toolTrees = $Before.systemRoot.toolTrees
+        }
+        configuredRoot = if ($null -eq $Before.configuredRoot) {
+            $null
+        }
+        else {
+            [ordered]@{
+                sharedRoot = $Before.configuredRoot.sharedRoot
+                pacmanLog = $Before.configuredRoot.pacmanLog
+                localDatabase = $Before.configuredRoot.localDatabase
+                protectedRoot = $Before.configuredRoot.protectedRoot
+                toolTrees = $Before.configuredRoot.toolTrees
+            }
+        }
+    } | ConvertTo-Json -Depth 10 -Compress
     $afterComparable = [ordered]@{
-        sharedRoot = $After.sharedRoot
-        pacmanLog = $After.pacmanLog
-        localDatabase = $After.localDatabase
-        protectedRoot = $After.protectedRoot
-        toolTrees = $After.toolTrees
-    } | ConvertTo-Json -Depth 8 -Compress
+        systemRoot = [ordered]@{
+            sharedRoot = $After.systemRoot.sharedRoot
+            pacmanLog = $After.systemRoot.pacmanLog
+            localDatabase = $After.systemRoot.localDatabase
+            protectedRoot = $After.systemRoot.protectedRoot
+            toolTrees = $After.systemRoot.toolTrees
+        }
+        configuredRoot = if ($null -eq $After.configuredRoot) {
+            $null
+        }
+        else {
+            [ordered]@{
+                sharedRoot = $After.configuredRoot.sharedRoot
+                pacmanLog = $After.configuredRoot.pacmanLog
+                localDatabase = $After.configuredRoot.localDatabase
+                protectedRoot = $After.configuredRoot.protectedRoot
+                toolTrees = $After.configuredRoot.toolTrees
+            }
+        }
+    } | ConvertTo-Json -Depth 10 -Compress
     return $beforeComparable -ceq $afterComparable
 }
 
@@ -1219,6 +1679,90 @@ function Open-LockedReadFile {
     }
 }
 
+function Get-PrivatePacmanState {
+    param(
+        [Parameter(Mandatory)]
+        [PrivatePacmanContext] $Context
+    )
+
+    $owners = [ordered]@{}
+    foreach ($path in @(
+            $Context.Root
+            $Context.DbPath
+            $Context.CacheDir
+            (Split-Path -Parent $Context.LogFile)
+            (Split-Path -Parent $Context.ConfigFile)
+            $Context.HookDir
+            $Context.GpgDir
+            $Context.EvidenceDir
+            (Split-Path -Parent $Context.PacmanPath)
+        ) | Sort-Object -Unique) {
+        $owners[$path] = (Get-Acl -LiteralPath $path -ErrorAction Stop).Owner
+    }
+
+    return [ordered]@{
+        root = Get-TreeManifest -Path $Context.Root -OmitManifest -MetadataOnly
+        localDatabase = Get-TreeManifest -Path $Context.DbPath -OmitManifest -MetadataOnly
+        cache = Get-TreeManifest -Path $Context.CacheDir -OmitManifest -MetadataOnly
+        owners = $owners
+    }
+}
+
+function Get-FileLength {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Path
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return [long]0
+    }
+    return (Get-Item -LiteralPath $Path -Force -ErrorAction Stop).Length
+}
+
+function Assert-NoPacmanLogFailure {
+    param(
+        [Parameter(Mandatory)]
+        [string] $LogFile,
+
+        [Parameter(Mandatory)]
+        [long] $StartLength
+    )
+
+    if (-not (Test-Path -LiteralPath $LogFile -PathType Leaf)) {
+        return
+    }
+    $stream = [System.IO.File]::Open(
+        $LogFile,
+        [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::Read,
+        [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete
+    )
+    try {
+        if ($stream.Length -le $StartLength) {
+            return
+        }
+        [void]$stream.Seek($StartLength, [System.IO.SeekOrigin]::Begin)
+        $reader = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::UTF8, $true, 4096, $true)
+        try {
+            $newLogContent = $reader.ReadToEnd()
+        }
+        finally {
+            $reader.Dispose()
+        }
+    }
+    finally {
+        $stream.Dispose()
+    }
+
+    $failurePattern = @'
+(?im)^(?!.*\[PACMAN\]\s+Running\s).*\[(?:ALPM|PACMAN|ALPM-SCRIPTLET)\]\s+(?:error:|(?:transaction|file operation)\s+(?:failed|failure)\b|failed to (?:commit|install|upgrade|remove|unlink|rename|write|open)\b|could not (?:commit|install|upgrade|remove|unlink|rename|write|open)\b|cannot (?:commit|install|upgrade|remove|unlink|rename|write|open)\b)
+'@.Trim()
+    if ($newLogContent -match $failurePattern) {
+        throw "Pacman logged a file or transaction failure despite its process exit code: '$LogFile'."
+    }
+}
+
 function Invoke-PrivatePacman {
     [CmdletBinding()]
     [OutputType([PrivatePacmanResult])]
@@ -1239,11 +1783,16 @@ function Invoke-PrivatePacman {
     Assert-NoIsolationOverrides -ArgumentList $ArgumentList
     $operationKind = Get-PacmanOperationKind -ArgumentList $ArgumentList
     if ($operationKind -eq [PacmanOperationKind]::Mutating) {
+        if ([string]::IsNullOrWhiteSpace($Context.PrivatePacmanSeed) -or
+            [string]::IsNullOrWhiteSpace($Context.SeedManifestHash) -or
+            [string]::IsNullOrWhiteSpace($Context.PacmanHash) -or
+            [string]::IsNullOrWhiteSpace($Context.PacmanIdentity)) {
+            throw 'Mutating operations require constructor-established private pacman seed provenance.'
+        }
         if (-not (Test-PathWithin -Path $Context.PacmanPath -Parent $Context.Root)) {
             throw 'Mutating operations require PacmanPath itself to be inside the private root.'
         }
         Assert-RootSentinel -Context $Context
-        Assert-NoEscapingReparsePoint -Root $Context.Root
         Assert-EmptyPacmanHooks -Context $Context
     }
 
@@ -1293,10 +1842,22 @@ function Invoke-PrivatePacman {
     }
 
     $before = $null
+    $privateBefore = $null
+    $privateLogStart = Get-FileLength -Path $Context.LogFile
+    $protectedMonitors = @()
+    $protectedRootChanges = $null
     if ($operationKind -eq [PacmanOperationKind]::Mutating) {
-        $before = Get-SharedPacmanState `
-            -SharedRoot $Context.SharedRoot `
-            -ToolTreePaths $Context.SharedToolTreePaths
+        try {
+            $before = Get-ProtectedPacmanState -Context $Context
+            $privateBefore = Get-PrivatePacmanState -Context $Context
+            $protectedMonitors = @(Start-ProtectedRootMonitors -Context $Context)
+        }
+        catch {
+            if ($protectedMonitors.Count -ne 0) {
+                [void](Stop-ProtectedRootMonitors -Monitor $protectedMonitors)
+            }
+            throw
+        }
     }
 
     $transactionId = [guid]::NewGuid().ToString('N')
@@ -1307,6 +1868,9 @@ function Invoke-PrivatePacman {
     $lockedDirectories = @()
     $process = $null
     try {
+        if ($operationKind -eq [PacmanOperationKind]::Mutating) {
+            Assert-NoEscapingReparsePoint -Root $Context.Root
+        }
         $directoryPaths = @(
             $Context.Root
             $Context.DbPath
@@ -1316,14 +1880,7 @@ function Invoke-PrivatePacman {
             $Context.HookDir
             $Context.GpgDir
             $Context.EvidenceDir
-        ) + @(
-            Get-ChildItem `
-                -LiteralPath $Context.Root `
-                -Directory `
-                -Force `
-                -Recurse `
-                -ErrorAction Stop |
-                Select-Object -ExpandProperty FullName
+            (Split-Path -Parent $Context.PacmanPath)
         )
         $lockedDirectories = @(Open-LockedDirectories -DirectoryPath $directoryPaths)
         $configLock = Open-LockedReadFile -Path $Context.ConfigFile -Name 'Pacman config'
@@ -1338,7 +1895,6 @@ function Invoke-PrivatePacman {
         Assert-ContextIsolation -Context $Context
         Assert-LockedDirectoryIdentity -DirectoryLock $lockedDirectories
         if ($operationKind -eq [PacmanOperationKind]::Mutating) {
-            Assert-NoEscapingReparsePoint -Root $Context.Root
             Assert-EmptyPacmanHooks -Context $Context
         }
 
@@ -1364,6 +1920,7 @@ function Invoke-PrivatePacman {
         $process.StandardInput.Close()
         $process.WaitForExit()
         $exitCode = $process.ExitCode
+        Assert-NoPacmanLogFailure -LogFile $Context.LogFile -StartLength $privateLogStart
 
         Assert-ContextIsolation -Context $Context
         Assert-LockedDirectoryIdentity -DirectoryLock $lockedDirectories
@@ -1388,10 +1945,37 @@ function Invoke-PrivatePacman {
     }
 
     $after = $null
+    $privateAfter = $null
+    $postCaptureErrors = [System.Collections.Generic.List[string]]::new()
     if ($operationKind -eq [PacmanOperationKind]::Mutating) {
-        $after = Get-SharedPacmanState `
-            -SharedRoot $Context.SharedRoot `
-            -ToolTreePaths $Context.SharedToolTreePaths
+        try {
+            $protectedRootChanges = Stop-ProtectedRootMonitors -Monitor $protectedMonitors
+            foreach ($rootChanges in @($protectedRootChanges.Values)) {
+                if ($null -ne $rootChanges.captureError) {
+                    $postCaptureErrors.Add(
+                        "Protected-root monitor capture failed: $($rootChanges.captureError)"
+                    )
+                }
+            }
+        }
+        catch {
+            $postCaptureErrors.Add("Protected-root monitor shutdown failed: $($_.Exception)")
+        }
+        finally {
+            $protectedMonitors = @()
+        }
+        try {
+            $after = Get-ProtectedPacmanState -Context $Context
+        }
+        catch {
+            $postCaptureErrors.Add("Protected pacman state capture failed: $($_.Exception)")
+        }
+        try {
+            $privateAfter = Get-PrivatePacmanState -Context $Context
+        }
+        catch {
+            $postCaptureErrors.Add("Private pacman state capture failed: $($_.Exception)")
+        }
     }
 
     $evidence = [ordered]@{
@@ -1406,18 +1990,39 @@ function Invoke-PrivatePacman {
         invocationError = if ($null -eq $invocationError) { $null } else { $invocationError.ToString() }
         sharedStateBefore = $before
         sharedStateAfter = $after
+        privateStateBefore = $privateBefore
+        privateStateAfter = $privateAfter
+        protectedRootChanges = $protectedRootChanges
+        postCaptureErrors = @($postCaptureErrors)
     }
     $evidence | ConvertTo-Json -Depth 10 |
         Set-Content -LiteralPath $evidenceFile -Encoding utf8 -ErrorAction Stop
 
-    if ($null -ne $before -and -not (Compare-SharedPacmanState -Before $before -After $after)) {
+    if ($null -ne $before -and $null -ne $after -and
+        -not (Compare-SharedPacmanState -Before $before -After $after)) {
         throw "Shared MSYS2 state changed during private pacman transaction. Evidence: '$evidenceFile'. No rollback was attempted."
+    }
+    if ($null -ne $protectedRootChanges) {
+        foreach ($rootChanges in @($protectedRootChanges.Values)) {
+            if ($rootChanges.overflowed -or $rootChanges.changeCount -ne 0) {
+                $firstChange = Get-ProtectedRootChangeSummary -RootChanges $rootChanges
+                throw "Protected MSYS2 root changed during private pacman transaction ('$firstChange'). Evidence: '$evidenceFile'. No rollback was attempted."
+            }
+        }
+    }
+    if ($postCaptureErrors.Count -ne 0) {
+        throw "Post-transaction evidence capture failed. Evidence: '$evidenceFile'."
     }
     if ($null -ne $invocationError) {
         throw $invocationError
     }
     if ($exitCode -ne 0) {
         throw "Pacman exited with code $exitCode. Evidence: '$evidenceFile'."
+    }
+    if ($null -ne $privateBefore -and
+        (($privateBefore.owners | ConvertTo-Json -Compress) -cne
+            ($privateAfter.owners | ConvertTo-Json -Compress))) {
+        throw "Private pacman invariant ownership changed during transaction. Evidence: '$evidenceFile'."
     }
 
     $result = [PrivatePacmanResult]::new()

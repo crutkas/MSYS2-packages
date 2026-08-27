@@ -92,12 +92,35 @@ try {
 '@ | Set-Content -LiteralPath (Join-Path $recorderProject 'PacmanArgvRecorder.csproj') -Encoding utf8
     @'
 using System;
+using System.Diagnostics;
 using System.IO;
+using System.Threading;
 
 public static class PacmanArgvRecorder
 {
     public static int Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--delayed-write")
+        {
+            Thread.Sleep(100);
+            File.AppendAllText(args[1], "delayed drift" + Environment.NewLine);
+            return 0;
+        }
+        if (args.Length == 4 && args[0] == "--hold-lock")
+        {
+            using (FileStream stream = new FileStream(
+                args[1], FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                File.WriteAllText(args[2], "locked");
+                DateTime deadline = DateTime.UtcNow.AddSeconds(30);
+                while (!File.Exists(args[3]) && DateTime.UtcNow < deadline)
+                {
+                    Thread.Sleep(10);
+                }
+            }
+            return 0;
+        }
+
         File.WriteAllLines(Environment.GetEnvironmentVariable("PACMAN_ARG_RECORD"), args);
 
         string stdin = Console.In.ReadToEnd();
@@ -128,14 +151,66 @@ public static class PacmanArgvRecorder
         TryDirectoryWrite(
             Environment.GetEnvironmentVariable("PACMAN_WRITE_DIRECTORY"),
             Environment.GetEnvironmentVariable("PACMAN_DIRECTORY_WRITE_RECORD"));
+        TryDirectoryDelete(
+            Environment.GetEnvironmentVariable("PACMAN_DELETE_DIRECTORY"),
+            Environment.GetEnvironmentVariable("PACMAN_DIRECTORY_DELETE_RECORD"));
+
+        string privateLogLine = Environment.GetEnvironmentVariable("PACMAN_PRIVATE_LOG_LINE");
+        if (!String.IsNullOrEmpty(privateLogLine))
+        {
+            string logPath = FindOptionValue(args, "--logfile");
+            File.AppendAllText(logPath, privateLogLine + Environment.NewLine);
+        }
 
         string driftLog = Environment.GetEnvironmentVariable("PACMAN_DRIFT_LOG");
         if (!String.IsNullOrEmpty(driftLog))
         {
             File.AppendAllText(driftLog, "drift" + Environment.NewLine);
         }
+        StartDelayedWrite(Environment.GetEnvironmentVariable("PACMAN_DELAYED_DRIFT_LOG"));
+        StartFileLock(
+            Environment.GetEnvironmentVariable("PACMAN_HOLD_FILE"),
+            Environment.GetEnvironmentVariable("PACMAN_HOLD_FILE_RECORD"),
+            Environment.GetEnvironmentVariable("PACMAN_HOLD_FILE_RELEASE"));
 
         return Int32.Parse(Environment.GetEnvironmentVariable("PACMAN_EXIT_CODE") ?? "0");
+    }
+
+    private static void StartDelayedWrite(string path)
+    {
+        if (String.IsNullOrEmpty(path))
+        {
+            return;
+        }
+        ProcessStartInfo info = new ProcessStartInfo(Environment.ProcessPath);
+        info.UseShellExecute = false;
+        info.ArgumentList.Add("--delayed-write");
+        info.ArgumentList.Add(path);
+        Process.Start(info);
+    }
+
+    private static void StartFileLock(string path, string record, string release)
+    {
+        if (String.IsNullOrEmpty(path))
+        {
+            return;
+        }
+        ProcessStartInfo info = new ProcessStartInfo(Environment.ProcessPath);
+        info.UseShellExecute = false;
+        info.ArgumentList.Add("--hold-lock");
+        info.ArgumentList.Add(path);
+        info.ArgumentList.Add(record);
+        info.ArgumentList.Add(release);
+        Process child = Process.Start(info);
+        DateTime deadline = DateTime.UtcNow.AddSeconds(5);
+        while (!File.Exists(record) && !child.HasExited && DateTime.UtcNow < deadline)
+        {
+            Thread.Sleep(10);
+        }
+        if (!File.Exists(record))
+        {
+            throw new IOException("Child file lock did not start.");
+        }
     }
 
     private static void TryMutation(string path, string record)
@@ -199,12 +274,50 @@ public static class PacmanArgvRecorder
             File.WriteAllText(record, error.GetType().Name);
         }
     }
+
+    private static void TryDirectoryDelete(string path, string record)
+    {
+        if (String.IsNullOrEmpty(path))
+        {
+            return;
+        }
+
+        try
+        {
+            Directory.Delete(path, true);
+            File.WriteAllText(record, "deleted");
+        }
+        catch (Exception error)
+        {
+            File.WriteAllText(record, error.GetType().Name);
+        }
+    }
+
+    private static string FindOptionValue(string[] args, string option)
+    {
+        for (int index = 0; index < args.Length - 1; index++)
+        {
+            if (String.Equals(args[index], option, StringComparison.Ordinal))
+            {
+                return args[index + 1];
+            }
+        }
+        throw new InvalidOperationException("Missing option " + option);
+    }
 }
 '@ | Set-Content -LiteralPath (Join-Path $recorderProject 'Program.cs') -Encoding utf8
     & dotnet build $recorderProject -c Release --nologo --verbosity quiet
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $fakePacman -PathType Leaf)) {
         throw 'Unable to compile native pacman argv recorder.'
     }
+    $defaultSeed = Join-Path $testRoot 'default-private-pacman-seed'
+    $defaultSeedBin = Join-Path $defaultSeed 'usr\bin'
+    New-Item -ItemType Directory -Path $defaultSeedBin -Force | Out-Null
+    Get-ChildItem -LiteralPath (Split-Path -Parent $fakePacman) -File |
+        Copy-Item -Destination $defaultSeedBin
+    $sharedPacmanDir = Join-Path $sharedRoot 'usr\bin'
+    New-Item -ItemType Directory -Path $sharedPacmanDir -Force | Out-Null
+    Copy-Item -LiteralPath $fakePacman -Destination (Join-Path $sharedPacmanDir 'pacman.exe')
 
     function New-TestContext {
         param(
@@ -228,6 +341,7 @@ public static class PacmanArgvRecorder
             RepositoryRoot = $repositoryRoot
             SessionId = "session-$Name"
             SharedRoot = $sharedRoot
+            PrivatePacmanSeed = $defaultSeed
         }
         foreach ($key in $Override.Keys) {
             $parameters[$key] = $Override[$key]
@@ -236,10 +350,6 @@ public static class PacmanArgvRecorder
             $parameters.PacmanPath = Join-Path $parameters.Root 'usr\bin\PacmanArgvRecorder.exe'
         }
         $context = New-PrivatePacmanContext @parameters
-        if (-not $Override.ContainsKey('PacmanPath')) {
-            Get-ChildItem -LiteralPath (Split-Path -Parent $fakePacman) -File |
-                Copy-Item -Destination (Split-Path -Parent $context.PacmanPath)
-        }
         return $context
     }
 
@@ -550,8 +660,10 @@ public static class PacmanArgvRecorder
         Assert-True ($result.OperationKind.ToString() -eq 'Mutating') '-Sw was not classified mutating.'
         Assert-True ($null -ne $evidence.sharedStateBefore) '-Sw did not capture shared state.'
         Assert-True ($null -ne $evidence.sharedStateAfter) '-Sw did not compare shared state.'
-        Assert-True ($null -ne $evidence.sharedStateBefore.protectedRoot) `
-            '-Sw did not fingerprint the complete shared root.'
+        Assert-True ($null -ne $evidence.sharedStateBefore.systemRoot.protectedRoot) `
+            '-Sw did not fingerprint canonical C:\msys64.'
+        Assert-True ($null -ne $evidence.sharedStateBefore.configuredRoot.protectedRoot) `
+            '-Sw did not fingerprint the configured protected root.'
         $arguments = Get-Content -LiteralPath $env:PACMAN_ARG_RECORD
         Assert-True ('--noscriptlet' -in $arguments) '-Sw did not disable scriptlets.'
         Assert-True (
@@ -627,6 +739,86 @@ public static class PacmanArgvRecorder
         Assert-True (
             (Get-Content -LiteralPath $context.ConfigFile -Raw) -notmatch 'Include'
         ) 'Seed overwrote the sealed managed config.'
+    }
+
+    Invoke-Test 'constructor rejects seed changes during copy' {
+        $seed = Join-Path $testRoot 'changing-private-pacman-seed'
+        $seedBin = Join-Path $seed 'usr\bin'
+        $payload = Join-Path $seed 'payload'
+        New-Item -ItemType Directory -Path $seedBin, $payload -Force | Out-Null
+        Get-ChildItem -LiteralPath (Split-Path -Parent $fakePacman) -File |
+            Copy-Item -Destination $seedBin
+        $delayFile = Join-Path $payload 'a-delay.bin'
+        $changingFile = Join-Path $payload 'z-changing.txt'
+        $seedStream = [System.IO.File]::Create($delayFile)
+        try {
+            $seedStream.SetLength(64MB)
+        }
+        finally {
+            $seedStream.Dispose()
+        }
+        Set-Content -LiteralPath $changingFile -Value 'baseline'
+
+        $root = Join-Path $testRoot 'changing-seed-context'
+        $mutatorReady = Join-Path $testRoot 'changing-seed.ready'
+        $mutatorInfo = [System.Diagnostics.ProcessStartInfo]::new()
+        $mutatorInfo.FileName = (Get-Process -Id $PID).Path
+        $mutatorInfo.UseShellExecute = $false
+        $mutatorInfo.ArgumentList.Add('-NoProfile')
+        $mutatorInfo.ArgumentList.Add('-CommandWithArgs')
+        $mutatorInfo.ArgumentList.Add(
+            'param($root,$file,$ready); $ErrorActionPreference = "Stop"; Set-Content -LiteralPath $ready -Value ready; while (-not (Test-Path -LiteralPath $root)) { Start-Sleep -Milliseconds 1 }; for ($attempt = 0; $attempt -lt 1000; $attempt++) { try { Add-Content -LiteralPath $file -Value $attempt; break } catch [System.IO.IOException] { Start-Sleep -Milliseconds 1 } }'
+        )
+        $mutatorInfo.ArgumentList.Add($root)
+        $mutatorInfo.ArgumentList.Add($changingFile)
+        $mutatorInfo.ArgumentList.Add($mutatorReady)
+        $mutatorInfo.CreateNoWindow = $true
+        $mutator = [System.Diagnostics.Process]::Start($mutatorInfo)
+        try {
+            $readyDeadline = [DateTime]::UtcNow.AddSeconds(5)
+            while (-not (Test-Path -LiteralPath $mutatorReady) -and
+                [DateTime]::UtcNow -lt $readyDeadline) {
+                Start-Sleep -Milliseconds 10
+            }
+            Assert-True (Test-Path -LiteralPath $mutatorReady) 'Seed mutator did not start.'
+            Assert-Throws -Pattern 'seed changed during construction|did not copy exactly|being used by another process' -Action {
+                New-TestContext -Name 'changing-seed-context' -Override @{
+                    PrivatePacmanSeed = $seed
+                }
+            }
+        }
+        finally {
+            if (-not $mutator.WaitForExit(5000)) {
+                $mutator.Kill($true)
+                $mutator.WaitForExit()
+            }
+            $mutator.Dispose()
+        }
+    }
+
+    Invoke-Test 'private executable requires constructor seed provenance' {
+        Assert-Throws -Pattern 'constructor-established PrivatePacmanSeed' -Action {
+            New-TestContext -Name 'missing-private-seed' -Override @{
+                PrivatePacmanSeed = ''
+            }
+        }
+    }
+
+    Invoke-Test 'shared pacman hardlink identity is rejected' {
+        $context = New-TestContext -Name 'shared-hardlink'
+        Remove-Item -LiteralPath $context.PacmanPath -Force
+        $sharedPacman = Join-Path $sharedRoot 'usr\bin\pacman.exe'
+        New-Item -ItemType HardLink -Path $context.PacmanPath -Target $sharedPacman | Out-Null
+        $context.PacmanHash = (Get-FileHash -LiteralPath $context.PacmanPath -Algorithm SHA256).Hash
+        $context.PacmanIdentity = [PrivatePacman.NativePath]::GetFileIdentity($context.PacmanPath)
+        $sentinelPath = Join-Path $context.Root '.private-pacman-root.json'
+        $sentinel = Get-Content -LiteralPath $sentinelPath -Raw | ConvertFrom-Json
+        $sentinel.pacmanHash = $context.PacmanHash
+        $sentinel.pacmanIdentity = $context.PacmanIdentity
+        $sentinel | ConvertTo-Json | Set-Content -LiteralPath $sentinelPath -Encoding utf8
+        Assert-Throws -Pattern 'hardlink to a protected shared pacman' -Action {
+            Invoke-PrivatePacman -Context $context -ArgumentList @('-S', 'example')
+        }
     }
 
     Invoke-Test 'package traversal is rejected' {
@@ -814,6 +1006,77 @@ public static class PacmanArgvRecorder
         Remove-Item Env:PACMAN_DIRECTORY_WRITE_RECORD
     }
 
+    Invoke-Test 'mutable package descendants are not no-delete locked' {
+        $context = New-TestContext -Name 'mutable-descendant'
+        $mutableDirectory = Join-Path $context.Root 'usr\share\removable-package-tree'
+        New-Item -ItemType Directory -Path $mutableDirectory -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $mutableDirectory 'owned.file') -Value 'package content'
+        $env:PACMAN_ARG_RECORD = Join-Path $testRoot 'mutable-descendant.args'
+        $env:PACMAN_EXIT_CODE = '0'
+        $env:PACMAN_DELETE_DIRECTORY = $mutableDirectory
+        $env:PACMAN_DIRECTORY_DELETE_RECORD = Join-Path $testRoot 'mutable-descendant.delete'
+        Invoke-PrivatePacman -Context $context -ArgumentList @('-R', 'example') | Out-Null
+        Assert-True (
+            (Get-Content -LiteralPath $env:PACMAN_DIRECTORY_DELETE_RECORD -Raw) -eq 'deleted'
+        ) 'A mutable package descendant was held by a no-delete directory lock.'
+        Remove-Item Env:PACMAN_DELETE_DIRECTORY
+        Remove-Item Env:PACMAN_DIRECTORY_DELETE_RECORD
+    }
+
+    Invoke-Test 'logged file failure invalidates zero exit' {
+        $context = New-TestContext -Name 'logged-failure'
+        $env:PACMAN_ARG_RECORD = Join-Path $testRoot 'logged-failure.args'
+        $env:PACMAN_EXIT_CODE = '0'
+        $env:PACMAN_PRIVATE_LOG_LINE = '[ALPM] error: could not remove stale package file'
+        Assert-Throws -Pattern 'logged a file or transaction failure' -Action {
+            Invoke-PrivatePacman -Context $context -ArgumentList @('-R', 'example')
+        }
+        Remove-Item Env:PACMAN_PRIVATE_LOG_LINE
+    }
+
+    Invoke-Test 'historical private log failures do not fail a query' {
+        $context = New-TestContext -Name 'historical-log-query'
+        Add-Content -LiteralPath $context.LogFile `
+            -Value '[ALPM] error: historical seed failure'
+        $env:PACMAN_ARG_RECORD = Join-Path $testRoot 'historical-log-query.args'
+        $env:PACMAN_EXIT_CODE = '0'
+        $result = Invoke-PrivatePacman -Context $context -ArgumentList @('-Q', 'base')
+        Assert-True ($result.ExitCode -eq 0) 'A historical log failure invalidated a read-only query.'
+    }
+
+    Invoke-Test 'benign pacman log words do not invalidate success' {
+        $context = New-TestContext -Name 'benign-log-words'
+        $env:PACMAN_ARG_RECORD = Join-Path $testRoot 'benign-log-words.args'
+        $env:PACMAN_EXIT_CODE = '0'
+        $env:PACMAN_PRIVATE_LOG_LINE = @"
+[PACMAN] Running 'pacman --root C:\private -S libgpg-error perl-Error'
+[ALPM] installed libgpg-error (1.47-1)
+[ALPM] warning: could not get file information for usr/bin/example
+"@
+        $result = Invoke-PrivatePacman -Context $context -ArgumentList @('-S', 'libgpg-error')
+        Assert-True ($result.ExitCode -eq 0) 'Benign pacman log text caused a false failure.'
+        Remove-Item Env:PACMAN_PRIVATE_LOG_LINE
+    }
+
+    Invoke-Test 'print-only operations omit noscriptlet but remain isolated' {
+        foreach ($arguments in @(
+                @('-Sp', 'example'),
+                @('-Rp', 'example'),
+                @('--sync', '--print', 'example')
+            )) {
+            $context = New-TestContext -Name "print-$([guid]::NewGuid().ToString('N'))"
+            $env:PACMAN_ARG_RECORD = Join-Path $testRoot "$([guid]::NewGuid()).args"
+            $env:PACMAN_EXIT_CODE = '0'
+            $result = Invoke-PrivatePacman -Context $context -ArgumentList $arguments
+            $recorded = Get-Content -LiteralPath $env:PACMAN_ARG_RECORD
+            Assert-True ($result.OperationKind.ToString() -eq 'Mutating') `
+                "Print operation lost mutating isolation: '$($arguments -join ' ')'."
+            Assert-True ('--root' -in $recorded) 'Print operation omitted isolation arguments.'
+            Assert-True ('--noscriptlet' -notin $recorded) `
+                "Print operation received unsupported --noscriptlet: '$($arguments -join ' ')'."
+        }
+    }
+
     Invoke-Test 'nonzero pacman exit is propagated' {
         $context = New-TestContext -Name 'nonzero'
         $env:PACMAN_ARG_RECORD = Join-Path $testRoot 'nonzero.args'
@@ -836,6 +1099,85 @@ public static class PacmanArgvRecorder
         Remove-Item Env:PACMAN_DRIFT_LOG
     }
 
+    Invoke-Test 'shared drift remains the headline on nonzero exit' {
+        $context = New-TestContext -Name 'drift-and-nonzero'
+        $env:PACMAN_ARG_RECORD = Join-Path $testRoot 'drift-and-nonzero.args'
+        $env:PACMAN_EXIT_CODE = '23'
+        $env:PACMAN_DRIFT_LOG = Join-Path $sharedRoot 'var\log\pacman.log'
+        Assert-Throws -Pattern '^Shared MSYS2 state changed' -Action {
+            Invoke-PrivatePacman -Context $context -ArgumentList @('-S', 'example')
+        }
+        Remove-Item Env:PACMAN_DRIFT_LOG
+        $env:PACMAN_EXIT_CODE = '0'
+    }
+
+    Invoke-Test 'watcher drain catches a change after pacman exits' {
+        $context = New-TestContext -Name 'delayed-drift'
+        $env:PACMAN_ARG_RECORD = Join-Path $testRoot 'delayed-drift.args'
+        $env:PACMAN_EXIT_CODE = '0'
+        $env:PACMAN_DELAYED_DRIFT_LOG = Join-Path $sharedRoot 'var\log\pacman.log'
+        Assert-Throws -Pattern 'Shared MSYS2 state changed|Protected MSYS2 root changed' -Action {
+            Invoke-PrivatePacman -Context $context -ArgumentList @('-S', 'example')
+        }
+        Remove-Item Env:PACMAN_DELAYED_DRIFT_LOG
+    }
+
+    Invoke-Test 'empty watcher overflow retains diagnostic summary' {
+        $summary = & (Get-Module PrivatePacman) {
+            Get-ProtectedRootChangeSummary -RootChanges ([pscustomobject]@{
+                    overflowed = $true
+                    changeCount = 0
+                    changes = @()
+                    captureError = $null
+                })
+        }
+        Assert-True ($summary -eq 'WatcherOverflow') `
+            'Empty watcher overflow lost its protected-root diagnostic.'
+    }
+
+    Invoke-Test 'post-capture failure is preserved in transaction evidence' {
+        $toolTree = Join-Path $sharedRoot 'observed-tool-tree'
+        $lockedFile = Join-Path $toolTree 'tool.exe'
+        New-Item -ItemType Directory -Path $toolTree -Force | Out-Null
+        Set-Content -LiteralPath $lockedFile -Value 'tool'
+        $context = New-TestContext -Name 'post-capture-error' -Override @{
+            SharedToolTreePaths = @($toolTree)
+        }
+        $env:PACMAN_ARG_RECORD = Join-Path $testRoot 'post-capture-error.args'
+        $env:PACMAN_EXIT_CODE = '0'
+        $env:PACMAN_HOLD_FILE = $lockedFile
+        $env:PACMAN_HOLD_FILE_RECORD = Join-Path $testRoot 'post-capture-error.lock'
+        $env:PACMAN_HOLD_FILE_RELEASE = Join-Path $testRoot 'post-capture-error.release'
+        try {
+            PrivatePacman\Invoke-PrivatePacman -Context $context -ArgumentList @('-S', 'example') |
+                Out-Null
+            throw 'Expected post-capture failure was not thrown.'
+        }
+        catch {
+            Assert-True ($_.Exception.Message -match
+                "^Post-transaction evidence capture failed\. Evidence: '([^']+)'") `
+                "Unexpected post-capture error: $($_.Exception.Message)"
+            $evidence = Get-Content -LiteralPath $Matches[1] -Raw | ConvertFrom-Json
+            Assert-True (@($evidence.postCaptureErrors).Count -ne 0) `
+                'Post-capture error was omitted from transaction evidence.'
+        }
+        finally {
+            Set-Content -LiteralPath $env:PACMAN_HOLD_FILE_RELEASE -Value release
+        }
+        Remove-Item Env:PACMAN_HOLD_FILE
+        Remove-Item Env:PACMAN_HOLD_FILE_RECORD
+        Remove-Item Env:PACMAN_HOLD_FILE_RELEASE
+    }
+
+    Invoke-Test 'context cannot redirect canonical shared monitoring' {
+        $context = New-TestContext -Name 'redirect-monitoring'
+        $context.SharedRoot = Join-Path $testRoot 'unrelated-monitor'
+        New-Item -ItemType Directory -Path $context.SharedRoot -Force | Out-Null
+        Assert-Throws -Pattern 'Root sentinel|identity set changed' -Action {
+            Invoke-PrivatePacman -Context $context -ArgumentList @('-S', 'example')
+        }
+    }
+
     Invoke-Test 'shared fingerprint includes directory reparse targets' {
         $targetA = Join-Path $sharedRoot 'target-a'
         $targetB = Join-Path $sharedRoot 'target-b'
@@ -850,6 +1192,23 @@ public static class PacmanArgvRecorder
         Assert-True (
             $before.protectedRoot.manifestHash -cne $after.protectedRoot.manifestHash
         ) 'Shared-root fingerprint ignored a directory reparse retarget.'
+        Remove-Item -LiteralPath $link -Force
+    }
+
+    Invoke-Test 'shared fingerprint includes file reparse targets' {
+        $targetA = Join-Path $sharedRoot 'file-target-a'
+        $targetB = Join-Path $sharedRoot 'file-target-b'
+        $link = Join-Path $sharedRoot 'retargetable-file'
+        Set-Content -LiteralPath $targetA -Value 'same content'
+        Set-Content -LiteralPath $targetB -Value 'same content'
+        New-Item -ItemType SymbolicLink -Path $link -Target $targetA | Out-Null
+        $before = Get-SharedPacmanState -SharedRoot $sharedRoot
+        Remove-Item -LiteralPath $link -Force
+        New-Item -ItemType SymbolicLink -Path $link -Target $targetB | Out-Null
+        $after = Get-SharedPacmanState -SharedRoot $sharedRoot
+        Assert-True (
+            $before.protectedRoot.manifestHash -cne $after.protectedRoot.manifestHash
+        ) 'Shared-root fingerprint ignored a file reparse retarget.'
         Remove-Item -LiteralPath $link -Force
     }
 }
@@ -868,6 +1227,13 @@ finally {
     Remove-Item Env:PACMAN_DIRECTORY_LOCK_RECORD -ErrorAction SilentlyContinue
     Remove-Item Env:PACMAN_WRITE_DIRECTORY -ErrorAction SilentlyContinue
     Remove-Item Env:PACMAN_DIRECTORY_WRITE_RECORD -ErrorAction SilentlyContinue
+    Remove-Item Env:PACMAN_DELETE_DIRECTORY -ErrorAction SilentlyContinue
+    Remove-Item Env:PACMAN_DIRECTORY_DELETE_RECORD -ErrorAction SilentlyContinue
+    Remove-Item Env:PACMAN_PRIVATE_LOG_LINE -ErrorAction SilentlyContinue
+    Remove-Item Env:PACMAN_DELAYED_DRIFT_LOG -ErrorAction SilentlyContinue
+    Remove-Item Env:PACMAN_HOLD_FILE -ErrorAction SilentlyContinue
+    Remove-Item Env:PACMAN_HOLD_FILE_RECORD -ErrorAction SilentlyContinue
+    Remove-Item Env:PACMAN_HOLD_FILE_RELEASE -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $testRoot) {
         Remove-Item -LiteralPath $testRoot -Recurse -Force
     }
