@@ -281,6 +281,25 @@ jobs:
           $script = $script.Replace('__BUILDROOT__', $buildRoot)
           & $bash --login -lc $script
 
+      - name: Assert ncurses patch byte hashes
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-native-arm64-ncurses') }}
+        shell: pwsh
+        run: |
+          $buildRoot = '${{ steps.facts.outputs.drive }}\_'
+          $expected = @{
+            'mingw-w64-cross-msysarm64-ncurses\ncurses-6.6-msys-winconpty.patch' = 'ab4ec7b8320128c3113b23539aef4229430680df7f5c9126570a4ba396ceb5a6'
+            'mingw-w64-cross-msysarm64-ncurses\ncurses-6.6-msys-sleep-windows.patch' = '243d2714abedf7d693acead1595983fb0204f482bf31383adf45afe78ccafcae'
+            'mingw-w64-cross-msysarm64-ncurses\ncurses-6.6-msys-mkdir-mode.patch' = '6894422dcb3b0079f48c22a1f6aebe479d75213961a9a1aec6d00bd6348eac77'
+            'mingw-w64-cross-msysarm64-ncurses\ncurses-6.6-msys-widechars.patch' = '1d0abaf024fb9e382e1f11013f47a42697c07273195bec0f3bdd1f281b064ae0'
+          }
+          foreach ($entry in $expected.GetEnumerator()) {
+            $path = Join-Path $buildRoot $entry.Key
+            $actual = (Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant()
+            if ($actual -ne $entry.Value) {
+              throw "SHA-256 mismatch for $($entry.Key): expected $($entry.Value) got $actual"
+            }
+          }
+
       - name: Seed MSYS w32api runtime dependency
         if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-native-arm64-ncurses') }}
         shell: pwsh
