@@ -111,6 +111,8 @@ build() {
 
   make
   make DESTDIR="${_dest}" install
+  "${_toolroot}/ar.exe" sD "${_dest}/usr/lib/libcrypt.a"
+  "${_toolroot}/ar.exe" sD "${_dest}/usr/lib/libcrypt.dll.a"
 }
 
 check() {
