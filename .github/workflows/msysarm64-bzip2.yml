@@ -455,7 +455,9 @@ jobs:
           $compressed = "$input.bz2"
           $output = "$input.out"
           $pipeline = "$input.pipeline"
-          Push-Location $bin
+          $bzip2Exe = Join-Path $bin 'bzip2.exe'
+          $bunzip2Exe = Join-Path $bin 'bunzip2.exe'
+          Push-Location $evidence
           try {
             & $env:ComSpec /d /c `
               "`"bzip2.exe`" -c < `"$input`" > `"$compressed`""
@@ -467,26 +469,28 @@ jobs:
               "type `"$input`" | `"bzip2.exe`" -c | `"bzip2.exe`" -dc > `"$pipeline`""
             if ($LASTEXITCODE -ne 0) { throw 'pipeline roundtrip failed' }
 
-            $fileMode = Join-Path $evidence 'file-mode.bin'
+            $fileModeName = 'file-mode.bin'
+            $fileMode = Join-Path $evidence $fileModeName
             Copy-Item $input $fileMode
-            & .\bzip2.exe -k -f $fileMode
+            & $bzip2Exe -k -f $fileModeName
             if ($LASTEXITCODE -ne 0) { throw 'file compression failed' }
             Remove-Item -LiteralPath $fileMode
-            & .\bunzip2.exe -k "$fileMode.bz2"
+            & $bunzip2Exe -k "$fileModeName.bz2"
             if ($LASTEXITCODE -ne 0) { throw 'file decompression failed' }
 
-            $corrupt = Join-Path $evidence 'corrupt.bz2'
+            $corruptName = 'corrupt.bz2'
+            $corrupt = Join-Path $evidence $corruptName
             Copy-Item $compressed $corrupt
             $corruptBytes = [IO.File]::ReadAllBytes($corrupt)
             $corruptIndex = [int][Math]::Floor($corruptBytes.Length / 2)
             $corruptBytes[$corruptIndex] =
               $corruptBytes[$corruptIndex] -bxor 0x40
             [IO.File]::WriteAllBytes($corrupt, $corruptBytes)
-            & .\bzip2.exe -t $corrupt 2>$null
+            & $bzip2Exe -t $corruptName 2>$null
             if ($LASTEXITCODE -eq 0) {
               throw 'CRC corruption was not rejected'
             }
-            & .\bzip2.exe -dc (Join-Path $evidence 'missing.bz2') 2>$null
+            & $bzip2Exe -dc 'missing.bz2' 2>$null
             if ($LASTEXITCODE -eq 0) {
               throw 'missing input was not rejected'
             }
