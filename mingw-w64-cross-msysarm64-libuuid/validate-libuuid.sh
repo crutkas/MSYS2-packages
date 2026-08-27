@@ -371,9 +371,8 @@ if [[ -n "${build_tree}" ]]; then
           "build-${target_name//\//_}"
         ;;
     esac
-    printf '%s\t%s\n' \
+    printf '%s\taarch64\n' \
       "${target_name}" \
-      "$(sha256sum "${target_file}" | awk '{ print $1 }')" \
       >> "${report_dir}/build-tree-audit.tsv"
   done < <(
     find "${build_tree}" -type f \
