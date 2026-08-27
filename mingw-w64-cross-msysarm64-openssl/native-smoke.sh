@@ -21,8 +21,10 @@ export PATH="${bin}:${PATH}"
 export MSYSTEM=MSYS
 export MSYS=winsymlinks:sys
 export MSYS2_ARG_CONV_EXCL='*'
-export OPENSSL_CONF=/usr/ssl/openssl.cnf
-export OPENSSL_MODULES=/usr/lib/ossl-modules
+export OPENSSL_CONF
+OPENSSL_CONF=$(cygpath -w "${root}/usr/ssl/openssl.cnf")
+export OPENSSL_MODULES
+OPENSSL_MODULES=$(cygpath -w "${root}/usr/lib/ossl-modules")
 
 "${dynamic_smoke}"
 "${static_smoke}"
