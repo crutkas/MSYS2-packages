@@ -170,14 +170,10 @@ jobs:
         if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
         shell: pwsh
         run: |
-          $msys2Root = '${{ steps.msys2.outputs.msys2-location }}'
-          $bash = Join-Path $msys2Root 'usr\bin\bash.exe'
-          $script = @'
-set -e
-pacman -Q mingw-w64-cross-msysarm64-headers mingw-w64-cross-msysarm64-runtime mingw-w64-cross-msysarm64-runtime-devel mingw-w64-cross-msysarm64-sysroot mingw-w64-cross-msysarm64-windows-default-manifest mingw-w64-cross-msysarm64-gcc mingw-w64-cross-msysarm64-gcc-libs
-pacman -Dk
-'@
-          & $bash --login -lc $script
+                   $msys2Root = '${{ steps.msys2.outputs.msys2-location }}'
+                   $bash = Join-Path $msys2Root 'usr\bin\bash.exe'
+                   $script = 'set -e; pacman -Q mingw-w64-cross-msysarm64-headers mingw-w64-cross-msysarm64-runtime mingw-w64-cross-msysarm64-runtime-devel mingw-w64-cross-msysarm64-sysroot mingw-w64-cross-msysarm64-windows-default-manifest mingw-w64-cross-msysarm64-gcc mingw-w64-cross-msysarm64-gcc-libs; pacman -Dk'
+                   & $bash --login -lc $script
 
       - name: Move Checkout
         run: |
