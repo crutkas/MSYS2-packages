@@ -5,9 +5,9 @@ _host=x86_64-pc-msys
 _gcc_commit=bd1d77ba35e2820df5387cca5213925adb07a0ee
 _gcc_root=gcc-woarm64-${_gcc_commit}
 _gcc_version=15.0.1
-_runtime_commit=6922c388be93e423c1186f0b58c39380a5ee9e2d
+_runtime_commit=a527ace21c23b763bb96841745f0e2d8cd984f4a
 _runtime_root=msys2-runtime-${_runtime_commit}
-_sysroot_version=3.6.10.r0.g6922c388b
+_sysroot_version=3.6.10.r0.ga527ace21
 export SOURCE_DATE_EPOCH=1786669894
 
 pkgname=mingw-w64-cross-msysarm64-libstdc++-headers
@@ -56,7 +56,7 @@ source=(
   validate-libstdcxx-headers.sh
 )
 sha256sums=('3ab5b2a037d027ab4e69b5597f2a82e77e87bca79ee764381a717b2e8328d060'
-            'f9a6bd4366802d05d43b7c3876fceb92b93b89b172eebb020d48d2fb36389f89'
+            '153aa6ae82a6220176a0a0ce265e1f126e3ce8ee40d717a95dfe906e810a3472'
             '58bbd49450bcfd01be5feb42df19125630314177a022607f1c278e4ac0d374eb'
             'd9f6bcc6cd9657961f9a52be456a04e25df01700a6f20c8450b4aee882023c54'
             'f76d8b6988bf512429efff8454cbc505369138ff6ba1efbb34ef5a2648487452'
