@@ -183,10 +183,15 @@ $cdbCandidates = @(
     'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe'
 )
 $cdb = $cdbCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-$procdump = @(
-    'C:\Sysinternals\procdump.exe',
-    (Get-Command procdump.exe -CommandType Application -ErrorAction SilentlyContinue).Source
-) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+$procdumpCandidates = @('C:\Sysinternals\procdump.exe')
+$procdumpCommand = Get-Command procdump.exe -CommandType Application `
+    -ErrorAction SilentlyContinue
+if ($null -ne $procdumpCommand) {
+    $procdumpCandidates += $procdumpCommand.Source
+}
+$procdump = $procdumpCandidates |
+    Where-Object { Test-Path $_ } |
+    Select-Object -First 1
 @{
     cdb = $cdb
     procdump = $procdump
