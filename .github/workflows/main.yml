@@ -81,7 +81,7 @@ jobs:
         run: |
           $destination = Join-Path $env:RUNNER_TEMP 'cygwinarm64-inputs'
           New-Item -ItemType Directory -Force -Path $destination | Out-Null
-          gh release download cygwinarm64-gcc-static-runtime-20260815 `
+          gh release download cygwinarm64-binutils-pr21-3356eec-20260827 `
             --repo crutkas/MSYS2-packages `
             --pattern 'mingw-w64-cross-cygwinarm64-binutils-*.pkg.tar.zst' `
             --dir $destination
@@ -106,7 +106,7 @@ jobs:
             --dir $destination
 
           $expected = @{
-            'mingw-w64-cross-cygwinarm64-binutils-2.44.50-1-x86_64.pkg.tar.zst' = '8908cb690952788153b60bc4fb659826bbd8a03a26c1073f76c0be7ed6f97518'
+            'mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst' = '3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b'
             'mingw-w64-cross-cygwinarm64-headers-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst' = '5266346cc10b142f871704ce4277699b1a5daa3121dc869990b4bedce69c0611'
             'mingw-w64-cross-cygwinarm64-windows-default-manifest-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst' = 'cc089511fede6042a25f83fcb5903fddeede89ddd9655360741513ee9015e3dc'
             'mingw-w64-cross-cygwinarm64-sysroot-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst' = '4ed8a30f592317bf7e4def6f3c773139f2565b0f8afaedd820f7ee46d33cad20'
@@ -128,7 +128,7 @@ jobs:
         run: |
           $input_dir = Join-Path $env:RUNNER_TEMP 'cygwinarm64-inputs'
           & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -U `
-            "$input_dir\mingw-w64-cross-cygwinarm64-binutils-2.44.50-1-x86_64.pkg.tar.zst" `
+            "$input_dir\mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst" `
             "$input_dir\mingw-w64-cross-cygwinarm64-headers-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst" `
             "$input_dir\mingw-w64-cross-cygwinarm64-windows-default-manifest-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst" `
             "$input_dir\mingw-w64-cross-cygwinarm64-sysroot-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst" `

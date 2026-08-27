@@ -4,7 +4,12 @@
 
 	rc = 0;
 	if (!_nc_is_path_found(path, &statbuf)) {
-	    rc = mkdir(path, 0777);
+-	    rc = mkdir(path
+-#ifndef _NC_WINDOWS_NATIVE
+-		       ,0777
+-#endif
+-		);
++	    rc = mkdir(path, 0777);
 	} else if (_nc_access(path, R_OK | W_OK | X_OK) < 0) {
 	    rc = -1;		/* permission denied */
 	} else if (!(S_ISDIR(statbuf.st_mode))) {

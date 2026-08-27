@@ -57,9 +57,9 @@ sha256sums=(
   'b8544a607dfbeffaba2b087f03b57ed1fa81286afca25df65f61b04b5f3b3738'
   '3107029dfb807e338d34641d78329cd6725c58e6b873352621f4b9611a8380bf'
   'ab4ec7b8320128c3113b23539aef4229430680df7f5c9126570a4ba396ceb5a6'
-  '44bf3518c01098288aeff664a9f536262db30fde0856fe17cd37c03d4c28f2f7'
-  'd676a470c7319e9004f03055d3ce339db0aaab489da7e5282643847e31e5c7f3'
-  '155af0b0fa0c272b47bd8d86382ea876e9a068ad2c93fae22734b1488632c696'
+  '243d2714abedf7d693acead1595983fb0204f482bf31383adf45afe78ccafcae'
+  '6894422dcb3b0079f48c22a1f6aebe479d75213961a9a1aec6d00bd6348eac77'
+  '1d0abaf024fb9e382e1f11013f47a42697c07273195bec0f3bdd1f281b064ae0'
 )
 validpgpkeys=(
   '19882D92DDA4C400C22C0D56CC2AF4472167BE03' # Thomas E. Dickey
@@ -101,19 +101,44 @@ _common_configure_args=(
   --enable-pc-files
   --with-manpage-format=normal
   --with-manpage-aliases
+  --without-cxx-binding
   --enable-echo
   --disable-stripping
 )
+
+_normalize_msys_path() {
+  local _path="$1"
+  local _drive
+  local _rest
+
+  _path="${_path//\\//}"
+  if [[ "${_path}" =~ ^/cygdrive/([A-Za-z])/(.*)$ ]]; then
+    _drive="${BASH_REMATCH[1],,}"
+    _rest="${BASH_REMATCH[2]}"
+    printf '/cygdrive/%s/%s\n' "${_drive}" "${_rest}"
+  elif [[ "${_path}" =~ ^/([A-Za-z])/(.*)$ ]]; then
+    _drive="${BASH_REMATCH[1],,}"
+    _rest="${BASH_REMATCH[2]}"
+    printf '/cygdrive/%s/%s\n' "${_drive}" "${_rest}"
+  elif [[ "${_path}" =~ ^([A-Za-z]):/(.*)$ ]]; then
+    _drive="${BASH_REMATCH[1],,}"
+    _rest="${BASH_REMATCH[2]}"
+    printf '/cygdrive/%s/%s\n' "${_drive}" "${_rest}"
+  else
+    printf '%s\n' "${_path}"
+  fi
+}
 
 build() {
   local helper_build="${srcdir}/build-host"
   local target_build="${srcdir}/build-target"
   local source_prefix="/opt/${_target}"
   local helper_prefix="/usr"
-  local sysroot_root="${ALTROOT:-/opt}"
-  local target_prefix="${sysroot_root}/${_target}"
+  local sysroot_root="$(_normalize_msys_path "${ALTROOT:-/opt}")"
+  local target_prefix="${sysroot_root}/opt/${_target}"
+  local target_specs="${target_prefix}/lib/cygwin-compile-only.specs"
 
-  export PATH="/opt/bin:${PATH}"
+  export PATH="${sysroot_root}/opt/bin:${PATH}"
   export CPPFLAGS="${CPPFLAGS} -D__MINGW_NOTHROW="
   export SOURCE_DATE_EPOCH=1725062400
 
@@ -148,7 +173,7 @@ build() {
     CFLAGS="${CFLAGS:-} --sysroot=${target_prefix}" \
     CXXFLAGS="${CXXFLAGS:-} --sysroot=${target_prefix}" \
     LIBS="${LIBS:-} -lmsys-2.0" \
-    LDFLAGS="${LDFLAGS:-} --sysroot=${target_prefix} -specs=${target_prefix}/lib/cygwin-compile-only.specs -Wl,-u,_pei386_runtime_relocator" \
+    LDFLAGS="${LDFLAGS:-} --sysroot=${target_prefix} -specs=${target_specs} -Wl,-u,_pei386_runtime_relocator" \
       "${srcdir}/${_source_root}/configure" \
       --build="${CHOST}" \
       --host="${_target}" \
@@ -165,8 +190,9 @@ build() {
 
 check() {
   local source_prefix="/opt/${_target}"
-  local sysroot_root="${ALTROOT:-/opt}"
-  local target_prefix="${sysroot_root}/${_target}"
+  local sysroot_root="$(_normalize_msys_path "${ALTROOT:-/opt}")"
+  local target_prefix="${sysroot_root}/opt/${_target}"
+  local target_specs="${target_prefix}/lib/cygwin-compile-only.specs"
   local install_prefix="${srcdir}/dest/opt/${_target}"
   local helper_build="${srcdir}/build-host"
   local target_build="${srcdir}/build-target"
@@ -174,15 +200,27 @@ check() {
   local objdump="${_target}-objdump"
   local ar="${_target}-ar"
 
-  export PATH="/opt/bin:${PATH}"
+  export PATH="${sysroot_root}/opt/bin:${PATH}"
 
   rm -rf "${workdir}"
   mkdir -p "${workdir}"
 
   test -x "${helper_build}/progs/tic.exe"
   test -x "${target_build}/progs/tic.exe"
-  test -x "/opt/bin/${_target}-gcc.exe"
+  test -x "${sysroot_root}/opt/bin/${_target}-gcc.exe"
   test "$("${_target}-gcc" -dumpmachine)" = "${_target}"
+  verbose_argv="$(
+    (
+      set -x
+      "${_target}-gcc" \
+        --sysroot="${target_prefix}" \
+        -specs="${target_specs}" \
+        -### -E -x c /dev/null \
+        -o /dev/null
+    ) 2>&1
+  )"
+  grep -F -- "-specs=${target_specs}" <<<"${verbose_argv}"
+  ! grep -F -- 'C:Users' <<<"${verbose_argv}"
   test -f "${install_prefix}/bin/tic.exe"
   test -f "${install_prefix}/lib/libncursesw.dll.a"
   test -f "${install_prefix}/lib/pkgconfig/ncursesw.pc"
@@ -268,20 +306,20 @@ EOF
         esac
       done
 
-  find "${target_prefix}/lib/pkgconfig" -name '*.pc' -print0 \
+  find "${install_prefix}/lib/pkgconfig" -name '*.pc' -print0 \
     | while IFS= read -r -d '' pc; do
         grep -Fq "prefix=${source_prefix}" "${pc}"
         ! grep -Eq 'x86_64|mingw|cygwin1\.dll' "${pc}"
       done
 
-  find "${target_prefix}/bin" -name '*config' -print0 \
+  find "${install_prefix}/bin" -name '*config' -print0 \
     | while IFS= read -r -d '' config; do
         grep -Fq "${source_prefix}" "${config}"
         ! grep -Eq 'x86_64|mingw|cygwin1\.dll' "${config}"
       done
 
   {
-    cd "${target_prefix}"
+    cd "${install_prefix}"
     find . -type f -print0 | sort -z | xargs -0 sha256sum
   } > "${workdir}/package-manifest.sha256"
 }
@@ -328,7 +366,6 @@ package_mingw-w64-cross-msysarm64-ncurses-devel() {
   cp -f "${target_prefix}/bin"/*-config "${pkgroot}/bin/"
 
   cp -a "${pkgroot}/include/ncursesw" "${pkgroot}/include/ncurses"
-  cp -f "${pkgroot}/include/ncursesw"/*.h "${pkgroot}/include/"
 
   cp -f "${pkgroot}/lib/libncursesw.a" "${pkgroot}/lib/libncurses.a"
   cp -f "${pkgroot}/lib/libncursesw.dll.a" "${pkgroot}/lib/libncurses.dll.a"
@@ -343,11 +380,11 @@ package_mingw-w64-cross-msysarm64-ncurses-devel() {
 
   cp -f "${pkgroot}/lib/pkgconfig/formw.pc" "${pkgroot}/lib/pkgconfig/form.pc"
   cp -f "${pkgroot}/lib/pkgconfig/menuw.pc" "${pkgroot}/lib/pkgconfig/menu.pc"
-  cp -f "${pkgroot}/lib/pkgconfig/ncurses++w.pc" "${pkgroot}/lib/pkgconfig/ncurses++.pc"
+  if [[ -f "${pkgroot}/lib/pkgconfig/ncurses++w.pc" ]]; then
+    cp -f "${pkgroot}/lib/pkgconfig/ncurses++w.pc" "${pkgroot}/lib/pkgconfig/ncurses++.pc"
+  fi
   cp -f "${pkgroot}/lib/pkgconfig/ncursesw.pc" "${pkgroot}/lib/pkgconfig/ncurses.pc"
   cp -f "${pkgroot}/lib/pkgconfig/panelw.pc" "${pkgroot}/lib/pkgconfig/panel.pc"
   cp -f "${pkgroot}/lib/pkgconfig/ticw.pc" "${pkgroot}/lib/pkgconfig/tic.pc"
 
-  install -dm755 "${license_dir}"
-  grep -B 100 '\$Id' "${srcdir}/${_source_root}/README" > "${license_dir}/license.txt"
 }

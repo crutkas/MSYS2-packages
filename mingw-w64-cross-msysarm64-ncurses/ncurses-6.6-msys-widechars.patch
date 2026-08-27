@@ -15,18 +15,12 @@
  /*
   * MinGW has wide-character functions, but they do not work correctly.
   */
-@@ -144,6 +144,7 @@
-  lib_wacs	lib		$(wide)		$(HEADER_DEPS)
-  lib_wunctrl	lib		$(wide)		$(HEADER_DEPS)
-+widechars	lib		$(wide)		$(HEADER_DEPS)
-
- # Extensions to the base library
- @ ext_funcs
 --- a/ncurses/modules
 +++ b/ncurses/modules
-@@ -144,6 +144,7 @@
-  lib_wacs	lib		$(wide)		$(HEADER_DEPS)
-  lib_wunctrl	lib		$(wide)		$(HEADER_DEPS)
+@@ -143,7 +143,8 @@
+ lib_vline_set	lib		$(wide)		$(HEADER_DEPS)
+ lib_wacs	lib		$(wide)		$(HEADER_DEPS)
+ lib_wunctrl	lib		$(wide)		$(HEADER_DEPS)
 +widechars	lib		$(wide)		$(HEADER_DEPS)
 
  # Extensions to the base library
