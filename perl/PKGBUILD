@@ -186,7 +186,7 @@ EOF
 
   export MSYSTEM=CYGWIN
   local configure_log="${probe_dir}/Configure.log"
-  if ! ./Configure -des -Dusethreads \
+  if ! bash -x ./Configure -des -Dusethreads \
   -Doptimize="${CFLAGS}" \
   -Dprefix=/usr \
   -Dvendorprefix=/usr \
