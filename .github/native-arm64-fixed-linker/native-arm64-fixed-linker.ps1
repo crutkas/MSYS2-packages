@@ -234,6 +234,27 @@ public static class NativeArch {
         $scannerSummary += [ordered]@{ name=$file.Name; sha256=(Get-Sha256 $file.FullName); table_present=$finding.table_present; record_count=$finding.record_count; flags=@($finding.flags); result=$finding.result }
     }
     $scannerSummary | ConvertTo-Json -Depth 8 | Set-Content (Join-Path $ReportRoot 'scanner-v2-summary.json')
+    $expectedScannerFlags = [ordered]@{
+        'basic-c.exe' = @()
+        'cxx-runtime.exe' = @(64)
+        'thread-runtime.exe' = @(64, 64)
+        'process-runtime.exe' = @()
+        'lto-bridge.exe' = @()
+    }
+    foreach ($entry in $expectedScannerFlags.GetEnumerator()) {
+        $matches = @($scannerSummary | Where-Object { $_.name -eq $entry.Key })
+        if ($matches.Count -ne 1) {
+            throw "Expected one scanner result for $($entry.Key), got $($matches.Count)"
+        }
+        $actualFlags = @($matches[0].flags | ForEach-Object { [int]$_ })
+        $expectedFlags = @($entry.Value | ForEach-Object { [int]$_ })
+        if (
+            $actualFlags.Count -ne $expectedFlags.Count -or
+            ($actualFlags -join ',') -ne ($expectedFlags -join ',')
+        ) {
+            throw "Scanner flags changed for $($entry.Key): expected $($expectedFlags -join ','), got $($actualFlags -join ',')"
+        }
+    }
 
     $nativeRun = Join-Path $ReportRoot 'native-run'; New-Item -ItemType Directory -Path $nativeRun | Out-Null
     $expectations = [ordered]@{}
@@ -241,7 +262,6 @@ public static class NativeArch {
         $parts = $line -split "`t",2; if ($parts.Count -ne 2) { throw "Invalid native expectation: $line" }; $expectations[$parts[0]]=$parts[1]
     }
     foreach ($name in $expectations.Keys) { Copy-Item (Join-Path $ReportRoot "binaries\$name") $nativeRun }
-    foreach ($name in @('aarch64-near-import.dll','aarch64-far-import.dll')) { Copy-Item (Join-Path $ReportRoot "binaries\$name") $nativeRun }
     foreach ($dll in @((Join-Path $MsysRoot 'opt\aarch64-pc-msys\bin\msys-2.0.dll'),(Join-Path $MsysRoot 'opt\lib\gcc\aarch64-pc-msys\msys-gcc_s-seh-1.dll'),(Join-Path $MsysRoot 'opt\lib\gcc\aarch64-pc-msys\15.0.1\msys-stdc++-6.dll'))) { Copy-Item $dll $nativeRun }
     $peEvidence = foreach ($file in Get-ChildItem $nativeRun -File | Where-Object {$_.Extension -in @('.exe','.dll')}) {
         $machine=Get-PeMachine $file.FullName; if($machine-ne0xaa64){throw "Non-AA64 payload: $($file.Name)"}; [ordered]@{name=$file.Name;machine='0xaa64';sha256=(Get-Sha256 $file.FullName)}
@@ -283,7 +303,7 @@ public static class NativeArch {
             throw "$($entry.Key) missing marker $($entry.Value)"
         }
     }
-    @('candidate-linker-installed-and-traced','zero-pseudo-flags-12-or-21','immutable-a527-runtime','immutable-gcc','dynamic-cxx-thread-constinit','far-map','process','lto','native-result=success') | Set-Content (Join-Path $ReportRoot 'candidate-result.txt')
+    @('candidate-linker-installed-and-traced','zero-pseudo-flags-12-or-21','immutable-a527-runtime','immutable-gcc','dynamic-cxx-thread-constinit','real-stdcout-module-delta>4GiB','process','lto','native-result=success') | Set-Content (Join-Path $ReportRoot 'candidate-result.txt')
   }
   catch { $primaryError = $_ }
 }
