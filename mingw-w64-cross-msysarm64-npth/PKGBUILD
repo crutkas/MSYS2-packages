@@ -103,7 +103,7 @@ check() {
 
   grep -Fq "${_prefix}" "${config_script}"
   grep -Fq "prefix=${_prefix}" "${pcdir}/npth.pc"
-  grep -Fq "libdir=\${prefix}/lib" "${pcdir}/npth.pc"
+  grep -Fq "libdir=\${exec_prefix}/lib" "${pcdir}/npth.pc"
   grep -Fq "includedir=\${prefix}/include" "${pcdir}/npth.pc"
 
   cfg_flags="$("${config_script}" --cflags --libs)"
@@ -165,7 +165,7 @@ EOF
     -o "${srcdir}/npth-smoke.exe"
 
   aarch64-pc-msys-objdump -f "${srcdir}/npth-smoke.exe" \
-    | grep -F "file format pe-aarch64-little"
+    | grep -F "file format pei-aarch64-little"
   aarch64-pc-msys-objdump -p "${srcdir}/npth-smoke.exe" \
     | grep -F "DLL Name: msys-2.0.dll"
   if aarch64-pc-msys-objdump -p "${srcdir}/npth-smoke.exe" \
