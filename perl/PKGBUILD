@@ -204,29 +204,31 @@ EOF
   # Perl's native C99 heuristic still false-negatives on this toolchain even
   # though the explicit ARM64 probe above already validated the compiler,
   # linker, object format, and MSYS import route.
-  if ! bash -x ./Configure -des -Dusethreads \
-  -Doptimize="${CFLAGS}" \
-  -Dprefix=/usr \
-  -Dvendorprefix=/usr \
-    -Dprivlib=/usr/share/perl5/core_perl \
-    -Darchlib=/usr/lib/perl5/core_perl \
-    -Dsitelib=/usr/share/perl5/site_perl \
-    -Dsitearch=/usr/lib/perl5/site_perl \
-    -Dvendorlib=/usr/share/perl5/vendor_perl \
-    -Dvendorarch=/usr/lib/perl5/vendor_perl \
-    -Dscriptdir=/usr/bin/core_perl \
-    -Dsitescript=/usr/bin/site_perl \
-    -Dvendorscript=/usr/bin/vendor_perl \
-    -Dinc_version_list=none \
-    -Dman1ext=1perl -Dman3ext=3perl \
-    -Darchname=${ARCH}-cygwin-threads \
-    -Dmyarchname=${ARCH}-cygwin \
-    -Dlibperl=msys-perl"$(echo "${pkgver%.[0-9]*}" | tr . _)".dll \
-    -Dcc="${perl_config_cc}" -Dld="${perl_config_ld}" \
-    -Dgccversion="${perl_gcc_version}" \
-    -Dgccosandvers="${perl_gcc_version}" \
-    -Accflags="$CFLAGS -fwrapv" \
-    -Ud_setproctitle <<<'y' > "${configure_log}" 2>&1; then
+  if ! (
+    printf 'y\n' | bash -x ./Configure -des -Dusethreads \
+      -Doptimize="${CFLAGS}" \
+      -Dprefix=/usr \
+      -Dvendorprefix=/usr \
+      -Dprivlib=/usr/share/perl5/core_perl \
+      -Darchlib=/usr/lib/perl5/core_perl \
+      -Dsitelib=/usr/share/perl5/site_perl \
+      -Dsitearch=/usr/lib/perl5/site_perl \
+      -Dvendorlib=/usr/share/perl5/vendor_perl \
+      -Dvendorarch=/usr/lib/perl5/vendor_perl \
+      -Dscriptdir=/usr/bin/core_perl \
+      -Dsitescript=/usr/bin/site_perl \
+      -Dvendorscript=/usr/bin/vendor_perl \
+      -Dinc_version_list=none \
+      -Dman1ext=1perl -Dman3ext=3perl \
+      -Darchname=${ARCH}-cygwin-threads \
+      -Dmyarchname=${ARCH}-cygwin \
+      -Dlibperl=msys-perl"$(echo "${pkgver%.[0-9]*}" | tr . _)".dll \
+      -Dcc="${perl_config_cc}" -Dld="${perl_config_ld}" \
+      -Dgccversion="${perl_gcc_version}" \
+      -Dgccosandvers="${perl_gcc_version}" \
+      -Accflags="$CFLAGS -fwrapv" \
+      -Ud_setproctitle
+  ) > "${configure_log}" 2>&1; then
       cat "${configure_log}"
       return 1
     fi
