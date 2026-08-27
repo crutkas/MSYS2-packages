@@ -503,6 +503,7 @@ jobs:
             (
               cd "$transaction_root"
               find . -mindepth 1 \
+                ! -path './var/log/pacman.log' \
                 -printf '%P\t%y\t%m\t%s\t%l\n' |
                 LC_ALL=C sort
             ) > "$output"
@@ -658,6 +659,9 @@ jobs:
           cmp \
             "$audit_dir/owned-payload-after-install.txt" \
             "$audit_dir/owned-payload-after-reinstall.txt"
+          cmp \
+            "$audit_dir/isolated-root-after-install.txt" \
+            "$audit_dir/isolated-root-after-reinstall.txt"
 
           snapshot_shared_db "$audit_dir/shared-db-after.sha256"
           snapshot_shared_log "$audit_dir/shared-log-after.sha256"
