@@ -208,6 +208,27 @@ jobs:
         run: |
           & '.\.ci\private-host-launch.ps1' -Mode Test -LockPath '.\.ci\private-host-lock.json'
 
+  private-host-launch:
+    if: >-
+      ${{
+        github.repository == 'crutkas/MSYS2-packages' &&
+        (github.ref_name == 'crutkas-native-arm64-bash' || github.head_ref == 'crutkas-native-arm64-bash') &&
+        vars.PRIVATE_HOST_LOCK_ADMITTED == '1'
+      }}
+    runs-on: windows-2025
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: tree:0
+          persist-credentials: false
+
+      - name: Production private-host launch
+        shell: pwsh
+        run: |
+          & '.\.ci\private-host-launch.ps1' -Mode Launch -LockPath '.\.ci\private-host-lock.json'
+
   package-grokker:
     if: ${{ github.ref_name != 'crutkas-native-arm64-bash' && github.head_ref != 'crutkas-native-arm64-bash' && !(github.repository == 'crutkas/MSYS2-packages' && github.head_ref == 'crutkas-package-aarch64-static-libgcc') }}
     runs-on: ubuntu-latest

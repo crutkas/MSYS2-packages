@@ -13,6 +13,7 @@ function Assert-Fails {
     [Parameter(Mandatory = $true)]
     [string]$Name
   )
+
   $failed = $false
   try {
     & $Script
@@ -22,10 +23,10 @@ function Assert-Fails {
   } catch {
     $failed = $true
   }
+
   if (-not $failed) {
     throw "$Name did not fail"
   }
-  return $true
 }
 
 function New-FixtureHostPublish {
@@ -35,7 +36,8 @@ function New-FixtureHostPublish {
     [Parameter(Mandatory = $true)]
     [string]$AssemblyName
   )
-  $projectDir = Join-Path $OutDir 'fixture-host'
+
+  $projectDir = Join-Path $OutDir $AssemblyName
   New-Item -ItemType Directory -Force -Path $projectDir | Out-Null
   @'
 <Project Sdk="Microsoft.NET.Sdk">
@@ -50,6 +52,7 @@ function New-FixtureHostPublish {
   @'
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 
 var exe = Process.GetCurrentProcess().MainModule!.FileName!;
@@ -57,46 +60,26 @@ var marker = exe + ".env.txt";
 var payload = new
 {
     EXE = exe,
+    ARGS = Environment.GetCommandLineArgs().Skip(1).ToArray(),
     PATH = Environment.GetEnvironmentVariable("PATH"),
     GIT_EXEC_PATH = Environment.GetEnvironmentVariable("GIT_EXEC_PATH"),
     MSYSTEM = Environment.GetEnvironmentVariable("MSYSTEM"),
     MSYS2_PATH_TYPE = Environment.GetEnvironmentVariable("MSYS2_PATH_TYPE"),
     HOME = Environment.GetEnvironmentVariable("HOME"),
-    TEMP = Environment.GetEnvironmentVariable("TEMP")
+    TEMP = Environment.GetEnvironmentVariable("TEMP"),
+    BASH_ENV = Environment.GetEnvironmentVariable("BASH_ENV"),
+    ENV = Environment.GetEnvironmentVariable("ENV")
 };
 File.WriteAllText(marker, JsonSerializer.Serialize(payload));
 return 37;
 '@ | Set-Content -LiteralPath (Join-Path $projectDir 'Program.cs')
+
   $publishDir = Join-Path $projectDir 'publish'
-& dotnet.exe publish (Join-Path $projectDir 'fixture.csproj') -c Release -o $publishDir -p:AssemblyName=$AssemblyName --nologo | Out-Null
+  & dotnet.exe publish (Join-Path $projectDir 'fixture.csproj') -c Release -o $publishDir -p:AssemblyName=$AssemblyName --nologo | Out-Null
   if ($LASTEXITCODE -ne 0) {
-    throw 'failed to publish fixture console host'
+    throw "failed to publish fixture console host: $AssemblyName"
   }
   return $publishDir
-}
-
-function Copy-PublishedConsoleHost {
-  param(
-    [Parameter(Mandatory = $true)]
-    [string]$SourceDir,
-    [Parameter(Mandatory = $true)]
-    [string]$DestinationDir,
-    [Parameter(Mandatory = $true)]
-    [string]$AssemblyName,
-    [string[]]$ExtraExeNames = @()
-  )
-
-  foreach ($suffix in 'exe', 'dll', 'deps.json', 'runtimeconfig.json', 'pdb') {
-    $source = Join-Path $SourceDir "$AssemblyName.$suffix"
-    if (-not (Test-Path -LiteralPath $source)) {
-      throw "missing published fixture file: $source"
-    }
-    Copy-Item -LiteralPath $source -Destination (Join-Path $DestinationDir "$AssemblyName.$suffix") -Force
-  }
-
-  foreach ($extra in $ExtraExeNames) {
-    Copy-Item -LiteralPath (Join-Path $DestinationDir "$AssemblyName.exe") -Destination (Join-Path $DestinationDir $extra) -Force
-  }
 }
 
 function New-ArchiveFromTree {
@@ -104,24 +87,15 @@ function New-ArchiveFromTree {
     [Parameter(Mandatory = $true)]
     [string]$SourceDir,
     [Parameter(Mandatory = $true)]
-    [string]$ArchivePath
+    [string]$ArchivePath,
+    [Parameter(Mandatory = $true)]
+    [string]$TarPath
   )
 
-  & tar.exe -cf $ArchivePath -C $SourceDir . | Out-Null
-}
-
-function Read-PkgInfo {
-  param([Parameter(Mandatory = $true)][string]$Path)
-  $map = [ordered]@{}
-  foreach ($line in Get-Content -LiteralPath $Path) {
-    if ($line -match '^\s*([^=]+?)\s*=\s*(.*)\s*$') {
-      $key = $Matches[1].Trim()
-      $value = $Matches[2]
-      if (-not $map.Contains($key)) { $map[$key] = @() }
-      $map[$key] += $value
-    }
+  & $TarPath -cf $ArchivePath -C $SourceDir .
+  if ($LASTEXITCODE -ne 0) {
+    throw "failed to create fixture archive: $ArchivePath"
   }
-  $map
 }
 
 function Start-FixtureServer {
@@ -161,14 +135,6 @@ function Start-FixtureServer {
   Start-Job -ScriptBlock $jobScript -ArgumentList $MapFile, $Port
 }
 
-function New-TempPort {
-  $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
-  $listener.Start()
-  $port = ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
-  $listener.Stop()
-  $port
-}
-
 function New-FixturePackageTree {
   param(
     [Parameter(Mandatory = $true)]
@@ -176,7 +142,9 @@ function New-FixturePackageTree {
     [Parameter(Mandatory = $true)]
     [string]$Role,
     [Parameter(Mandatory = $true)]
-    [string]$PublishedDir
+    [string]$HostRoot,
+    [Parameter(Mandatory = $true)]
+    [string]$TarPath
   )
 
   $pkgRoot = Join-Path $Root $Role
@@ -185,9 +153,17 @@ function New-FixturePackageTree {
   New-Item -ItemType Directory -Force -Path (Join-Path $pkgRoot 'usr\share\man\man1') | Out-Null
 
   if ($Role -eq 'bash') {
-    Copy-PublishedConsoleHost -SourceDir $PublishedDir -DestinationDir (Join-Path $pkgRoot 'usr\bin') -AssemblyName 'bash' -ExtraExeNames @('sh.exe', 'pacman.exe', 'cygpath.exe', 'objdump.exe', 'nm.exe')
+    foreach ($tool in @('bash', 'sh', 'pacman', 'cygpath', 'objdump', 'nm', 'tar')) {
+      $publishDir = New-FixtureHostPublish -OutDir (Join-Path $HostRoot $tool) -AssemblyName $tool
+      foreach ($suffix in 'exe', 'dll', 'deps.json', 'runtimeconfig.json', 'pdb') {
+        Copy-Item -LiteralPath (Join-Path $publishDir "$tool.$suffix") -Destination (Join-Path $pkgRoot "usr\bin\$tool.$suffix") -Force
+      }
+    }
   } else {
-    Copy-PublishedConsoleHost -SourceDir $PublishedDir -DestinationDir (Join-Path $pkgRoot 'usr\bin') -AssemblyName 'git'
+    $publishDir = New-FixtureHostPublish -OutDir (Join-Path $HostRoot 'git') -AssemblyName 'git'
+    foreach ($suffix in 'exe', 'dll', 'deps.json', 'runtimeconfig.json', 'pdb') {
+      Copy-Item -LiteralPath (Join-Path $publishDir "git.$suffix") -Destination (Join-Path $pkgRoot "usr\bin\git.$suffix") -Force
+    }
   }
 
   if ($Role -eq 'git') {
@@ -196,20 +172,10 @@ function New-FixturePackageTree {
     Set-Content -LiteralPath (Join-Path $pkgRoot 'usr\share\man\man1\bash.1') -Value '.so man1/bash.1' -NoNewline
   }
 
-  $pkginfo = @(
-    "%NAME%",
-    "%VERSION%",
-    "%DESC%",
-    "%ARCH%",
-    "%DEPENDS%",
-    "%PROVIDES%",
-    "%CONFLICTS%"
-  )
-  if ($Role -eq 'git') {
-    $pkginfo = @(
+  $pkginfo = if ($Role -eq 'git') {
+    @(
       'pkgname = git',
       'pkgver = 2.50.1-1',
-      'pkgrel = 1',
       'pkgdesc = The fast distributed version control system',
       'arch = x86_64',
       'depend = curl',
@@ -230,10 +196,9 @@ function New-FixturePackageTree {
       'conflict = git-core'
     )
   } else {
-    $pkginfo = @(
+    @(
       'pkgname = bash',
       'pkgver = 5.2.037-3',
-      'pkgrel = 3',
       'pkgdesc = The GNU Bourne Again shell',
       'arch = aarch64',
       'provide = sh'
@@ -241,7 +206,7 @@ function New-FixturePackageTree {
   }
   $pkginfo | Set-Content -LiteralPath (Join-Path $pkgRoot '.PKGINFO')
   $archive = Join-Path $Root "$Role.pkg.tar"
-  New-ArchiveFromTree -SourceDir $pkgRoot -ArchivePath $archive
+  New-ArchiveFromTree -SourceDir $pkgRoot -ArchivePath $archive -TarPath $TarPath
   return $archive
 }
 
@@ -263,6 +228,14 @@ function New-FixtureLock {
   $gitHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $GitArchive).Hash.ToLowerInvariant()
   $bashHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $BashArchive).Hash.ToLowerInvariant()
 
+  $lock.schema_version = 1
+  $lock.admission = [pscustomobject]@{
+    kind = 'fixture'
+    state = 'admitted'
+    issued_by = 'fixture-harness'
+    issued_at = '2026-08-27T00:00:00Z'
+  }
+
   $lock.assets.host.git.package = [pscustomobject]@{
     url = "$BaseUrl/git.pkg.tar"
     name = 'git.pkg.tar'
@@ -273,7 +246,6 @@ function New-FixtureLock {
   $lock.assets.host.git.metadata = [pscustomobject]@{
     pkgname = 'git'
     pkgver = '2.50.1-1'
-    pkgrel = '1'
     pkgdesc = 'The fast distributed version control system'
     arch = @('x86_64')
     depends = @('curl', 'libpcre2_8', 'libexpat', 'libintl', 'nano', 'openssh', 'openssl', 'perl-Error', 'perl>=5.14.0', 'perl-Authen-SASL', 'perl-libwww', 'perl-MIME-tools', 'perl-Net-SMTP-SSL', 'perl-TermReadKey')
@@ -290,13 +262,13 @@ function New-FixtureLock {
   $lock.assets.host.bash.metadata = [pscustomobject]@{
     pkgname = 'bash'
     pkgver = '5.2.037-3'
-    pkgrel = '3'
     pkgdesc = 'The GNU Bourne Again shell'
     arch = @('aarch64')
     depends = @()
     provides = @('sh')
     conflicts = @()
   }
+
   $fixtureLock = Join-Path ([System.IO.Path]::GetDirectoryName($BaseLockPath)) 'private-host-lock.fixture.json'
   $lock | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $fixtureLock
   return $fixtureLock
@@ -306,11 +278,12 @@ $root = Join-Path $env:TEMP 'private-host-fixture'
 Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $root | Out-Null
 
-$bashPublish = New-FixtureHostPublish -OutDir (Join-Path $root 'bash-host') -AssemblyName 'bash'
-$gitPublish = New-FixtureHostPublish -OutDir (Join-Path $root 'git-host') -AssemblyName 'git'
+$tarPath = (Get-Command tar.exe -ErrorAction Stop).Source
+$hostRoot = Join-Path $root 'hosts'
+New-Item -ItemType Directory -Force -Path $hostRoot | Out-Null
 
-$bashTar = New-FixturePackageTree -Root $root -Role bash -PublishedDir $bashPublish
-$gitTar = New-FixturePackageTree -Root $root -Role git -PublishedDir $gitPublish
+$bashTar = New-FixturePackageTree -Root $root -Role bash -HostRoot $hostRoot -TarPath $tarPath
+$gitTar = New-FixturePackageTree -Root $root -Role git -HostRoot $hostRoot -TarPath $tarPath
 
 $mapFile = Join-Path $root 'server-map.json'
 @{
@@ -318,14 +291,18 @@ $mapFile = Join-Path $root 'server-map.json'
   'git.pkg.tar' = $gitTar
 } | ConvertTo-Json | Set-Content -LiteralPath $mapFile
 
-$port = New-TempPort
-$server = Start-FixtureServer -MapFile $mapFile -Port $port
+$port = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+$port.Start()
+$listenPort = ([System.Net.IPEndPoint]$port.LocalEndpoint).Port
+$port.Stop()
+$server = Start-FixtureServer -MapFile $mapFile -Port $listenPort
 Start-Sleep -Milliseconds 500
 
-$fixtureLock = New-FixtureLock -BaseLockPath $LockPath -GitArchive $gitTar -BashArchive $bashTar -BaseUrl "http://127.0.0.1:$port"
+$fixtureLock = New-FixtureLock -BaseLockPath $LockPath -GitArchive $gitTar -BashArchive $bashTar -BaseUrl "http://127.0.0.1:$listenPort"
 $privateRoot = Join-Path $root 'private-root'
 
 $baseLock = Get-Content -LiteralPath $LockPath -Raw | ConvertFrom-Json
+if ($baseLock.schema_version -ne 1) { throw 'fixture base lock schema version mismatch' }
 foreach ($tool in 'git', 'bash') {
   foreach ($field in 'url', 'name', 'version', 'bytes', 'sha256') {
     if ($null -ne $baseLock.assets.host.$tool.package.$field) {
@@ -342,37 +319,27 @@ $jRoot = Join-Path $tempParent 'junction-root'
 try {
   New-Item -ItemType Junction -Path $jRoot -Target $jTarget | Out-Null
   Assert-Fails -Name 'junction root rejected' -Script {
-    & pwsh -NoProfile -ExecutionPolicy Bypass -File $LauncherPath -Mode Launch -LockPath $fixtureLock -PrivateRoot $jRoot -TrustedParent $tempParent -BashCommand 'echo should-not-run'
+    & pwsh -NoProfile -ExecutionPolicy Bypass -File $LauncherPath -Mode Launch -LockPath $fixtureLock -PrivateRoot $jRoot -TrustedParent $tempParent -BashCommand 'echo should-not-run' -AllowFixturePackages -TarPath $tarPath
   }
 } finally {
   Remove-Item -LiteralPath $jRoot -Force -Recurse -ErrorAction SilentlyContinue
 }
 
 Assert-Fails -Name 'quoted device path rejected' -Script {
-  & pwsh -NoProfile -ExecutionPolicy Bypass -File $LauncherPath -Mode Launch -LockPath $fixtureLock -PrivateRoot '\\?\C:\msys64' -TrustedParent $tempParent -BashCommand 'echo should-not-run'
+  & pwsh -NoProfile -ExecutionPolicy Bypass -File $LauncherPath -Mode Launch -LockPath $fixtureLock -PrivateRoot '\\?\C:\msys64' -TrustedParent $tempParent -BashCommand 'echo should-not-run' -AllowFixturePackages -TarPath $tarPath
 }
 
 Assert-Fails -Name 'UNC path rejected' -Script {
-  & pwsh -NoProfile -ExecutionPolicy Bypass -File $LauncherPath -Mode Launch -LockPath $fixtureLock -PrivateRoot '\\localhost\c$\msys64' -TrustedParent $tempParent -BashCommand 'echo should-not-run'
+  & pwsh -NoProfile -ExecutionPolicy Bypass -File $LauncherPath -Mode Launch -LockPath $fixtureLock -PrivateRoot '\\localhost\c$\msys64' -TrustedParent $tempParent -BashCommand 'echo should-not-run' -AllowFixturePackages -TarPath $tarPath
 }
 
-$bashScript = Join-Path $root 'bash-fixture.ps1'
-@'
-$exe = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
-$marker = "$exe.env.txt"
-$content = [ordered]@{
-  EXE = $exe
-  PATH = $env:PATH
-  GIT_EXEC_PATH = $env:GIT_EXEC_PATH
-  MSYSTEM = $env:MSYSTEM
-  MSYS2_PATH_TYPE = $env:MSYS2_PATH_TYPE
-  HOME = $env:HOME
-  TEMP = $env:TEMP
+$env:BASH_ENV = 'C:\msys64\etc\bash.bashrc'
+Assert-Fails -Name 'ambient bash env rejected' -Script {
+  & pwsh -NoProfile -ExecutionPolicy Bypass -File $LauncherPath -Mode Launch -LockPath $fixtureLock -PrivateRoot $privateRoot -TrustedParent $root -BashCommand "printf 'hello world'" -AllowFixturePackages -TarPath $tarPath
 }
-$content | ConvertTo-Json -Depth 2 | Set-Content -LiteralPath $marker
-exit 37
-'@ | Set-Content -LiteralPath $bashScript
-$result = & pwsh -NoProfile -ExecutionPolicy Bypass -File $LauncherPath -Mode Launch -LockPath $fixtureLock -PrivateRoot $privateRoot -TrustedParent $root -BashArguments @('-NoProfile', '-File', $bashScript)
+Remove-Item Env:\BASH_ENV -ErrorAction SilentlyContinue
+
+$null = & pwsh -NoProfile -ExecutionPolicy Bypass -File $LauncherPath -Mode Launch -LockPath $fixtureLock -PrivateRoot $privateRoot -TrustedParent $root -BashCommand "printf 'hello world'" -AllowFixturePackages -TarPath $tarPath
 if ($LASTEXITCODE -ne 37) {
   Stop-Job $server | Out-Null
   throw "expected launch exit 37, got $LASTEXITCODE"
@@ -382,6 +349,11 @@ $marker = Get-Content -LiteralPath (Join-Path $privateRoot 'usr\bin\bash.exe.env
 if ($marker.PATH -match 'C:\\msys64') { throw 'shared root leaked into private child environment' }
 if ($marker.GIT_EXEC_PATH -match 'C:\\msys64') { throw 'shared git exec path leaked into private child environment' }
 if ($marker.EXE -notmatch [regex]::Escape($privateRoot)) { throw 'private root not present in child environment' }
+if ($marker.BASH_ENV) { throw 'ambient BASH_ENV leaked into private child environment' }
+if ($marker.ENV) { throw 'ambient ENV leaked into private child environment' }
+if ((@($marker.ARGS) -join "`n") -ne (@('--noprofile', '--norc', '-lc', "printf 'hello world'") -join "`n")) {
+  throw 'default bash -lc argv was not preserved'
+}
 
 Stop-Job $server | Out-Null
 Remove-Job $server | Out-Null
