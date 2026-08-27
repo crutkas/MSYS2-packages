@@ -1,0 +1,481 @@
+name: msysarm64-zlib
+
+on:
+  push:
+    branches:
+      - crutkas-arm64-msys-zlib
+  pull_request:
+    branches:
+      - crutkas-aarch64-gcc-layer
+    paths:
+      - .github/workflows/main.yml
+      - .github/workflows/msysarm64-zlib.yml
+      - .ci/check-aarch64-pseudo-relocs.ps1
+      - mingw-w64-cross-msysarm64-zlib/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: msysarm64-zlib-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SOURCE_DATE_EPOCH: 1703203200
+
+jobs:
+  build:
+    if: >-
+      ${{
+        github.repository == 'crutkas/MSYS2-packages' &&
+        (github.ref_name == 'crutkas-arm64-msys-zlib' ||
+         github.head_ref == 'crutkas-arm64-msys-zlib')
+      }}
+    runs-on: windows-2025
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Snapshot hosted MSYS state before private build
+        shell: pwsh
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP 'zlib-shared-state'
+          & .\mingw-w64-cross-msysarm64-zlib\snapshot-shared-state.ps1 `
+            -Label before `
+            -OutputDirectory $evidence `
+            -SharedRoot 'C:\msys64'
+
+      - name: Materialize immutable private build root
+        id: private
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $rootParent = Join-Path $env:RUNNER_TEMP 'zlib-private-root'
+          $inputs = Join-Path $env:RUNNER_TEMP 'zlib-private-inputs'
+          $evidence = Join-Path $env:RUNNER_TEMP 'zlib-private-evidence'
+          & .\mingw-w64-cross-msysarm64-zlib\bootstrap-private-root.ps1 `
+            -RootParent $rootParent `
+            -InputRoot $inputs `
+            -EvidenceRoot $evidence
+
+          "msys_root=$(Join-Path $rootParent 'msys64')" >> $env:GITHUB_OUTPUT
+          "inputs=$inputs" >> $env:GITHUB_OUTPUT
+          "evidence=$evidence" >> $env:GITHUB_OUTPUT
+
+      - name: Build and audit package split in private root
+        id: package
+        shell: pwsh
+        run: |
+          $msysRoot = '${{ steps.private.outputs.msys_root }}'
+          $inputs = '${{ steps.private.outputs.inputs }}'
+          $privateEvidence = '${{ steps.private.outputs.evidence }}'
+          $output = Join-Path $env:RUNNER_TEMP 'zlib-private-output'
+          New-Item -ItemType Directory -Path $output | Out-Null
+
+          $bash = Join-Path $msysRoot 'usr\bin\bash.exe'
+          $cygpath = Join-Path $msysRoot 'usr\bin\cygpath.exe'
+          $workspace = (& $cygpath -u $env:GITHUB_WORKSPACE).Trim()
+          $inputRoot = (& $cygpath -u (
+            Join-Path $inputs 'toolchain\primary')).Trim()
+          $pacmanConfig = (& $cygpath -u (
+            Join-Path $inputs 'toolchain\private-pacman.conf')).Trim()
+          $outputRoot = (& $cygpath -u $output).Trim()
+          $pwshPath = (& $cygpath -u (
+            (Get-Process -Id $PID).Path)).Trim()
+          $script = @'
+          set -euo pipefail
+          export PATH=/opt/bin:/usr/bin
+          export HOME=/home/build
+          export MSYSTEM=MSYS
+          export MSYS=winsymlinks:sys
+          export TZ=UTC
+          export SOURCE_DATE_EPOCH=1703203200
+          export PSEUDO_RELOC_PWSH="$4"
+          export PACMAN_CONFIG="$5"
+          export PACMAN_GPGDIR=/etc/pacman.d/gnupg
+          workspace=$1
+          input_root=$2
+          output=$3
+          recipe="$workspace/mingw-w64-cross-msysarm64-zlib"
+          /usr/bin/mkdir -p \
+            "$HOME" \
+            "$output/packages" \
+            "$output/logs" \
+            "$output/build"
+
+          cd "$recipe"
+          test "$(/usr/bin/sha256sum "$recipe/mark-adler.asc" |
+            /usr/bin/cut -d" " -f1)" = \
+            1458b5b96dd3904ef1d4cc24d27135dcf3b9abdce4e3689ad58041b482a3bbde
+          /usr/bin/gpg \
+            --batch \
+            --yes \
+            --dearmor \
+            --output "$output/mark-adler.gpg" \
+            "$recipe/mark-adler.asc"
+          fingerprint=$(
+            /usr/bin/gpg --batch --with-colons --show-keys \
+              "$output/mark-adler.gpg" \
+              | /usr/bin/awk -F: '$1 == "fpr" {print $10; exit}'
+          )
+          test "$fingerprint" = 5ED46A6721D365587791E2AA783FCD8E58BCAFBA
+          /usr/bin/makepkg \
+            --verifysource \
+            --skippgpcheck \
+            --nodeps \
+            --noconfirm
+          /usr/bin/gpgv \
+            --keyring "$output/mark-adler.gpg" \
+            "$recipe/zlib-1.3.1.tar.xz.asc" \
+            "$recipe/zlib-1.3.1.tar.xz" \
+            > "$output/gpgv.stdout.txt" \
+            2> "$output/gpgv.stderr.txt"
+          /usr/bin/printf \
+            'fingerprint\t%s\narmored-key\t%s\nbinary-keyring\t%s\nsource\t%s\nsignature\t%s\n' \
+            "$fingerprint" \
+            "$(/usr/bin/sha256sum "$recipe/mark-adler.asc" | /usr/bin/cut -d" " -f1)" \
+            "$(/usr/bin/sha256sum "$output/mark-adler.gpg" | /usr/bin/cut -d" " -f1)" \
+            "$(/usr/bin/sha256sum "$recipe/zlib-1.3.1.tar.xz" | /usr/bin/cut -d" " -f1)" \
+            "$(/usr/bin/sha256sum "$recipe/zlib-1.3.1.tar.xz.asc" | /usr/bin/cut -d" " -f1)" \
+            > "$output/source-signature-identity.tsv"
+          PKGDEST="$output/packages" \
+          LOGDEST="$output/logs" \
+          BUILDDIR="$output/build" \
+            /usr/bin/makepkg \
+              --noconfirm \
+              --noprogressbar \
+              --cleanbuild \
+              --skippgpcheck \
+              --nodeps \
+              --log
+          /usr/bin/bash ./canonicalize-packages.sh \
+            "$output/packages"/*.pkg.tar.zst
+          /usr/bin/rm -rf "$output/lifecycle"
+          PACMAN=/usr/bin/pacman \
+          PACMAN_CONFIG="$PACMAN_CONFIG" \
+          PACMAN_GPGDIR="$PACMAN_GPGDIR" \
+          PSEUDO_RELOC_PWSH="$4" \
+            /usr/bin/bash ./validate-packages.sh \
+              "$output/packages" \
+              "$output/lifecycle" \
+              "$input_root" \
+              "$recipe"
+          '@
+          & $bash --noprofile --norc -c $script -- `
+            $workspace $inputRoot $outputRoot $pwshPath $pacmanConfig
+          if ($LASTEXITCODE -ne 0) {
+            throw "Private zlib build failed: $LASTEXITCODE"
+          }
+
+          & .\mingw-w64-cross-msysarm64-zlib\snapshot-shared-state.ps1 `
+            -Label after `
+            -OutputDirectory $privateEvidence `
+            -SharedRoot $msysRoot
+          foreach ($name in @('db', 'gpg')) {
+            $before = Join-Path `
+              $privateEvidence "shared-$name-before.csv"
+            $after = Join-Path `
+              $privateEvidence "shared-$name-after.csv"
+            $beforeHash = (
+              Get-FileHash -LiteralPath $before -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+            $afterHash = (
+              Get-FileHash -LiteralPath $after -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+            if ($beforeHash -ne $afterHash) {
+              throw "Private $name state changed during build"
+            }
+          }
+          $privateBefore = Get-Content `
+            (Join-Path $privateEvidence 'shared-state-before.json') -Raw |
+            ConvertFrom-Json
+          $privateAfter = Get-Content `
+            (Join-Path $privateEvidence 'shared-state-after.json') -Raw |
+            ConvertFrom-Json
+          if (
+            $privateBefore.pacman_log.bytes -ne
+              $privateAfter.pacman_log.bytes -or
+            $privateBefore.pacman_log.sha256 -ne
+              $privateAfter.pacman_log.sha256
+          ) {
+            throw 'Private pacman log changed during build'
+          }
+
+          $buildReport = Get-ChildItem `
+            -LiteralPath (Join-Path $output 'build') `
+            -Recurse `
+            -Directory `
+            -Filter zlib-report |
+            Select-Object -First 1
+          if (-not $buildReport) {
+            throw 'Private zlib build report is missing'
+          }
+          & .\mingw-w64-cross-msysarm64-zlib\validate-evidence-encoding.ps1 `
+            -Root $buildReport.FullName `
+            -OutputPath (Join-Path $output 'build-evidence-encoding.json')
+          & .\mingw-w64-cross-msysarm64-zlib\validate-evidence-encoding.ps1 `
+            -Root (Join-Path $output 'lifecycle') `
+            -OutputPath (Join-Path $output 'lifecycle-evidence-encoding.json')
+
+          "output=$output" >> $env:GITHUB_OUTPUT
+          "report=$($buildReport.FullName)" >> $env:GITHUB_OUTPUT
+
+      - name: Prove hosted MSYS state remained unchanged
+        shell: pwsh
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP 'zlib-shared-state'
+          & .\mingw-w64-cross-msysarm64-zlib\snapshot-shared-state.ps1 `
+            -Label after `
+            -OutputDirectory $evidence `
+            -SharedRoot 'C:\msys64'
+
+          $pairs = @(
+            @('shared-db-before.csv', 'shared-db-after.csv'),
+            @('shared-gpg-before.csv', 'shared-gpg-after.csv')
+          )
+          foreach ($pair in $pairs) {
+            $before = Join-Path $evidence $pair[0]
+            $after = Join-Path $evidence $pair[1]
+            $beforeHash = (
+              Get-FileHash -LiteralPath $before -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+            $afterHash = (
+              Get-FileHash -LiteralPath $after -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+            if ($beforeHash -ne $afterHash) {
+              throw "Hosted shared state changed: $($pair[0])"
+            }
+          }
+          $beforeState = Get-Content `
+            (Join-Path $evidence 'shared-state-before.json') -Raw |
+            ConvertFrom-Json
+          $afterState = Get-Content `
+            (Join-Path $evidence 'shared-state-after.json') -Raw |
+            ConvertFrom-Json
+          if (
+            $beforeState.pacman_log.bytes -ne $afterState.pacman_log.bytes -or
+            $beforeState.pacman_log.sha256 -ne
+              $afterState.pacman_log.sha256
+          ) {
+            throw 'Hosted shared pacman log changed'
+          }
+
+      - name: Collect and seal build evidence
+        id: collect
+        shell: pwsh
+        run: |
+          $output = '${{ steps.package.outputs.output }}'
+          $report = '${{ steps.package.outputs.report }}'
+          $privateEvidence = '${{ steps.private.outputs.evidence }}'
+          $msysRoot = '${{ steps.private.outputs.msys_root }}'
+          $artifactRoot = Join-Path $env:RUNNER_TEMP 'zlib-artifacts'
+          $packages = Join-Path $artifactRoot 'packages'
+          $validation = Join-Path $artifactRoot 'validation'
+          $native = Join-Path $artifactRoot 'native-inputs'
+          New-Item -ItemType Directory -Path `
+            $artifactRoot, $packages, $validation, $native | Out-Null
+
+          Copy-Item `
+            -LiteralPath (Get-ChildItem (
+              Join-Path $output 'packages\*.pkg.tar.zst')).FullName `
+            -Destination $packages
+          Copy-Item `
+            -LiteralPath (Join-Path $output 'lifecycle\release-SHA256SUMS') `
+            -Destination $packages
+          Copy-Item -LiteralPath $report `
+            -Destination (Join-Path $validation 'build-report') -Recurse
+          Copy-Item -LiteralPath (Join-Path $output 'lifecycle') `
+            -Destination (Join-Path $validation 'lifecycle') -Recurse
+          Copy-Item -LiteralPath $privateEvidence `
+            -Destination (Join-Path $validation 'private-root') -Recurse
+          Copy-Item `
+            -LiteralPath (Join-Path $env:RUNNER_TEMP 'zlib-shared-state') `
+            -Destination (Join-Path $validation 'hosted-shared-state') `
+            -Recurse
+          Copy-Item -LiteralPath (
+            Join-Path $output 'build-evidence-encoding.json'
+          ) -Destination $validation
+          Copy-Item -LiteralPath (
+            Join-Path $output 'lifecycle-evidence-encoding.json'
+          ) -Destination $validation
+          foreach ($name in @(
+            'gpgv.stdout.txt',
+            'gpgv.stderr.txt',
+            'mark-adler.gpg',
+            'source-signature-identity.tsv'
+          )) {
+            Copy-Item -LiteralPath (Join-Path $output $name) `
+              -Destination $validation
+          }
+
+          $nativeFiles = [ordered]@{
+            'pseudo-reloc-cxx.exe' = Join-Path `
+              $report 'scanner-inputs\pseudo-reloc-cxx.exe'
+            'pseudo-reloc-cxx.pseudo-relocs.json' = Join-Path `
+              $report 'pseudo-reloc-cxx.pseudo-relocs.json'
+            'msys-gcc_s-seh-1.dll' = Join-Path `
+              $msysRoot 'opt\lib\gcc\aarch64-pc-msys\msys-gcc_s-seh-1.dll'
+            'msys-stdc++-6.dll' = Join-Path `
+              $msysRoot `
+              'opt\lib\gcc\aarch64-pc-msys\15.0.1\msys-stdc++-6.dll'
+            'native-smoke.ps1' = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              'mingw-w64-cross-msysarm64-zlib\native-smoke.ps1'
+            'seal-evidence.ps1' = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              'mingw-w64-cross-msysarm64-zlib\seal-evidence.ps1'
+            'validate-evidence-encoding.ps1' = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              'mingw-w64-cross-msysarm64-zlib\validate-evidence-encoding.ps1'
+          }
+          $nativeManifest = @("path`tbytes`tsha256")
+          foreach ($entry in $nativeFiles.GetEnumerator()) {
+            if (-not (Test-Path -LiteralPath $entry.Value -PathType Leaf)) {
+              throw "Native input is missing: $($entry.Value)"
+            }
+            $destination = Join-Path $native $entry.Key
+            Copy-Item -LiteralPath $entry.Value -Destination $destination
+            $item = Get-Item -LiteralPath $destination
+            $hash = (
+              Get-FileHash -LiteralPath $destination -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+            $nativeManifest += "$($entry.Key)`t$($item.Length)`t$hash"
+          }
+          [IO.File]::WriteAllText(
+            (Join-Path $native 'SHA256SUMS.tsv'),
+            (($nativeManifest -join "`n") + "`n"),
+            [Text.UTF8Encoding]::new($false)
+          )
+
+          @(
+            'actions/checkout 11d5960a326750d5838078e36cf38b85af677262'
+            'actions/upload-artifact ea165f8d65b6e75b540449e92b4886f43607fa02'
+            'actions/download-artifact d3f86a106a0bac45b974a628896c90dbdf5c8093'
+          ) | Set-Content `
+            -LiteralPath (Join-Path $validation 'action-commits.txt') `
+            -Encoding utf8NoBOM
+
+          & .\mingw-w64-cross-msysarm64-zlib\seal-evidence.ps1 `
+            -Root $validation `
+            -ManifestPath (Join-Path $validation 'EVIDENCE-MANIFEST.tsv') `
+            -SealPath (Join-Path $validation 'EVIDENCE-SEAL.json')
+
+          "artifact_root=$artifactRoot" >> $env:GITHUB_OUTPUT
+
+      - name: Upload package candidates
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: msysarm64-zlib-packages
+          if-no-files-found: error
+          retention-days: 90
+          path: ${{ steps.collect.outputs.artifact_root }}/packages/*
+
+      - name: Upload sealed build validation
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: msysarm64-zlib-validation
+          if-no-files-found: error
+          retention-days: 90
+          include-hidden-files: true
+          path: ${{ steps.collect.outputs.artifact_root }}/validation/**
+
+      - name: Upload bound native inputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: msysarm64-zlib-native-inputs
+          if-no-files-found: error
+          retention-days: 90
+          path: ${{ steps.collect.outputs.artifact_root }}/native-inputs/*
+
+  native-smoke:
+    if: >-
+      ${{
+        github.repository == 'crutkas/MSYS2-packages' &&
+        (github.ref_name == 'crutkas-arm64-msys-zlib' ||
+         github.head_ref == 'crutkas-arm64-msys-zlib')
+      }}
+    needs: build
+    runs-on: windows-11-arm
+
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: msysarm64-zlib-packages
+          path: packages
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: msysarm64-zlib-native-inputs
+          path: native-inputs
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: msysarm64-zlib-validation
+          path: validation
+
+      - name: Execute and attest native ARM64 payload
+        shell: pwsh
+        run: |
+          & .\native-inputs\native-smoke.ps1 `
+            -PackagesDirectory (Resolve-Path .\packages) `
+            -NativeInputsDirectory (Resolve-Path .\native-inputs) `
+            -ValidationDirectory (Resolve-Path .\validation) `
+            -OutputDirectory (Join-Path $env:RUNNER_TEMP 'zlib-native-output')
+
+      - name: Seal durable run evidence
+        id: durable
+        shell: pwsh
+        run: |
+          $durable = Join-Path $env:RUNNER_TEMP 'zlib-durable-evidence'
+          $upload = Join-Path $env:RUNNER_TEMP 'zlib-durable-upload'
+          New-Item -ItemType Directory -Path $durable, $upload | Out-Null
+          Copy-Item -LiteralPath .\packages `
+            -Destination (Join-Path $durable 'packages') -Recurse
+          Copy-Item -LiteralPath .\native-inputs `
+            -Destination (Join-Path $durable 'native-inputs') -Recurse
+          Copy-Item -LiteralPath .\validation `
+            -Destination (Join-Path $durable 'validation') -Recurse
+          Copy-Item `
+            -LiteralPath (Join-Path $env:RUNNER_TEMP 'zlib-native-output') `
+            -Destination (Join-Path $durable 'native-output') -Recurse
+
+          & .\native-inputs\validate-evidence-encoding.ps1 `
+            -Root $durable `
+            -OutputPath (Join-Path $durable 'EVIDENCE-ENCODING.json')
+          & .\native-inputs\seal-evidence.ps1 `
+            -Root $durable `
+            -ManifestPath (Join-Path $durable 'EVIDENCE-MANIFEST.tsv') `
+            -SealPath (Join-Path $durable 'EVIDENCE-SEAL.json')
+
+          Copy-Item `
+            -LiteralPath (Join-Path $durable 'EVIDENCE-MANIFEST.tsv') `
+            -Destination $upload
+          Copy-Item `
+            -LiteralPath (Join-Path $durable 'EVIDENCE-SEAL.json') `
+            -Destination $upload
+          Compress-Archive `
+            -Path (Join-Path $durable '*') `
+            -DestinationPath (Join-Path $upload 'zlib-durable-evidence.zip') `
+            -CompressionLevel Optimal
+          "upload=$upload" >> $env:GITHUB_OUTPUT
+
+      - name: Upload native process evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: msysarm64-zlib-native-smoke
+          if-no-files-found: error
+          retention-days: 90
+          path: ${{ runner.temp }}/zlib-native-output/**
+
+      - name: Upload durable evidence seal
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: msysarm64-zlib-durable-evidence
+          if-no-files-found: error
+          retention-days: 90
+          path: ${{ steps.durable.outputs.upload }}/*

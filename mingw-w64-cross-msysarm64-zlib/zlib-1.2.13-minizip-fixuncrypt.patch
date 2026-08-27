@@ -1,0 +1,8 @@
+--- origsrc/zlib-1.2.13/contrib/minizip/unzip.c.fixuncrypt
++++ src/zlib-1.2.13/contrib/minizip/unzip.c
+@@ -71,5 +71 @@
+-#ifndef NOUNCRYPT
+-        #define NOUNCRYPT
+-#endif
+-
+ #include "zlib.h"
