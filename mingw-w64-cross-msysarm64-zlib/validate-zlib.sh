@@ -145,7 +145,9 @@ import json
 import pathlib
 import sys
 
-output_path, stem, report_path = map(pathlib.Path, sys.argv[1:])
+output_path = pathlib.Path(sys.argv[1])
+stem = sys.argv[2]
+report_path = pathlib.Path(sys.argv[3])
 data = json.loads(output_path.read_text(encoding="utf-8-sig"))
 if data.get("result") != "pass":
     raise SystemExit(f"{stem}: shared pseudo-reloc scanner did not pass")
