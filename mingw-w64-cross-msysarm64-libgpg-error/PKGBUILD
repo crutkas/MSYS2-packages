@@ -76,6 +76,7 @@ build() {
   export PATH="/opt/bin:${PATH}"
   export lt_cv_deplibs_check_method='pass_all'
   export lt_cv_archive_cmds_need_lc='no'
+  export ARFLAGS='crsD'
   export CPPFLAGS="${CPPFLAGS:-} ${_target_defs} ${_target_include}"
   export CFLAGS="${CFLAGS:-} ${_target_defs} ${_target_include}"
   export CXXFLAGS="${CXXFLAGS:-} ${_target_defs} ${_target_include}"
@@ -84,8 +85,8 @@ build() {
 
   ./configure \
     CC="aarch64-pc-msys-gcc" \
-    AR="aarch64-pc-msys-ar" \
-    RANLIB="aarch64-pc-msys-ranlib" \
+    AR="aarch64-pc-cygwin-ar" \
+    RANLIB="aarch64-pc-cygwin-ranlib" \
     LD="aarch64-pc-msys-ld" \
     NM="aarch64-pc-msys-nm" \
     STRIP="aarch64-pc-msys-strip" \
@@ -119,6 +120,7 @@ check() {
   test -f "${_pkgroot}/bin/gpg-error-config"
   _dll="$(find "${_pkgroot}/lib" -maxdepth 1 -type f -name '*.dll' | head -n 1)"
   _exe="$(find "${_pkgroot}/bin" -maxdepth 1 -type f -name '*.exe' | head -n 1)"
+  test -f "${_pkgroot}/lib/libgpg-error.a"
   test -n "${_dll}"
   test -n "${_exe}"
 
@@ -133,6 +135,7 @@ check() {
   grep -F 'prefix=/usr' "${_pkgroot}/lib/pkgconfig/gpg-error.pc"
   grep -F 'Libs.private:' "${_pkgroot}/lib/pkgconfig/gpg-error.pc"
   grep -F '/usr' "${_pkgroot}/lib/pkgconfig/gpg-error.pc"
+  aarch64-pc-msys-nm -s "${_pkgroot}/lib/libgpg-error.a" | grep -F 'Archive index:'
 }
 
 package_mingw-w64-cross-msysarm64-libgpg-error() {
@@ -155,13 +158,14 @@ package_mingw-w64-cross-msysarm64-libgpg-error-devel() {
   depends=("aarch64-pc-msys-libgpg-error=${pkgver}" "aarch64-pc-msys-runtime=${_runtime_version}")
   provides=("aarch64-pc-msys-libgpg-error-devel=${pkgver}")
   conflicts=('aarch64-pc-msys-libgpg-error-devel')
-  options=('staticlibs')
+  options=('staticlibs' '!strip')
 
   mkdir -p "${pkgdir}/opt/${_target}/usr/bin" "${pkgdir}/opt/${_target}/usr/share"
   cp -a "${srcdir}/dest/usr/bin"/*-config "${pkgdir}/opt/${_target}/usr/bin/"
   cp -a "${srcdir}/dest/usr/include" "${pkgdir}/opt/${_target}/usr/"
   cp -a "${srcdir}/dest/usr/lib" "${pkgdir}/opt/${_target}/usr/"
   rm -f "${pkgdir}/opt/${_target}/usr/lib"/*.dll
+  aarch64-pc-cygwin-ranlib "${pkgdir}/opt/${_target}/usr/lib/libgpg-error.a"
   cp -a "${srcdir}/dest/usr/share/aclocal" "${pkgdir}/opt/${_target}/usr/share/"
   cp -a "${srcdir}/dest/usr/share/common-lisp" "${pkgdir}/opt/${_target}/usr/share/"
   install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING.LIB" \
