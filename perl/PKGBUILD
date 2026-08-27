@@ -68,9 +68,11 @@ build() {
   local perl_ld=g++
   local perl_gcc_version=
   if [[ ${CARCH} == aarch64 ]]; then
-    # Native ARM64 Configure still emits this warning in the generated probe;
-    # keep the existing x86 builds strict.
-    CFLAGS+=" -Wno-int-conversion"
+    perl -0pi -e 's{\.\/try\b(?!\.exe)}{./try.exe}g' Configure
+
+    local perl_arm_optflags='-O2 -pipe -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fno-strict-aliasing'
+    export CFLAGS="${perl_arm_optflags}"
+    export CXXFLAGS="${perl_arm_optflags}"
     export PATH="/usr/bin:/opt/bin:${PATH}"
     perl_cc=/opt/bin/aarch64-pc-msys-gcc
     perl_ld=/opt/bin/aarch64-pc-msys-g++
@@ -206,7 +208,7 @@ EOF
   # linker, object format, and MSYS import route.
   if ! (
     printf 'y\n' | bash -x ./Configure -des -Dusethreads \
-      -Doptimize="${CFLAGS}" \
+    -Doptimize='-O2 -pipe -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fno-strict-aliasing' \
       -Dprefix=/usr \
       -Dvendorprefix=/usr \
       -Dprivlib=/usr/share/perl5/core_perl \
@@ -226,7 +228,7 @@ EOF
       -Dcc="${perl_config_cc}" -Dld="${perl_config_ld}" \
       -Dgccversion="${perl_gcc_version}" \
       -Dgccosandvers="${perl_gcc_version}" \
-      -Accflags="$CFLAGS -fwrapv" \
+      -Accflags='-O2 -pipe -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fno-strict-aliasing -Wno-int-conversion -fwrapv' \
       -Ud_setproctitle
   ) > "${configure_log}" 2>&1; then
       cat "${configure_log}"
@@ -249,7 +251,7 @@ check() {
   # Keep the harness output visible; the ARM64 branch still reports known
   # Archive-Tar and Time-HiRes failures, but anything else is a blocker.
   if TEST_JOBS=$(echo $MAKEFLAGS | sed 's/.*-j\([0-9][0-9]*\).*/\1/') \
-    MSYS=winsymlinks:nativestrict \
+    MSYS=winsymlinks:sys \
     make test_harness > "${test_harness_log}" 2>&1; then
     test_harness_status=0
   else
