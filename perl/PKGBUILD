@@ -82,6 +82,15 @@ build() {
       printf 'unexpected compiler host binary: %s\n' "$(file -L "${perl_cc}")" >&2
       return 1
     fi
+    local perl_objdump=/opt/bin/aarch64-pc-cygwin-objdump
+    if [[ ! -x ${perl_objdump} ]]; then
+      printf 'missing target objdump: %s\n' "${perl_objdump}" >&2
+      return 1
+    fi
+    if ! file -L "${perl_objdump}" | grep -Eq 'x86-64'; then
+      printf 'unexpected objdump host binary: %s\n' "$(file -L "${perl_objdump}")" >&2
+      return 1
+    fi
     if [[ "$("${perl_cc}" -dumpmachine)" != aarch64-pc-msys ]]; then
       printf 'unexpected compiler target: %s\n' "$("${perl_cc}" -dumpmachine)" >&2
       return 1
@@ -110,19 +119,27 @@ int main(void) { return 0; }
 EOF
     "${perl_cc}" -std=c99 -c "${probe_dir}/probe.c" -o "${probe_dir}/probe.o"
     "${perl_cc}" -std=c99 "${probe_dir}/probe.c" -o "${probe_dir}/probe.exe"
-    if ! objdump -f "${probe_dir}/probe.o" | grep -F 'file format pe-aarch64-little' >/dev/null; then
-      printf 'unexpected probe object format: %s\n' "$(objdump -f "${probe_dir}/probe.o")" >&2
+    local probe_object_info probe_exe_info probe_imports
+    probe_object_info=$("${perl_objdump}" -f "${probe_dir}/probe.o" 2>&1)
+    if ! grep -F 'file format pe-aarch64-little' <<<"${probe_object_info}" >/dev/null; then
+      printf 'unexpected probe object format: %s\n' "${probe_object_info}" >&2
       return 1
     fi
-    if ! objdump -f "${probe_dir}/probe.exe" | grep -F 'file format pei-aarch64-little' >/dev/null; then
-      printf 'unexpected probe executable format: %s\n' "$(objdump -f "${probe_dir}/probe.exe")" >&2
+    if ! grep -F 'architecture: aarch64' <<<"${probe_object_info}" >/dev/null; then
+      printf 'unexpected probe object architecture: %s\n' "${probe_object_info}" >&2
       return 1
     fi
-    if ! objdump -p "${probe_dir}/probe.exe" | sed -n 's/^ *DLL Name: //p' | grep -Fx 'msys-2.0.dll' >/dev/null; then
+    probe_exe_info=$("${perl_objdump}" -f "${probe_dir}/probe.exe" 2>&1)
+    if ! grep -F 'file format pei-aarch64-little' <<<"${probe_exe_info}" >/dev/null; then
+      printf 'unexpected probe executable format: %s\n' "${probe_exe_info}" >&2
+      return 1
+    fi
+    probe_imports=$("${perl_objdump}" -p "${probe_dir}/probe.exe" 2>&1 | sed -n 's/^ *DLL Name: //p')
+    if ! grep -Fx 'msys-2.0.dll' <<<"${probe_imports}" >/dev/null; then
       printf 'missing msys-2.0.dll import in compiler probe\n' >&2
       return 1
     fi
-    if objdump -p "${probe_dir}/probe.exe" | sed -n 's/^ *DLL Name: //p' | grep -Eiq '^cygwin1\.dll$'; then
+    if grep -Eiq '^cygwin1\.dll$' <<<"${probe_imports}"; then
       printf 'unexpected cygwin1.dll import in compiler probe\n' >&2
       return 1
     fi
