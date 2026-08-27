@@ -1,0 +1,14 @@
+--- a/ncurses/curses.priv.h
++++ b/ncurses/curses.priv.h
+@@ -2621,9 +2621,9 @@
+ # define NC_ISATTY(fd) (0 != _nc_console_isatty(fd))
+ # define NC_READ(fd, buf, count)	read(fd, buf, (unsigned)(count))
+ #else
+-# if defined(_NC_WINDOWS_NATIVE)
++# if defined(_NC_WINDOWS_NATIVE) && defined(WINCONPTY)
+ #  define NC_READ(fd, buf, count)	WINCONPTY.read(fd, buf, (unsigned)(count))
+ # else
+ #  define NC_READ(fd, buf, count)	read(fd, buf, (size_t)(count))
+ # endif
+ # define NC_ISATTY(fd)			isatty(fd)
+ #endif

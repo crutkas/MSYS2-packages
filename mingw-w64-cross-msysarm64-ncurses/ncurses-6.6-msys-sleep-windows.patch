@@ -1,0 +1,27 @@
+--- a/ncurses/tinfo/lib_napms.c
++++ b/ncurses/tinfo/lib_napms.c
+@@ -43,6 +43,10 @@
+
+ #include <curses.priv.h>
+
++#if defined(_NC_WINDOWS_NATIVE)
++#include <windows.h>
++#endif
++
+ #if HAVE_NANOSLEEP
+ #include <time.h>
+ #if HAVE_SYS_TIME_H
+--- a/ncurses/tinfo/tinfo_driver.c
++++ b/ncurses/tinfo/tinfo_driver.c
+@@ -33,6 +33,10 @@
+  *     and: Thomas E. Dickey                                                *
+  ****************************************************************************/
+
+ #include <curses.priv.h>
++
++#if defined(_NC_WINDOWS_NATIVE) || defined(USE_WIN32CON_DRIVER)
++#include <windows.h>
++#endif
+ #define CUR TerminalType((TERMINAL*)TCB).
+ #include <tic.h>
+ #include <termcap.h>		/* ospeed */

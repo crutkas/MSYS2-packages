@@ -1,0 +1,33 @@
+--- a/ncurses/widechar/widechars.c
++++ b/ncurses/widechar/widechars.c
+@@ -28,12 +28,13 @@
+  ****************************************************************************/
+
+ #include <curses.priv.h>
++#include <windows.h>
+
+ #if USE_WIDEC_SUPPORT
+
+ MODULE_ID("$Id: widechars.c,v 1.13 2026/08/22 23:40:38 tom Exp $")
+
+-#if defined(_NC_MINGW) && !defined(_UCRT)
++#if 1
+ /*
+  * MinGW has wide-character functions, but they do not work correctly.
+  */
+@@ -144,6 +144,7 @@
+  lib_wacs	lib		$(wide)		$(HEADER_DEPS)
+  lib_wunctrl	lib		$(wide)		$(HEADER_DEPS)
++widechars	lib		$(wide)		$(HEADER_DEPS)
+
+ # Extensions to the base library
+ @ ext_funcs
+--- a/ncurses/modules
++++ b/ncurses/modules
+@@ -144,6 +144,7 @@
+  lib_wacs	lib		$(wide)		$(HEADER_DEPS)
+  lib_wunctrl	lib		$(wide)		$(HEADER_DEPS)
++widechars	lib		$(wide)		$(HEADER_DEPS)
+
+ # Extensions to the base library
+ @ ext_funcs
