@@ -29,6 +29,16 @@
           "bytes": null,
           "sha256": null
         },
+        "metadata": {
+          "pkgname": null,
+          "pkgver": null,
+          "pkgrel": null,
+          "pkgdesc": null,
+          "arch": null,
+          "depends": null,
+          "provides": null,
+          "conflicts": null
+        },
         "source": {
           "url": "https://git.kernel.org/pub/scm/git/git.git",
           "name": "git-2.50.1.tar.gz",
@@ -44,6 +54,16 @@
           "version": null,
           "bytes": null,
           "sha256": null
+        },
+        "metadata": {
+          "pkgname": null,
+          "pkgver": null,
+          "pkgrel": null,
+          "pkgdesc": null,
+          "arch": null,
+          "depends": null,
+          "provides": null,
+          "conflicts": null
         },
         "source": {
           "url": "https://ftp.gnu.org/gnu/bash/bash-5.2.tar.gz",
