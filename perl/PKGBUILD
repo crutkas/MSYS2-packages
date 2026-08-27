@@ -78,8 +78,10 @@ build() {
       printf 'missing ARM64 compiler binding: %s %s\n' "${perl_cc}" "${perl_ld}" >&2
       return 1
     fi
-    if ! file -L "${perl_cc}" | grep -Eq 'x86-64'; then
-      printf 'unexpected compiler host binary: %s\n' "$(file -L "${perl_cc}")" >&2
+    local perl_cc_file perl_objdump_file
+    perl_cc_file=$(file -L "${perl_cc}")
+    if [[ ${perl_cc_file} != *x86-64* ]]; then
+      printf 'unexpected compiler host binary: %s\n' "${perl_cc_file}" >&2
       return 1
     fi
     local perl_objdump=/opt/bin/aarch64-pc-cygwin-objdump
@@ -87,8 +89,9 @@ build() {
       printf 'missing target objdump: %s\n' "${perl_objdump}" >&2
       return 1
     fi
-    if ! file -L "${perl_objdump}" | grep -Eq 'x86-64'; then
-      printf 'unexpected objdump host binary: %s\n' "$(file -L "${perl_objdump}")" >&2
+    perl_objdump_file=$(file -L "${perl_objdump}")
+    if [[ ${perl_objdump_file} != *x86-64* ]]; then
+      printf 'unexpected objdump host binary: %s\n' "${perl_objdump_file}" >&2
       return 1
     fi
     if [[ "$("${perl_cc}" -dumpmachine)" != aarch64-pc-msys ]]; then
@@ -99,21 +102,22 @@ build() {
       printf 'unexpected compiler sysroot: %s\n' "$("${perl_cc}" -print-sysroot)" >&2
       return 1
     fi
-    if ! printf '' | "${perl_cc}" -dM -E -xc - | grep -q '^#define __aarch64__ 1$'; then
+    "${perl_cc}" -dM -E -xc - <<< '' > "${probe_dir}/probe.predefines.txt"
+    if ! grep -Fx '#define __aarch64__ 1' "${probe_dir}/probe.predefines.txt" >/dev/null; then
       printf 'missing __aarch64__ from compiler predefines\n' >&2
       return 1
     fi
-    if ! printf '' | "${perl_cc}" -dM -E -xc - | grep -q '^#define __LP64__ 1$'; then
+    if ! grep -Fx '#define __LP64__ 1' "${probe_dir}/probe.predefines.txt" >/dev/null; then
       printf 'missing __LP64__ from compiler predefines\n' >&2
       return 1
     fi
-    if ! printf '' | "${perl_cc}" -dM -E -xc - | grep -q '^#define __SEH__ 1$'; then
+    if ! grep -Fx '#define __SEH__ 1' "${probe_dir}/probe.predefines.txt" >/dev/null; then
       printf 'missing __SEH__ from compiler predefines\n' >&2
       return 1
     fi
 
     local probe_dir
-    local probe_object_info probe_exe_info probe_imports
+    local probe_object_info probe_exe_info
     probe_dir=$(mktemp -d)
     cat > "${probe_dir}/probe.c" <<'EOF'
 #include <unistd.h>
@@ -144,30 +148,35 @@ EOF
       > "${probe_dir}/probe.link.txt" 2>&1
     set +x
     cat "${probe_dir}/probe.link.txt"
-    probe_object_info=$("${perl_objdump}" -f "${probe_dir}/probe.o" 2>&1)
-    if ! grep -F 'file format pe-aarch64-little' <<<"${probe_object_info}" >/dev/null; then
+    "${perl_objdump}" -f "${probe_dir}/probe.o" > "${probe_dir}/probe.object.txt" 2>&1
+    cat "${probe_dir}/probe.object.txt"
+    probe_object_info=$(<"${probe_dir}/probe.object.txt")
+    if [[ ${probe_object_info} != *'file format pe-aarch64-little'* ]]; then
       printf 'unexpected probe object format: %s\n' "${probe_object_info}" >&2
       return 1
     fi
-    if ! grep -F 'architecture: aarch64' <<<"${probe_object_info}" >/dev/null; then
+    if [[ ${probe_object_info} != *'architecture: aarch64'* ]]; then
       printf 'unexpected probe object architecture: %s\n' "${probe_object_info}" >&2
       return 1
     fi
-    probe_exe_info=$("${perl_objdump}" -f "${probe_dir}/probe.exe" 2>&1)
-    if ! grep -F 'file format pei-aarch64-little' <<<"${probe_exe_info}" >/dev/null; then
+    "${perl_objdump}" -f "${probe_dir}/probe.exe" > "${probe_dir}/probe.exe.txt" 2>&1
+    cat "${probe_dir}/probe.exe.txt"
+    probe_exe_info=$(<"${probe_dir}/probe.exe.txt")
+    if [[ ${probe_exe_info} != *'file format pei-aarch64-little'* ]]; then
       printf 'unexpected probe executable format: %s\n' "${probe_exe_info}" >&2
       return 1
     fi
-    probe_imports=$("${perl_objdump}" -p "${probe_dir}/probe.exe" 2>&1 | sed -n 's/^ *DLL Name: //p')
-    if ! grep -Fx 'msys-2.0.dll' <<<"${probe_imports}" >/dev/null; then
+    "${perl_objdump}" -p "${probe_dir}/probe.exe" > "${probe_dir}/probe.imports.txt" 2>&1
+    cat "${probe_dir}/probe.imports.txt"
+    if ! grep -Fx 'msys-2.0.dll' "${probe_dir}/probe.imports.txt" >/dev/null; then
       printf 'missing msys-2.0.dll import in compiler probe\n' >&2
       return 1
     fi
-    if ! grep -Fx 'KERNEL32.dll' <<<"${probe_imports}" >/dev/null; then
+    if ! grep -Fx 'KERNEL32.dll' "${probe_dir}/probe.imports.txt" >/dev/null; then
       printf 'missing KERNEL32.dll import in compiler probe\n' >&2
       return 1
     fi
-    if grep -Eiq '^cygwin1\.dll$' <<<"${probe_imports}"; then
+    if grep -Eiq '^cygwin1\.dll$' "${probe_dir}/probe.imports.txt"; then
       printf 'unexpected cygwin1.dll import in compiler probe\n' >&2
       return 1
     fi
