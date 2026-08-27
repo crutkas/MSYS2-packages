@@ -38,6 +38,7 @@ for encoding in s l b; do
   "${strings}" -a -e "${encoding}" "${scan_input}" >> "${scan_strings}"
 done
 if grep -Ein "${pattern}" "${scan_strings}" > "${leaks}"; then
+  cat "${leaks}" >&2
   echo "${name}: drive, Actions, cygdrive, home, or UNC build path found" >&2
   exit 1
 fi
