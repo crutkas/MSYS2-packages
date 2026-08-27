@@ -127,8 +127,17 @@ status=\$?
 if [ \$status -eq 0 ] && [ -n "\$out" ]; then
   case "\$out" in
     try|try.exe|try.exe.exe)
-      cp -f "\$out" try 2>/dev/null || true
-      cp -f "\$out" try.exe 2>/dev/null || true
+      src=
+      for candidate in "\$out" "\$out.exe" "\$out.exe.exe"; do
+        if [ -f "\$candidate" ]; then
+          src="\$candidate"
+          break
+        fi
+      done
+      if [ -n "\$src" ]; then
+        cp -f "\$src" try 2>/dev/null || true
+        cp -f "\$src" try.exe 2>/dev/null || true
+      fi
       ;;
   esac
 fi
