@@ -61,7 +61,7 @@ jobs:
         shell: pwsh
         run: |
           $branchCandidates = @('${{ github.ref_name }}', '${{ github.head_ref }}') | Where-Object { $_ }
-          $match = @('crutkas-package-aarch64-static-libgcc', 'crutkas-congenial-system', 'crutkas-aarch64-gcc-layer') |
+          $match = @('crutkas-package-aarch64-static-libgcc', 'crutkas-congenial-system', 'crutkas-aarch64-gcc-layer', 'crutkas-native-arm-gcc-smoke') |
             Where-Object { $branchCandidates -contains $_ } |
             Select-Object -First 1
           if (-not $match) {
@@ -70,6 +70,7 @@ jobs:
           }
 
           $baseRef = switch ($match) {
+            'crutkas-native-arm-gcc-smoke' { 'crutkas-aarch64-gcc-layer' }
             'crutkas-aarch64-gcc-layer' { 'crutkas-package-aarch64-static-libgcc' }
             'crutkas-congenial-system' { 'crutkas-package-aarch64-static-libgcc' }
             default { 'master' }

@@ -1,0 +1,73 @@
+name: Native ARM64 MSYS GCC smoke
+
+on:
+  pull_request:
+    branches:
+      - crutkas-aarch64-gcc-layer
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-arm64-gcc-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-arm64-gcc:
+    if: >-
+      ${{
+        github.repository == 'crutkas/MSYS2-packages' &&
+        (github.event_name == 'workflow_dispatch' ||
+         github.head_ref == 'crutkas-native-arm-gcc-smoke')
+      }}
+    name: Native ARM64 GCC/runtime
+    runs-on: windows-11-arm
+    timeout-minutes: 45
+
+    steps:
+      - name: Configure Git line endings
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          cache: false
+          install: >-
+            gmp
+            isl
+            libiconv
+            libintl
+            libzstd
+            mpc
+            mpfr
+            zlib
+          msystem: MSYS
+          update: true
+
+      - name: Validate published toolchain on native ARM64
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          MSYS_ROOT: ${{ steps.msys2.outputs.msys2-location }}
+          REPORT_ROOT: ${{ runner.temp }}\native-arm64-gcc-report
+        run: |
+          .\.ci\native-arm64-gcc-smoke.ps1 `
+            -MsysRoot $env:MSYS_ROOT `
+            -ReportRoot $env:REPORT_ROOT
+
+      - name: Upload native validation evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: warn
+          name: native-arm64-gcc-evidence
+          path: ${{ runner.temp }}/native-arm64-gcc-report
+          retention-days: 30
