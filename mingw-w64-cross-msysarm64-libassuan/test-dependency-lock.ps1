@@ -8,6 +8,15 @@ $lockPath = Join-Path $PSScriptRoot 'dependency-lock.json'
 if ($LASTEXITCODE -ne 0) {
   throw 'The checked-in closed admission lock is invalid'
 }
+$checkedInLock = Get-Content -Raw -LiteralPath $lockPath | ConvertFrom-Json
+foreach ($newlyDenied in @(
+    '78e9cc98b8d38ff2f60c0ec5d9bc4f173f488ace93826bb90aef27ad69f195ee',
+    '8004cc674d8735f453e4a000740a157605e1abc17ec90bd95ed79626b63981b2',
+    'a1eb6396150d4233aff9ce80add334029721a55a7ee311f7516330d9e892005f')) {
+  if ($newlyDenied -notin $checkedInLock.rejectedSha256) {
+    throw "The checked-in lock does not deny $newlyDenied"
+  }
+}
 
 $failedClosed = $false
 try {
@@ -135,9 +144,12 @@ try {
       '3af7e6c7f9735554f39a601cd42b5a9cc379646318c63e613105908743ed6f2c',
       '5a3e2de75383e8d4a6c8431297f2740cf4a0976f1bc4da0fcb2a5271874a8d94',
       '5b7ea5ca6902094dbee157d138c22a8c76483da3ed1530c50e316d5a2574190e',
+      '78e9cc98b8d38ff2f60c0ec5d9bc4f173f488ace93826bb90aef27ad69f195ee',
+      '8004cc674d8735f453e4a000740a157605e1abc17ec90bd95ed79626b63981b2',
       '8921cee568ab0757e5211bce3a8c9ff49e27446c74a6940126f3ae778830aa2c',
       '9006b7594982d3aed3290de0c7b5707a08770ae2250a4f2572428a3c475bda0a',
       '9f3eb872e514b6be3d78001b1f25b089e9c2378128992241cc759fc66c42c708',
+      'a1eb6396150d4233aff9ce80add334029721a55a7ee311f7516330d9e892005f',
       'd6914993d2d2bb2c51a6d46c9dd9f2e5149a8da30736a01cbcfd57854c65fd1f'
     )
   } | ConvertTo-Json -Depth 10 | Set-Content -Encoding utf8 $approvedPath
