@@ -1,0 +1,775 @@
+name: ARM64 MSYS libxcrypt
+
+on:
+  push:
+    branches:
+      - crutkas-arm64-msys-libxcrypt
+  pull_request:
+    branches:
+      - crutkas-aarch64-gcc-layer
+    paths:
+      - .github/workflows/arm64-msys-libxcrypt.yml
+      - .github/workflows/main.yml
+      - .ci/canonicalize-packages.sh
+      - .ci/ci-build.sh
+      - .ci/ci-dont-install-list.txt
+      - .ci/ci-get-build-order.py
+      - mingw-w64-cross-msysarm64-libxcrypt/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: arm64-msys-libxcrypt-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI_BASE_REPOSITORY: https://github.com/crutkas/MSYS2-packages.git
+  CI_BASE_REF: crutkas-aarch64-gcc-layer
+  CI_PACKAGE_PREFIXES: mingw-w64-cross-msysarm64-libxcrypt
+  CI_RUN_CHECK: '1'
+  CI_CANONICALIZE_PACKAGES: '1'
+  SOURCE_DATE_EPOCH: 1762796019
+
+jobs:
+  build:
+    if: ${{ github.repository == 'crutkas/MSYS2-packages' }}
+    runs-on: windows-2025
+
+    steps:
+      - name: Gather facts
+        id: facts
+        shell: pwsh
+        run: |
+          Get-CimInstance -Class Win32_Processor |
+            Select-Object -Property Name
+          $buildDrive = Split-Path $env:GITHUB_WORKSPACE -Qualifier
+          "drive=$buildDrive" >> $env:GITHUB_OUTPUT
+
+      - name: Configure Git line endings
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
+      - uses: actions/checkout@v4
+        with:
+          path: temp
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+
+      - name: Update MSYS2 build host
+        shell: pwsh
+        run: |
+          $pacmanConf = 'C:\msys64\etc\pacman.conf'
+          $contents = Get-Content $pacmanConf -Raw
+          if ($contents -notmatch '(?m)^\[staging\]') {
+            $contents = "[staging]`nServer = https://repo.msys2.org/staging/`nSigLevel = Never`n$contents"
+            Set-Content $pacmanConf -Value $contents -NoNewline
+          }
+
+          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -Suuy
+          if ($LASTEXITCODE -ne 0) { throw 'first system update failed' }
+          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -Suu
+          if ($LASTEXITCODE -ne 0) { throw 'second system update failed' }
+          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm --needed -S `
+            git python base-devel
+          if ($LASTEXITCODE -ne 0) { throw 'build-host dependency install failed' }
+
+      - name: Download and independently verify pinned ARM64 inputs
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $primary = Join-Path $env:RUNNER_TEMP 'msysarm64-inputs-primary'
+          $secondary = Join-Path $env:RUNNER_TEMP 'msysarm64-inputs-secondary'
+          New-Item -ItemType Directory -Force -Path $primary, $secondary |
+            Out-Null
+
+          $assets = @(
+            [pscustomobject]@{
+              Tag = 'cygwinarm64-binutils-pr21-3356eec-20260827'
+              Name = 'mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst'
+              SHA256 = '3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b'
+            }
+            [pscustomobject]@{
+              Tag = 'cygwinarm64-binutils-pr21-3356eec-20260827'
+              Name = 'native-arm64-fixed-linker-run33083775213.zip'
+              SHA256 = 'b0546f2d78882d4112a25861fd1b2ba9fc3cd2061b917de48a703079189af118'
+            }
+            [pscustomobject]@{
+              Tag = 'cygwinarm64-gcc-static-runtime-20260815'
+              Name = 'mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-2-x86_64.pkg.tar.zst'
+              SHA256 = '063579211851ed69370a6362f2795e39d9be0235a2bfe2f58da1bbd73a1d108e'
+            }
+            [pscustomobject]@{
+              Tag = 'cygwinarm64-gcc-static-runtime-20260815'
+              Name = 'mingw-w64-cross-cygwinarm64-gcc-libs-stage1-15.0.1dev-2-x86_64.pkg.tar.zst'
+              SHA256 = '17a8fbc22227c541ff3179179d307045302f6b18fbc6207cf9d863a9e4dad98c'
+            }
+            [pscustomobject]@{
+              Tag = 'cygwinarm64-libstdcxx-headers-pr7-20260815'
+              Name = 'mingw-w64-cross-cygwinarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst'
+              SHA256 = '1e018d384e5e16b76524b69677819b660e6611480a85a7f7b8a412403bf15ea6'
+            }
+            [pscustomobject]@{
+              Tag = 'msysarm64-runtime-pr10-a527-20260824'
+              Name = 'mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst'
+              SHA256 = '263f8f7e3614ac41337ce3a223f2bb26b6459aef6f34670525cdd4c03ec3ae21'
+            }
+            [pscustomobject]@{
+              Tag = 'msysarm64-runtime-pr10-a527-20260824'
+              Name = 'mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst'
+              SHA256 = '33861708e7f981b4eef5b93ef135ab3a43d2757533f64df6f61a146d823c355f'
+            }
+            [pscustomobject]@{
+              Tag = 'msysarm64-runtime-pr10-a527-20260824'
+              Name = 'mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst'
+              SHA256 = 'e30609e09eab2fa07aba2e6196b05f34e5e9107abc4ab8832966684758c743ca'
+            }
+            [pscustomobject]@{
+              Tag = 'msysarm64-runtime-pr10-a527-20260824'
+              Name = 'mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst'
+              SHA256 = '158c505f45025a466950faa7c85c9fd85e9d32384dd27b53586ffc75d71ca78e'
+            }
+            [pscustomobject]@{
+              Tag = 'msysarm64-runtime-pr10-a527-20260824'
+              Name = 'mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst'
+              SHA256 = 'c18b51e483991770b8e06cc2d8f7002d06784d3071ac213a8fee24bb831267d1'
+            }
+            [pscustomobject]@{
+              Tag = 'msysarm64-gcc-pr13-support-20260826'
+              Name = 'mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst'
+              SHA256 = '9715aab6894379bf5ab936a3a559f286fb4aedbb64f0774d7457182e00648e08'
+            }
+            [pscustomobject]@{
+              Tag = 'msysarm64-gcc-pr13-support-20260826'
+              Name = 'mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst'
+              SHA256 = '7727936f4212e5af04e9739eca60f157c0875796c1e82fcfb79fd4398b111e24'
+            }
+            [pscustomobject]@{
+              Tag = 'msysarm64-gcc-pr13-20260826'
+              Name = 'mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst'
+              SHA256 = '990f163cacf9ffce1b58445be91fedc57f135cc26a88d7dba109806446b41438'
+            }
+            [pscustomobject]@{
+              Tag = 'msysarm64-gcc-pr13-20260826'
+              Name = 'mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst'
+              SHA256 = 'a74887c76a933ec424933bf662729d94975b83138af783bd93f2e7acd95c3a22'
+            }
+          )
+
+          $releaseCache = @{}
+          $manifest = @()
+          foreach ($asset in $assets) {
+            if (-not $releaseCache.ContainsKey($asset.Tag)) {
+              $releaseCache[$asset.Tag] = gh api `
+                "repos/crutkas/MSYS2-packages/releases/tags/$($asset.Tag)" |
+                ConvertFrom-Json
+              if ($LASTEXITCODE -ne 0) {
+                throw "release lookup failed: $($asset.Tag)"
+              }
+            }
+            $published = @(
+              $releaseCache[$asset.Tag].assets |
+                Where-Object Name -EQ $asset.Name
+            )
+            if ($published.Count -ne 1) {
+              throw "expected one published asset: $($asset.Name)"
+            }
+            if ($published[0].digest -ne "sha256:$($asset.SHA256)") {
+              throw "published digest mismatch: $($asset.Name)"
+            }
+
+            gh release download $asset.Tag `
+              --repo crutkas/MSYS2-packages `
+              --pattern $asset.Name `
+              --dir $primary
+            if ($LASTEXITCODE -ne 0) {
+              throw "primary download failed: $($asset.Name)"
+            }
+
+            $encodedName = [Uri]::EscapeDataString($asset.Name)
+            $url = "https://github.com/crutkas/MSYS2-packages/releases/download/$($asset.Tag)/$encodedName"
+            $secondaryPath = Join-Path $secondary $asset.Name
+            & curl.exe --fail --location --retry 3 `
+              --output $secondaryPath $url
+            if ($LASTEXITCODE -ne 0) {
+              throw "secondary download failed: $($asset.Name)"
+            }
+
+            $primaryPath = Join-Path $primary $asset.Name
+            $primaryHash = (
+              Get-FileHash -Algorithm SHA256 $primaryPath
+            ).Hash.ToLowerInvariant()
+            $secondaryHash = (
+              Get-FileHash -Algorithm SHA256 $secondaryPath
+            ).Hash.ToLowerInvariant()
+            if ($primaryHash -ne $asset.SHA256 -or
+                $secondaryHash -ne $asset.SHA256) {
+              throw "independent SHA-256 mismatch: $($asset.Name)"
+            }
+            $manifest += "$($asset.Tag)`t$($asset.Name)`t$primaryHash`t$secondaryHash"
+          }
+          $manifest | Set-Content `
+            (Join-Path $env:RUNNER_TEMP 'msysarm64-inputs.tsv')
+
+          $scannerUrl = 'https://raw.githubusercontent.com/crutkas/MSYS2-packages/3356eec1411983cc252b04afac32bca5f3b8d824/.ci/check-aarch64-pseudo-relocs.ps1'
+          $scanner = Join-Path $primary 'check-aarch64-pseudo-relocs.ps1'
+          $scannerSecondary = Join-Path $secondary 'check-aarch64-pseudo-relocs.ps1'
+          & curl.exe --fail --location --retry 3 `
+            --output $scanner $scannerUrl
+          if ($LASTEXITCODE -ne 0) {
+            throw 'primary pseudo-reloc scanner download failed'
+          }
+          & curl.exe --fail --location --retry 3 `
+            --output $scannerSecondary $scannerUrl
+          if ($LASTEXITCODE -ne 0) {
+            throw 'secondary pseudo-reloc scanner download failed'
+          }
+          $scannerHash = (
+            Get-FileHash -Algorithm SHA256 $scanner
+          ).Hash.ToLowerInvariant()
+          $scannerSecondaryHash = (
+            Get-FileHash -Algorithm SHA256 $scannerSecondary
+          ).Hash.ToLowerInvariant()
+          if ($scannerHash -ne '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9' -or
+              $scannerSecondaryHash -ne $scannerHash) {
+            throw 'reviewed pseudo-reloc scanner hash mismatch'
+          }
+          Add-Content `
+            (Join-Path $env:RUNNER_TEMP 'msysarm64-inputs.tsv') `
+            "3356eec1411983cc252b04afac32bca5f3b8d824`tcheck-aarch64-pseudo-relocs.ps1`t$scannerHash`t$scannerSecondaryHash"
+          "FIXED_BINUTILS_SCANNER=$scanner" >> $env:GITHUB_ENV
+
+      - name: Install pinned inputs in one pacman transaction
+        shell: pwsh
+        run: |
+          $inputDir = Join-Path $env:RUNNER_TEMP 'msysarm64-inputs-primary'
+          $packages = @(
+            'mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst'
+            'mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-2-x86_64.pkg.tar.zst'
+            'mingw-w64-cross-cygwinarm64-gcc-libs-stage1-15.0.1dev-2-x86_64.pkg.tar.zst'
+            'mingw-w64-cross-cygwinarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst'
+            'mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst'
+            'mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst'
+            'mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst'
+            'mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst'
+            'mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst'
+            'mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst'
+            'mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst'
+            'mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst'
+            'mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst'
+          ) | ForEach-Object { Join-Path $inputDir $_ }
+
+          $env:MSYS = 'winsymlinks:sys'
+          try {
+            & 'C:\msys64\usr\bin\pacman.exe' --noconfirm --needed -U @packages
+            if ($LASTEXITCODE -ne 0) {
+              throw 'atomic ARM64 bootstrap transaction failed'
+            }
+          } finally {
+            Remove-Item Env:MSYS -ErrorAction SilentlyContinue
+          }
+
+      - name: Preflight native aarch64-pc-msys compiler
+        shell: pwsh
+        run: |
+          $env:MSYS2_PATH_TYPE = 'inherit'
+          $env:PATH = 'C:\msys64\usr\bin;' + $env:PATH
+          $bash = 'C:\msys64\usr\bin\bash.exe'
+          $script = @'
+          set -euo pipefail
+          export PATH="/opt/bin:${PATH}"
+          test "$(pacman -Q mingw-w64-cross-cygwinarm64-binutils)" = \
+            'mingw-w64-cross-cygwinarm64-binutils 2.44.50-2'
+          test "$(aarch64-pc-msys-gcc -dumpmachine)" = aarch64-pc-msys
+          test "$(aarch64-pc-msys-gcc -dumpversion)" = 15.0.1
+          test -x /opt/aarch64-pc-cygwin/bin/as.exe
+          test -x /opt/aarch64-pc-cygwin/bin/dlltool.exe
+          test -x /opt/aarch64-pc-cygwin/bin/objdump.exe
+          test -f /opt/aarch64-pc-msys/bin/msys-2.0.dll
+          test -f /opt/aarch64-pc-msys/lib/libmsys-2.0.a
+          test "$(
+            sha256sum /opt/aarch64-pc-cygwin/bin/ld.bfd.exe |
+              awk '{print $1}'
+          )" = 075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f
+          test "$(
+            sha256sum "$(readlink -f /opt/bin/aarch64-pc-msys-ld.exe)" |
+              awk '{print $1}'
+          )" = 075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f
+          for tool in \
+            addr2line ar as c++filt dlltool dllwrap elfedit gprof \
+            ld ld.bfd nm objcopy objdump ranlib readelf size strings \
+            strip windmc windres
+          do
+            bridge="/opt/bin/aarch64-pc-msys-${tool}.exe"
+            test -L "$bridge"
+            test "$(readlink "$bridge")" = "aarch64-pc-cygwin-${tool}.exe"
+            resolved="$(readlink -f "$bridge")"
+            test -x "$resolved"
+            test "$(pacman -Qqo "$bridge")" = \
+              mingw-w64-cross-cygwinarm64-binutils
+            test "$(pacman -Qqo "$resolved")" = \
+              mingw-w64-cross-cygwinarm64-binutils
+          done
+
+          cat > /tmp/aarch64-pc-msys-preflight.c <<'EOF'
+          #include <stdint.h>
+          _Static_assert(sizeof(void *) == 8, "AArch64 must use 64-bit pointers");
+          int main(void) { return 0; }
+          EOF
+          aarch64-pc-msys-gcc \
+            /tmp/aarch64-pc-msys-preflight.c \
+            -o /tmp/aarch64-pc-msys-preflight.exe
+          /opt/aarch64-pc-cygwin/bin/objdump.exe -f \
+            /tmp/aarch64-pc-msys-preflight.exe |
+            grep -F 'file format pei-aarch64-little'
+          /opt/aarch64-pc-cygwin/bin/objdump.exe -p \
+            /tmp/aarch64-pc-msys-preflight.exe |
+            grep -F 'DLL Name: msys-2.0.dll'
+          if /opt/aarch64-pc-cygwin/bin/objdump.exe -p \
+              /tmp/aarch64-pc-msys-preflight.exe |
+              grep -Ei 'cygwin1\.dll|x86_64'; then
+            echo 'foreign fallback detected in compiler preflight' >&2
+            exit 1
+          fi
+          rm -f \
+            /tmp/aarch64-pc-msys-preflight.c \
+            /tmp/aarch64-pc-msys-preflight.exe
+          '@
+          & $bash --login -lc $script
+          if ($LASTEXITCODE -ne 0) {
+            throw 'native compiler preflight failed'
+          }
+
+      - name: Move checkout
+        shell: pwsh
+        run: |
+          $path = "${{ steps.facts.outputs.drive }}\_"
+          if (Test-Path $path) {
+            Remove-Item -Recurse -Force $path
+          }
+          Move-Item -Path .\temp -Destination $path
+
+      - name: Build and check libxcrypt packages
+        shell: pwsh
+        run: |
+          $env:MSYS = 'winsymlinks:sys'
+          $env:MSYS2_PATH_TYPE = 'inherit'
+          $env:PATH = 'C:\msys64\usr\bin;C:\msys64\mingw64\bin;' + $env:PATH
+          $env:GIT_EXEC_PATH = 'C:\msys64\usr\lib\git-core'
+          $bash = 'C:\msys64\usr\bin\bash.exe'
+          $buildRoot = '${{ steps.facts.outputs.drive }}\_'
+          $buildRoot = & 'C:\msys64\usr\bin\cygpath.exe' -u $buildRoot
+          & $bash --login -lc "cd '$buildRoot' && ./.ci/ci-build.sh"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'libxcrypt package build failed'
+          }
+
+      - name: Scan rebuilt ARM64 PE outputs
+        shell: pwsh
+        run: |
+          $env:PATH = 'C:\msys64\usr\bin;C:\msys64\opt\bin;' + $env:PATH
+          $objdump = 'C:\msys64\opt\bin\aarch64-pc-cygwin-objdump.exe'
+          $nm = 'C:\msys64\opt\bin\aarch64-pc-cygwin-nm.exe'
+          $buildRoot = "${{ steps.facts.outputs.drive }}\_"
+          $report = Join-Path $buildRoot `
+            'mingw-w64-cross-msysarm64-libxcrypt\src\libxcrypt-report'
+          $dest = Join-Path $buildRoot `
+            'mingw-w64-cross-msysarm64-libxcrypt\src\dest-aarch64-pc-msys'
+          $audit = Join-Path $buildRoot 'artifacts\libxcrypt-audit'
+          $scannerResults = Join-Path $audit 'pseudo-reloc-scans'
+          New-Item -ItemType Directory -Force -Path $scannerResults |
+            Out-Null
+
+          $images = [ordered]@{
+            'msys-crypt-2' = Join-Path $dest 'usr\bin\msys-crypt-2.dll'
+            'dynamic-crypt-smoke' = Join-Path $report 'native-crypt-smoke.exe'
+            'static-crypt-smoke' = Join-Path $report 'static-crypt-smoke.exe'
+          }
+          $summary = @()
+          foreach ($entry in $images.GetEnumerator()) {
+            $format = @(& $objdump -f $entry.Value 2>&1)
+            $formatText = $format -join "`n"
+            if ($LASTEXITCODE -ne 0 -or
+                -not ($formatText -match 'file format pei-aarch64-little') -or
+                -not ($formatText -match 'architecture: aarch64')) {
+              throw "non-AA64 emitted PE: $($entry.Value)"
+            }
+            if ($formatText -match 'pei-i386|pe-x86-64') {
+              throw "foreign PE format detected: $($entry.Value)"
+            }
+
+            $output = Join-Path $scannerResults "$($entry.Key).json"
+            & $env:FIXED_BINUTILS_SCANNER `
+              -PePath $entry.Value `
+              -OutputPath $output `
+              -Objdump $objdump `
+              -Nm $nm
+            if ($LASTEXITCODE -ne 0) {
+              throw "pseudo-reloc scan failed: $($entry.Value)"
+            }
+            $scan = Get-Content $output -Raw | ConvertFrom-Json
+            $flags = @($scan.flags)
+            $violations = @(
+              $flags | Where-Object { $_ -notin @(8, 16, 32, 64) }
+            )
+            if ($scan.result -ne 'pass' -or
+                $violations.Count -ne 0 -or
+                12 -in $flags -or 21 -in $flags) {
+              throw "ambiguous pseudo-reloc record: $($entry.Value)"
+            }
+            $summary += "$($entry.Key)`t$($scan.record_count)`t$($flags -join ',')"
+          }
+          $summary | Set-Content (Join-Path $audit 'pseudo-reloc-summary.tsv')
+          Copy-Item $env:FIXED_BINUTILS_SCANNER `
+            (Join-Path $audit 'check-aarch64-pseudo-relocs.ps1')
+
+      - name: Audit package transactions and ownership
+        shell: pwsh
+        run: |
+          $env:MSYS = 'winsymlinks:sys'
+          $env:MSYS2_PATH_TYPE = 'inherit'
+          $env:PATH = 'C:\msys64\usr\bin;' + $env:PATH
+          $bash = 'C:\msys64\usr\bin\bash.exe'
+          $buildRoot = '${{ steps.facts.outputs.drive }}\_'
+          $buildRoot = & 'C:\msys64\usr\bin\cygpath.exe' -u $buildRoot
+          $inputRoot = Join-Path $env:RUNNER_TEMP 'msysarm64-inputs-primary'
+          $inputRoot = & 'C:\msys64\usr\bin\cygpath.exe' -u $inputRoot
+          $script = @'
+          set -euo pipefail
+          cd "$1"
+          input_root=$2
+          runtime_name=mingw-w64-cross-msysarm64-libxcrypt
+          devel_name=mingw-w64-cross-msysarm64-libxcrypt-devel
+          audit_dir=artifacts/libxcrypt-audit
+          transaction_root="$PWD/.ci-libxcrypt-transaction-root"
+          pacman_config="$transaction_root/etc/pacman.conf"
+          pacman_gpg="$transaction_root/etc/pacman.d/gnupg"
+          pacman_log="$transaction_root/var/log/pacman.log"
+          pacman_hooks="$transaction_root/etc/pacman.d/hooks"
+          target_root="${transaction_root}/opt/aarch64-pc-msys/usr"
+          logical_target_root=/opt/aarch64-pc-msys/usr
+          shared_db=/var/lib/pacman/local
+          shared_log=/var/log/pacman.log
+          mkdir -p "$audit_dir"
+          rm -rf "$transaction_root"
+          mkdir -p \
+            "$pacman_gpg" \
+            "$pacman_hooks" \
+            "$transaction_root/var/cache/pacman/pkg" \
+            "$transaction_root/var/lib/pacman" \
+            "$transaction_root/var/log"
+          cat > "$pacman_config" <<'EOF'
+          [options]
+          Architecture = auto
+          SigLevel = Required DatabaseOptional
+          LocalFileSigLevel = Optional
+          EOF
+
+          pacman_root=(
+            pacman
+            --root "$transaction_root"
+            --dbpath "$transaction_root/var/lib/pacman"
+            --cachedir "$transaction_root/var/cache/pacman/pkg"
+            --config "$pacman_config"
+            --gpgdir "$pacman_gpg"
+            --hookdir "$pacman_hooks"
+            --logfile "$pacman_log"
+          )
+
+          snapshot_shared_db() {
+            local output=$1
+            (
+              cd "$shared_db"
+              find . -type f -print0 |
+                LC_ALL=C sort -z |
+                xargs -0 sha256sum
+            ) > "$output"
+          }
+
+          snapshot_shared_log() {
+            local output=$1
+            if [[ -f "$shared_log" ]]; then
+              sha256sum "$shared_log" > "$output"
+            else
+              printf 'absent\t%s\n' "$shared_log" > "$output"
+            fi
+          }
+
+          snapshot_root() {
+            local output=$1
+            (
+              cd "$transaction_root"
+              find . -mindepth 1 \
+                ! -path './var/log/pacman.log' \
+                -printf '%P\t%y\t%m\t%s\t%l\n' |
+                LC_ALL=C sort
+            ) > "$output"
+          }
+
+          snapshot_owned_payload() {
+            local output=$1
+            local hash listed logical physical
+            {
+              "${pacman_root[@]}" -Qlq "$runtime_name" "$devel_name" |
+                while IFS= read -r listed; do
+                  if [[ "$listed" == "${transaction_root}/"* ]]; then
+                    physical=$listed
+                    logical="/${listed#"${transaction_root}/"}"
+                  else
+                    logical=$listed
+                    physical="${transaction_root}${logical}"
+                  fi
+                  if [[ -L "$physical" ]]; then
+                    printf 'symlink\t%s\t%s\n' \
+                      "$logical" "$(readlink "$physical")"
+                  elif [[ -f "$physical" ]]; then
+                    hash=$(sha256sum "$physical")
+                    printf 'file\t%s\t%s\n' \
+                      "$logical" "${hash%% *}"
+                  elif [[ -d "$physical" ]]; then
+                    printf 'directory\t%s\n' "$logical"
+                  else
+                    printf 'missing package path: %s\n' \
+                      "$logical" >&2
+                    return 1
+                  fi
+                done
+            } | LC_ALL=C sort > "$output"
+          }
+
+          shopt -s nullglob
+          runtime_packages=(
+            artifacts/mingw-w64-cross-msysarm64-libxcrypt-[0-9]*.pkg.tar.zst
+          )
+          devel_packages=(
+            artifacts/mingw-w64-cross-msysarm64-libxcrypt-devel-[0-9]*.pkg.tar.zst
+          )
+          test "${#runtime_packages[@]}" -eq 1
+          test "${#devel_packages[@]}" -eq 1
+
+          runtime_inputs=(
+            "$input_root/mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst"
+            "$input_root/mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst"
+            "$input_root/mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst"
+            "$input_root/mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst"
+          )
+          for package in "${runtime_inputs[@]}"; do
+            test -f "$package"
+          done
+
+          snapshot_shared_db "$audit_dir/shared-db-before.sha256"
+          snapshot_shared_log "$audit_dir/shared-log-before.sha256"
+          snapshot_root "$audit_dir/isolated-root-before.txt"
+
+          MSYS=winsymlinks:sys "${pacman_root[@]}" --noconfirm -U \
+            "${runtime_inputs[@]}" \
+            "${runtime_packages[0]}" \
+            "${devel_packages[0]}"
+          "${pacman_root[@]}" -Q "$runtime_name" "$devel_name" |
+            tee "$audit_dir/installed-packages.txt"
+          "${pacman_root[@]}" -Qk "$runtime_name" "$devel_name" |
+            tee "$audit_dir/package-integrity.txt"
+          "${pacman_root[@]}" -Ql "$runtime_name" \
+            > "$audit_dir/runtime-ownership.txt"
+          "${pacman_root[@]}" -Ql "$devel_name" \
+            > "$audit_dir/devel-ownership.txt"
+          snapshot_root "$audit_dir/isolated-root-after-install.txt"
+          snapshot_owned_payload \
+            "$audit_dir/owned-payload-after-install.txt"
+
+          runtime_dll="$target_root/bin/msys-crypt-2.dll"
+          test -f "$runtime_dll"
+          test -f "$target_root/include/crypt.h"
+          test -f "$target_root/lib/libcrypt.a"
+          test -f "$target_root/lib/libcrypt.dll.a"
+          test ! -e "$target_root/lib/libxcrypt.a"
+          test -f "$target_root/lib/pkgconfig/libxcrypt.pc"
+          test -L "$target_root/lib/pkgconfig/libcrypt.pc"
+
+          test "$("${pacman_root[@]}" -Qqo \
+            "$runtime_dll")" = "$runtime_name"
+          for path in \
+            "$logical_target_root/include/crypt.h" \
+            "$logical_target_root/lib/libcrypt.a" \
+            "$logical_target_root/lib/libcrypt.dll.a" \
+            "$logical_target_root/lib/pkgconfig/libxcrypt.pc"
+          do
+            test "$("${pacman_root[@]}" -Qqo \
+              "${transaction_root}${path}")" = "$devel_name"
+          done
+
+          if "${pacman_root[@]}" -Qlq "$runtime_name" |
+              grep -E '\.(a|h|pc)$'; then
+            echo 'runtime package crossed the devel ownership boundary' >&2
+            exit 1
+          fi
+          if "${pacman_root[@]}" -Qlq "$devel_name" |
+              grep -E '/bin/.*\.dll$'; then
+            echo 'devel package owns a runtime DLL' >&2
+            exit 1
+          fi
+          test -z "$("${pacman_root[@]}" -T \
+            mingw-w64-cross-msysarm64-runtime=3.6.10.r0.ga527ace21-1 \
+            mingw-w64-cross-msysarm64-sysroot=3.6.10.r0.ga527ace21-1)"
+
+          report=mingw-w64-cross-msysarm64-libxcrypt/src/libxcrypt-report
+          test -f "$report/native-crypt-smoke.exe"
+          cp -a "$report/." "$audit_dir/"
+          cp \
+            "$transaction_root/opt/aarch64-pc-msys/bin/msys-2.0.dll" \
+            "$audit_dir/"
+          cp "$runtime_dll" "$audit_dir/"
+          pacman -Q mingw-w64-cross-cygwinarm64-binutils \
+            > "$audit_dir/fixed-binutils-identity.txt"
+          sha256sum /opt/aarch64-pc-cygwin/bin/ld.bfd.exe \
+            > "$audit_dir/fixed-binutils-linker.sha256"
+          bsdtar -xOf \
+            "$input_root/mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst" \
+            opt/lib/gcc/aarch64-pc-msys/msys-gcc_s-seh-1.dll \
+            > "$audit_dir/msys-gcc_s-seh-1.dll"
+          chmod 755 "$audit_dir/msys-gcc_s-seh-1.dll"
+          (
+            cd "$audit_dir"
+            sha256sum \
+              native-crypt-smoke.exe \
+              msys-2.0.dll \
+              msys-crypt-2.dll \
+              msys-gcc_s-seh-1.dll > native-smoke-sha256.txt
+          )
+
+          "${pacman_root[@]}" --noconfirm -R \
+            "$devel_name" "$runtime_name"
+          ! "${pacman_root[@]}" -Q "$runtime_name" \
+            > /dev/null 2>&1
+          ! "${pacman_root[@]}" -Q "$devel_name" \
+            > /dev/null 2>&1
+          test ! -e "$runtime_dll"
+          test ! -e "$target_root/include/crypt.h"
+          snapshot_root "$audit_dir/isolated-root-after-remove.txt"
+
+          MSYS=winsymlinks:sys "${pacman_root[@]}" --noconfirm -U \
+            "${runtime_packages[0]}" "${devel_packages[0]}"
+          "${pacman_root[@]}" -Qk "$runtime_name" "$devel_name"
+          snapshot_root "$audit_dir/isolated-root-after-reinstall.txt"
+          snapshot_owned_payload \
+            "$audit_dir/owned-payload-after-reinstall.txt"
+          cmp \
+            "$audit_dir/owned-payload-after-install.txt" \
+            "$audit_dir/owned-payload-after-reinstall.txt"
+          cmp \
+            "$audit_dir/isolated-root-after-install.txt" \
+            "$audit_dir/isolated-root-after-reinstall.txt"
+
+          snapshot_shared_db "$audit_dir/shared-db-after.sha256"
+          snapshot_shared_log "$audit_dir/shared-log-after.sha256"
+          cmp \
+            "$audit_dir/shared-db-before.sha256" \
+            "$audit_dir/shared-db-after.sha256"
+          cmp \
+            "$audit_dir/shared-log-before.sha256" \
+            "$audit_dir/shared-log-after.sha256"
+          test -f "$pacman_log"
+          cp "$pacman_config" "$audit_dir/isolated-pacman.conf"
+          cp "$pacman_log" "$audit_dir/isolated-pacman.log"
+          rm -rf "$transaction_root"
+          '@
+          & $bash --login -lc $script -- $buildRoot $inputRoot
+          if ($LASTEXITCODE -ne 0) {
+            throw 'package transaction or ownership audit failed'
+          }
+          Copy-Item `
+            (Join-Path $env:RUNNER_TEMP 'msysarm64-inputs.tsv') `
+            "${{ steps.facts.outputs.drive }}\_\artifacts\libxcrypt-audit\bootstrap-inputs.tsv"
+
+      - name: Upload ARM64 MSYS packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm64-msys-libxcrypt-packages
+          path: ${{ steps.facts.outputs.drive }}/_/artifacts/*.pkg.tar.zst
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload validation audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm64-msys-libxcrypt-audit
+          path: ${{ steps.facts.outputs.drive }}/_/artifacts/libxcrypt-audit/**
+          if-no-files-found: error
+          retention-days: 14
+
+  native-smoke:
+    if: ${{ github.repository == 'crutkas/MSYS2-packages' }}
+    needs: build
+    runs-on: windows-11-arm
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: arm64-msys-libxcrypt-audit
+          path: audit
+
+      - name: Run native ARM64 crypt smoke
+        shell: pwsh
+        run: |
+          $architecture = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+          if ($architecture -ne [Runtime.InteropServices.Architecture]::Arm64) {
+            throw "expected an ARM64 runner, got $architecture"
+          }
+
+          $bundle = Resolve-Path 'audit'
+          $scanner = Get-ChildItem $bundle -Recurse `
+            -Filter check-aarch64-pseudo-relocs.ps1 |
+            Select-Object -First 1
+          if (-not $scanner) {
+            throw 'reviewed pseudo-reloc scanner is missing'
+          }
+          $scannerHash = (
+            Get-FileHash -Algorithm SHA256 $scanner.FullName
+          ).Hash.ToLowerInvariant()
+          if ($scannerHash -ne '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9') {
+            throw 'reviewed pseudo-reloc scanner hash mismatch'
+          }
+          $scans = @(
+            Get-ChildItem $bundle -Recurse -Filter '*.json' |
+              Where-Object DirectoryName -Like '*pseudo-reloc-scans*'
+          )
+          if ($scans.Count -ne 3) {
+            throw "expected three pseudo-reloc scan records, got $($scans.Count)"
+          }
+          foreach ($scanFile in $scans) {
+            $scan = Get-Content $scanFile.FullName -Raw | ConvertFrom-Json
+            $flags = @($scan.flags)
+            if ($scan.result -ne 'pass' -or
+                12 -in $flags -or 21 -in $flags -or
+                @($flags | Where-Object { $_ -notin @(8, 16, 32, 64) }).Count -ne 0) {
+              throw "invalid pseudo-reloc seal: $($scanFile.Name)"
+            }
+          }
+          $smoke = Get-ChildItem $bundle -Recurse `
+            -Filter native-crypt-smoke.exe |
+            Select-Object -First 1
+          if (-not $smoke) {
+            throw 'native crypt smoke executable is missing'
+          }
+          $bundle = $smoke.Directory.FullName
+          $env:PATH = "$bundle;$env:PATH"
+          $env:MSYSTEM = 'MSYS'
+          $env:MSYS2_PATH_TYPE = 'inherit'
+          Push-Location $bundle
+          try {
+            $output = & .\native-crypt-smoke.exe 2>&1
+            if ($LASTEXITCODE -ne 0) {
+              throw "native crypt smoke failed with exit code $LASTEXITCODE"
+            }
+            $output | Write-Output
+            if (($output -join "`n") -notmatch 'abJnggxhB/yWI') {
+              throw 'native crypt smoke returned an unexpected hash'
+            }
+          } finally {
+            Pop-Location
+          }

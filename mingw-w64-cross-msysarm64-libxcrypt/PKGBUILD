@@ -1,0 +1,224 @@
+# Maintainer: Chris Reddington <crutkas@microsoft.com>
+
+_realname=libxcrypt
+_target=aarch64-pc-msys
+_tool_target=aarch64-pc-cygwin
+# MSYS2's patched libtool uses its Cygwin path to produce msys-*.dll names.
+_libtool_target=aarch64-pc-cygwin
+_runtime_release_tag=msysarm64-runtime-pr10-a527-20260824
+_runtime_version=3.6.10.r0.ga527ace21
+_runtime_pkgrel=1
+_gcc_release_tag=msysarm64-gcc-pr13-20260826
+_gcc_version=15.0.1dev
+_gcc_pkgrel=1
+_support_release_tag=msysarm64-gcc-pr13-support-20260826
+_w32api_version=14.0.0.r0.g9b3dd0125
+_binutils_release_tag=cygwinarm64-binutils-pr21-3356eec-20260827
+_binutils_version=2.44.50
+_binutils_pkgrel=2
+
+pkgbase=mingw-w64-cross-msysarm64-libxcrypt
+pkgname=(
+  mingw-w64-cross-msysarm64-libxcrypt
+  mingw-w64-cross-msysarm64-libxcrypt-devel
+)
+pkgver=4.5.2
+pkgrel=1
+pkgdesc='Modern password-hashing library for aarch64-pc-msys'
+arch=('x86_64')
+url='https://github.com/besser82/libxcrypt/'
+msys2_repository_url='https://github.com/besser82/libxcrypt/'
+license=('spdx:LGPL-2.1-or-later')
+makedepends=(
+  'autotools'
+  'make'
+  'perl'
+  'pkgconf'
+  "mingw-w64-cross-cygwinarm64-binutils=${_binutils_version}-${_binutils_pkgrel}"
+  "mingw-w64-cross-msysarm64-gcc=${_gcc_version}-${_gcc_pkgrel}"
+  "mingw-w64-cross-msysarm64-gcc-libs=${_gcc_version}-${_gcc_pkgrel}"
+  "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
+  "mingw-w64-cross-msysarm64-sysroot=${_runtime_version}-${_runtime_pkgrel}"
+  "mingw-w64-cross-msysarm64-w32api-runtime=${_w32api_version}-1"
+)
+options=('!strip' '!buildflags' '!emptydirs')
+source=(
+  "${_realname}-${pkgver}.tar.xz::${url}/releases/download/v${pkgver}/${_realname}-${pkgver}.tar.xz"
+  "${_realname}-${pkgver}.tar.xz.asc::${url}/releases/download/v${pkgver}/${_realname}-${pkgver}.tar.xz.asc"
+  4.4.2-cygwin-no-undefined.patch
+  crypt-smoke.c
+  validate-libxcrypt.sh
+  README.md
+)
+sha256sums=(
+  '71513a31c01a428bccd5367a32fd95f115d6dac50fb5b60c779d5c7942aec071'
+  'SKIP'
+  'd7fc862abcae33cf62c4c267e321ad02ac831d1897f0296cb96a0d8e528ab183'
+  'bab215235696be1338184944f6956cea1fbf004c34ff50d2c729b77cc70357a0'
+  'f156c10a5a77f233162dde1de563fd9262c8b45876f425e7a62c52afb4a542dd'
+  '975bb0beec5b6599f251c8099e3049883340361e31d9de1ce8f27cf3977f02b8'
+)
+validpgpkeys=('678CE3FEE430311596DB8C16F52E98007594C21D')
+
+prepare() {
+  cd "${srcdir}/${_realname}-${pkgver}"
+
+  patch -Np2 -i "${srcdir}/4.4.2-cygwin-no-undefined.patch"
+  autoreconf -vfi
+}
+
+build() {
+  local _source="${srcdir}/${_realname}-${pkgver}"
+  local _build="${srcdir}/build-${_target}"
+  local _dest="${srcdir}/dest-${_target}"
+  local _report="${srcdir}/libxcrypt-report"
+  local _toolroot="/opt/${_tool_target}/bin"
+  local _prefix_map="-ffile-prefix-map=${srcdir}=. -fdebug-prefix-map=${srcdir}=. -fmacro-prefix-map=${srcdir}=."
+
+  rm -rf "${_build}" "${_dest}" "${_report}"
+  mkdir -p "${_build}" "${_dest}" "${_report}"
+
+  export PATH="/opt/bin:${PATH}"
+  export MSYSTEM=MSYS
+  export MSYS=winsymlinks:sys
+  export lt_cv_deplibs_check_method=pass_all
+  export CPPFLAGS="-isystem /opt/${_target}/include -idirafter /opt/${_target}/include/w32api"
+  export CFLAGS="-O2 -pipe -D_WIN64 ${_prefix_map}"
+  export LDFLAGS="-Wl,--dynamicbase,--nxcompat"
+
+  cd "${_build}"
+  "${_source}/configure" \
+    CC="${_target}-gcc" \
+    CC_FOR_BUILD=gcc \
+    AR="${_toolroot}/ar.exe" \
+    AS="${_toolroot}/as.exe" \
+    DLLTOOL="${_toolroot}/dlltool.exe" \
+    LD="${_toolroot}/ld.exe" \
+    NM="${_toolroot}/nm.exe" \
+    OBJDUMP="${_toolroot}/objdump.exe" \
+    RANLIB="${_toolroot}/ranlib.exe" \
+    STRIP="${_toolroot}/strip.exe" \
+    WINDRES="${_toolroot}/windres.exe" \
+    --build="$(gcc -dumpmachine)" \
+    --host="${_libtool_target}" \
+    --prefix=/usr \
+    --enable-static \
+    --disable-failure-tokens \
+    --disable-xcrypt-compat-files \
+    --disable-obsolete-api \
+    --enable-hashes=all \
+    --disable-symvers
+
+  make
+  make DESTDIR="${_dest}" install
+  "${_toolroot}/ar.exe" sD "${_dest}/usr/lib/libcrypt.a"
+  "${_toolroot}/ar.exe" sD "${_dest}/usr/lib/libcrypt.dll.a"
+}
+
+check() {
+  local _dest="${srcdir}/dest-${_target}"
+  local _report="${srcdir}/libxcrypt-report"
+
+  TARGET="${_target}" \
+  TARGET_CC="${_target}-gcc" \
+  TARGET_TOOL_ROOT="/opt/${_tool_target}/bin" \
+  PKG_CONFIG=pkg-config \
+    bash "${srcdir}/validate-libxcrypt.sh" \
+      "${_dest}" \
+      "${_report}" \
+      "${srcdir}/crypt-smoke.c"
+
+  cat > "${_report}/source-identity.txt" <<EOF
+package-version	${pkgver}-${pkgrel}
+source-release	v${pkgver}
+source-sha256	71513a31c01a428bccd5367a32fd95f115d6dac50fb5b60c779d5c7942aec071
+target	${_target}
+runtime-release	${_runtime_release_tag}
+runtime-version	${_runtime_version}-${_runtime_pkgrel}
+gcc-release	${_gcc_release_tag}
+gcc-version	${_gcc_version}-${_gcc_pkgrel}
+gcc-support-release	${_support_release_tag}
+w32api-version	${_w32api_version}-1
+binutils-release	${_binutils_release_tag}
+binutils-version	${_binutils_version}-${_binutils_pkgrel}
+binutils-asset-id	532446043
+binutils-package-sha256	3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b
+binutils-pkginfo-sha256	c49d9b366e4c5e5a564511cce75042a51629d2ef5887aa5a9256c5974eea3826
+binutils-package-head	3356eec1411983cc252b04afac32bca5f3b8d824
+binutils-package-run	33044771291
+binutils-linker-sha256	075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f
+binutils-source-commit	3f05fc4d3e0eeab265f2157e3257a7067b6e7223
+binutils-source-tree	ecca625d45883e13128283a8c1750dac7997f729
+binutils-source-archive-sha256	d11c2b4453318a6168287fe74655c54aa15bf12f415f9ffe3f0ea32e30a3411e
+binutils-scanner-commit	3356eec1411983cc252b04afac32bca5f3b8d824
+binutils-scanner-sha256	888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9
+binutils-native-run	33083775213
+binutils-native-seal-sha256	b0546f2d78882d4112a25861fd1b2ba9fc3cd2061b917de48a703079189af118
+EOF
+
+  grep -Fx $'target\taarch64-pc-msys' \
+    "${_report}/source-identity.txt"
+  grep -Fx $'runtime-release\tmsysarm64-runtime-pr10-a527-20260824' \
+    "${_report}/source-identity.txt"
+  grep -Fx $'gcc-release\tmsysarm64-gcc-pr13-20260826' \
+    "${_report}/source-identity.txt"
+  grep -Fx $'binutils-release\tcygwinarm64-binutils-pr21-3356eec-20260827' \
+    "${_report}/source-identity.txt"
+}
+
+package_mingw-w64-cross-msysarm64-libxcrypt() {
+  pkgdesc='Modern password-hashing runtime library for aarch64-pc-msys'
+  depends=(
+    "mingw-w64-cross-msysarm64-runtime=${_runtime_version}-${_runtime_pkgrel}"
+  )
+  provides=(
+    "aarch64-pc-msys-libcrypt=${pkgver}"
+    "aarch64-pc-msys-libxcrypt=${pkgver}"
+  )
+  conflicts=(
+    'aarch64-pc-msys-libcrypt'
+    'aarch64-pc-msys-libxcrypt'
+  )
+
+  install -d "${pkgdir}/opt/${_target}/usr/bin"
+  install -m755 \
+    "${srcdir}/dest-${_target}/usr/bin/msys-crypt-2.dll" \
+    "${pkgdir}/opt/${_target}/usr/bin/"
+  install -Dm644 \
+    "${srcdir}/${_realname}-${pkgver}/LICENSING" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/LICENSING"
+}
+
+package_mingw-w64-cross-msysarm64-libxcrypt-devel() {
+  pkgdesc='Headers and libraries for aarch64-pc-msys libxcrypt'
+  groups=('development')
+  depends=(
+    "mingw-w64-cross-msysarm64-libxcrypt=${pkgver}-${pkgrel}"
+    "mingw-w64-cross-msysarm64-runtime=${_runtime_version}-${_runtime_pkgrel}"
+  )
+  provides=(
+    "aarch64-pc-msys-libcrypt-devel=${pkgver}"
+    "aarch64-pc-msys-libxcrypt-devel=${pkgver}"
+  )
+  conflicts=(
+    'aarch64-pc-msys-libcrypt-devel'
+    'aarch64-pc-msys-libxcrypt-devel'
+  )
+  options=('staticlibs' '!strip' '!emptydirs')
+
+  install -d "${pkgdir}/opt/${_target}/usr"
+  MSYS=winsymlinks:sys cp -a \
+    "${srcdir}/dest-${_target}/usr/include" \
+    "${srcdir}/dest-${_target}/usr/lib" \
+    "${srcdir}/dest-${_target}/usr/share" \
+    "${pkgdir}/opt/${_target}/usr/"
+  install -Dm644 \
+    "${srcdir}/${_realname}-${pkgver}/LICENSING" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/LICENSING"
+  install -Dm644 \
+    "${srcdir}/README.md" \
+    "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+  install -Dm755 \
+    "${srcdir}/validate-libxcrypt.sh" \
+    "${pkgdir}/usr/share/doc/${pkgname}/validate-libxcrypt.sh"
+}
