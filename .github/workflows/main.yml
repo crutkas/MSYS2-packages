@@ -216,6 +216,7 @@ jobs:
         vars.PRIVATE_HOST_LOCK_ADMITTED == '1'
       }}
     runs-on: windows-2025
+    needs: private-host-contract
 
     steps:
       - uses: actions/checkout@v4
@@ -227,7 +228,7 @@ jobs:
       - name: Production private-host launch
         shell: pwsh
         run: |
-          & '.\.ci\private-host-launch.ps1' -Mode Launch -LockPath '.\.ci\private-host-lock.json'
+          & '.\.ci\private-host-launch.ps1' -Mode Launch -LockPath '.\.ci\private-host-lock.json' -CurlPath '${{ vars.PRIVATE_HOST_CURL_PATH }}' -TarPath '${{ vars.PRIVATE_HOST_TAR_PATH }}'
 
   package-grokker:
     if: ${{ github.ref_name != 'crutkas-native-arm64-bash' && github.head_ref != 'crutkas-native-arm64-bash' && !(github.repository == 'crutkas/MSYS2-packages' && github.head_ref == 'crutkas-package-aarch64-static-libgcc') }}

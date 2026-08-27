@@ -4,7 +4,12 @@
     "kind": null,
     "state": null,
     "issued_by": null,
-    "issued_at": null
+    "issued_at": null,
+    "base_ref": null,
+    "head_ref": null,
+    "base_seed_sha256": null,
+    "canonical_lock_sha256": null,
+    "protected_context": null
   },
   "private_root": {
     "root": null,
@@ -26,6 +31,33 @@
       "objdump.exe",
       "nm.exe"
     ]
+  },
+  "bootstrap": {
+    "curl": {
+      "url": null,
+      "name": null,
+      "bytes": null,
+      "sha256": null
+    },
+    "tar": {
+      "url": null,
+      "name": null,
+      "bytes": null,
+      "sha256": null
+    }
+  },
+  "ci": {
+    "base_repository": null,
+    "base_ref": null,
+    "base_rev": null,
+    "run_check": null,
+    "canonicalize_packages": null,
+    "package_prefixes": null,
+    "carch": null,
+    "chost": null,
+    "msystem_carch": null,
+    "msystem_chost": null,
+    "source_date_epoch": null
   },
   "base_seed": {
     "url": "https://repo.msys2.org/distrib/x86_64/msys2-base-x86_64-20260611.tar.xz",
@@ -86,100 +118,10 @@
           "version": "5.2.037",
           "bytes": null,
           "sha256": "a139c166df7ff4471c5e0733051642ee5556c1cc8a4a78f145583c5c81ab32fb"
-        },
-        "tools": {
-          "pacman": {
-            "package": {
-              "url": null,
-              "name": null,
-              "version": null,
-              "bytes": null,
-              "sha256": null
-            },
-            "metadata": {
-              "pkgname": null,
-              "pkgver": null,
-              "pkgdesc": null,
-              "arch": null,
-              "depends": null,
-              "provides": null,
-              "conflicts": null
-            }
-          },
-          "cygpath": {
-            "package": {
-              "url": null,
-              "name": null,
-              "version": null,
-              "bytes": null,
-              "sha256": null
-            },
-            "metadata": {
-              "pkgname": null,
-              "pkgver": null,
-              "pkgdesc": null,
-              "arch": null,
-              "depends": null,
-              "provides": null,
-              "conflicts": null
-            }
-          },
-          "tar": {
-            "package": {
-              "url": null,
-              "name": null,
-              "version": null,
-              "bytes": null,
-              "sha256": null
-            },
-            "metadata": {
-              "pkgname": null,
-              "pkgver": null,
-              "pkgdesc": null,
-              "arch": null,
-              "depends": null,
-              "provides": null,
-              "conflicts": null
-            }
-          },
-          "objdump": {
-            "package": {
-              "url": null,
-              "name": null,
-              "version": null,
-              "bytes": null,
-              "sha256": null
-            },
-            "metadata": {
-              "pkgname": null,
-              "pkgver": null,
-              "pkgdesc": null,
-              "arch": null,
-              "depends": null,
-              "provides": null,
-              "conflicts": null
-            }
-          },
-          "nm": {
-            "package": {
-              "url": null,
-              "name": null,
-              "version": null,
-              "bytes": null,
-              "sha256": null
-            },
-            "metadata": {
-              "pkgname": null,
-              "pkgver": null,
-              "pkgdesc": null,
-              "arch": null,
-              "depends": null,
-              "provides": null,
-              "conflicts": null
-            }
-          }
         }
       }
-    }
-  }
+    },
+    "tools": {}
+  },
+  "repositories": []
 }

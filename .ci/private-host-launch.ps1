@@ -8,6 +8,7 @@ param(
   [string]$BashCommand = "cd '$RepoRoot' && ./.ci/ci-build.sh",
   [string[]]$BashArguments,
   [switch]$AllowFixturePackages,
+  [string]$CurlPath,
   [string]$TarPath
 )
 
@@ -65,6 +66,25 @@ function Assert-PrivateRootIdentity {
   $full
 }
 
+function Assert-PhysicalChain {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Path,
+    [Parameter(Mandatory = $true)]
+    [string]$Name
+  )
+
+  $current = Assert-PathIdentity -Path $Path -Name $Name
+  while ($true) {
+    $parent = Split-Path -Path $current -Parent
+    if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $current) {
+      break
+    }
+    $parent = Assert-PathIdentity -Path $parent -Name "$Name parent"
+    $current = $parent
+  }
+}
+
 function Assert-PathIdentity {
   param(
     [Parameter(Mandatory = $true)]
@@ -84,6 +104,22 @@ function Assert-PathIdentity {
   $resolved = (Resolve-Path -LiteralPath $full).Path
   if ($resolved -ne $full) {
     throw "$Name resolved to unexpected identity: $resolved"
+  }
+  $cursor = $full
+  while ($true) {
+    $parent = Split-Path -Path $cursor -Parent
+    if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $cursor) {
+      break
+    }
+    $parentItem = Get-Item -LiteralPath $parent -Force
+    if (($parentItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw "$Name parent is a reparse point: $parent"
+    }
+    $parentResolved = (Resolve-Path -LiteralPath $parent).Path
+    if ($parentResolved -ne $parent) {
+      throw "$Name parent resolved to unexpected identity: $parentResolved"
+    }
+    $cursor = $parent
   }
   $full
 }
@@ -106,6 +142,15 @@ function Assert-LockSchema {
   if ([int]$Lock.schema_version -ne 1) {
     throw "unsupported private-host lock schema version: $($Lock.schema_version)"
   }
+  foreach ($field in 'kind', 'state', 'issued_by', 'issued_at', 'base_ref', 'head_ref', 'base_seed_sha256', 'canonical_lock_sha256', 'protected_context') {
+    Assert-Field -Value $Lock.admission.$field -Name "admission.$field"
+  }
+  if ($Lock.admission.base_seed_sha256 -ne $Lock.base_seed.sha256) {
+    throw 'admission.base_seed_sha256 must match the protected base seed'
+  }
+  if ($Lock.admission.canonical_lock_sha256 -notmatch '^[0-9a-f]{64}$') {
+    throw 'admission.canonical_lock_sha256 must be a lowercase SHA-256 hex string'
+  }
   $kind = [string]$Lock.admission.kind
   if ($AllowFixturePackages) {
     if ($kind -ne 'fixture') {
@@ -115,6 +160,44 @@ function Assert-LockSchema {
     if ($kind -ne 'production') {
       throw "production launch requires an admitted production lock"
     }
+  }
+  if ($null -eq $Lock.repositories -or @($Lock.repositories).Count -lt 1) {
+    throw 'at least one repository is required'
+  }
+  if ($null -eq $Lock.assets.tools -or @($Lock.assets.tools.PSObject.Properties.Name).Count -lt 1) {
+    throw 'at least one private tool package is required'
+  }
+  foreach ($field in 'curl', 'tar') {
+    Assert-Field -Value $Lock.bootstrap.$field.url -Name "bootstrap.$field.url"
+    Assert-Field -Value $Lock.bootstrap.$field.name -Name "bootstrap.$field.name"
+    Assert-Field -Value $Lock.bootstrap.$field.bytes -Name "bootstrap.$field.bytes"
+    Assert-Field -Value $Lock.bootstrap.$field.sha256 -Name "bootstrap.$field.sha256"
+    $bootstrapUri = [System.Uri]::new([string]$Lock.bootstrap.$field.url, [System.UriKind]::Absolute)
+    if ($bootstrapUri.Scheme -ne 'https') {
+      throw "bootstrap.$field.url must be https"
+    }
+    if ([System.IO.Path]::GetFileName($bootstrapUri.AbsolutePath) -ne [string]$Lock.bootstrap.$field.name) {
+      throw "bootstrap.$field.name must match the URL leaf name"
+    }
+    if ([string]$Lock.bootstrap.$field.sha256 -notmatch '^[0-9a-f]{64}$') {
+      throw "bootstrap.$field.sha256 must be a lowercase SHA-256 hex string"
+    }
+  }
+  Assert-Field -Value $Lock.ci.base_repository -Name 'ci.base_repository'
+  Assert-Field -Value $Lock.ci.base_ref -Name 'ci.base_ref'
+  Assert-Field -Value $Lock.ci.base_rev -Name 'ci.base_rev'
+  Assert-Field -Value $Lock.ci.run_check -Name 'ci.run_check'
+  Assert-Field -Value $Lock.ci.canonicalize_packages -Name 'ci.canonicalize_packages'
+  Assert-Field -Value $Lock.ci.package_prefixes -Name 'ci.package_prefixes'
+  Assert-Field -Value $Lock.ci.carch -Name 'ci.carch'
+  Assert-Field -Value $Lock.ci.chost -Name 'ci.chost'
+  Assert-Field -Value $Lock.ci.msystem_carch -Name 'ci.msystem_carch'
+  Assert-Field -Value $Lock.ci.msystem_chost -Name 'ci.msystem_chost'
+  Assert-Field -Value $Lock.ci.source_date_epoch -Name 'ci.source_date_epoch'
+  foreach ($repo in @($Lock.repositories)) {
+    Assert-Field -Value $repo.name -Name 'repositories.name'
+    Assert-Field -Value $repo.server -Name 'repositories.server'
+    Assert-Field -Value $repo.siglevel -Name 'repositories.siglevel'
   }
 }
 
@@ -183,7 +266,7 @@ function New-ExclusiveDirectory {
   $full = Assert-PrivateRootIdentity -Path $Path -Name $Name
   $parent = Split-Path -Path $full -Parent
   if ($parent) {
-    Assert-PathIdentity -Path $parent -Name "$Name parent" | Out-Null
+    Assert-PhysicalChain -Path $parent -Name "$Name parent"
   }
   if (Test-Path -LiteralPath $full) {
     throw "$Name already exists and cannot be reused: $full"
@@ -205,7 +288,7 @@ function New-ExclusiveFile {
   $full = Assert-PrivateRootIdentity -Path $Path -Name $Name
   $parent = Split-Path -Path $full -Parent
   if (Test-Path -LiteralPath $parent) {
-    Assert-PathIdentity -Path $parent -Name "$Name parent" | Out-Null
+    Assert-PhysicalChain -Path $parent -Name "$Name parent"
   }
   if (-not (Test-Path -LiteralPath $parent)) {
     New-ExclusiveDirectory -Path $parent -Name "$Name parent" | Out-Null
@@ -283,9 +366,17 @@ function Assert-AssetReady {
 function Download-Asset {
   param(
     [Parameter(Mandatory = $true)]$Asset,
-    [Parameter(Mandatory = $true)][string]$Destination
+    [Parameter(Mandatory = $true)][string]$Destination,
+    [Parameter(Mandatory = $true)][string]$CurlPath,
+    [Parameter(Mandatory = $true)][bool]$AllowFixturePackages
   )
-  & curl.exe --fail --location --retry 5 --silent --show-error --output $Destination $Asset.package.url
+  Assert-PathIdentity -Path $CurlPath -Name 'curl.exe' | Out-Null
+  $curlArgs = @('--fail', '--location', '--retry', '5', '--silent', '--show-error')
+  if (-not $AllowFixturePackages) {
+    $curlArgs += @('--proto', '=https', '--proto-redir', '=https')
+  }
+  $curlArgs += @('--output', $Destination, $Asset.package.url)
+  & $CurlPath @curlArgs
   if ($LASTEXITCODE -ne 0) {
     throw "download failed for $($Asset.package.url)"
   }
@@ -322,6 +413,7 @@ function Install-ArchiveTree {
     [Parameter(Mandatory = $true)][string]$Stage,
     [Parameter(Mandatory = $true)][string]$Name,
     [Parameter(Mandatory = $true)][bool]$AllowFixturePackages,
+    [Parameter(Mandatory = $true)][string]$CurlPath,
     [Parameter(Mandatory = $true)][string]$TarPath
   )
   $downloadsRoot = Assert-PathIdentity -Path (Join-Path $Stage 'downloads') -Name 'downloads root'
@@ -329,7 +421,7 @@ function Install-ArchiveTree {
   $downloads = New-ExclusiveDirectory -Path (Join-Path $downloadsRoot $Name) -Name "$Name downloads"
   $extracted = New-ExclusiveDirectory -Path (Join-Path $extractRoot $Name) -Name "$Name extract"
   $archive = Join-Path $downloads $Asset.package.name
-  Download-Asset -Asset $Asset -Destination $archive
+  Download-Asset -Asset $Asset -Destination $archive -CurlPath $CurlPath -AllowFixturePackages $AllowFixturePackages
   Extract-Archive -Archive $archive -Destination $extracted -TarPath $TarPath
 
   $pkgInfoPath = Join-Path $extracted '.PKGINFO'
@@ -379,7 +471,12 @@ function Install-ArchiveTree {
       Assert-PathIdentity -Path $target -Name "$Name extracted directory" | Out-Null
     } else {
       if (Test-Path -LiteralPath $target) {
-        throw "$Name archive collision at $target"
+        $existingHash = Get-FileHash -Algorithm SHA256 -LiteralPath $target
+        $sourceHash = Get-FileHash -Algorithm SHA256 -LiteralPath $item.FullName
+        if ($existingHash.Hash -ne $sourceHash.Hash) {
+          throw "$Name archive collision at $target"
+        }
+        continue
       }
       Copy-Item -LiteralPath $item.FullName -Destination $target -Force
       Assert-PathIdentity -Path $target -Name "$Name extracted file" | Out-Null
@@ -401,6 +498,7 @@ function Resolve-PrivateTool {
 function Build-MinimalEnvironment {
   param(
     [Parameter(Mandatory = $true)][string]$Root,
+    [Parameter(Mandatory = $true)]$Lock,
     [Parameter(Mandatory = $true)][string]$GitExecPath
   )
 
@@ -426,6 +524,17 @@ function Build-MinimalEnvironment {
     CHERE_INVOKING = '1'
     LANG = 'C.UTF-8'
     LC_ALL = 'C.UTF-8'
+    CI_BASE_REPOSITORY = [string]$Lock.ci.base_repository
+    CI_BASE_REF = [string]$Lock.ci.base_ref
+    CI_BASE_REV = [string]$Lock.ci.base_rev
+    CI_RUN_CHECK = [string]$Lock.ci.run_check
+    CI_CANONICALIZE_PACKAGES = [string]$Lock.ci.canonicalize_packages
+    CI_PACKAGE_PREFIXES = [string]$Lock.ci.package_prefixes
+    CARCH = [string]$Lock.ci.carch
+    CHOST = [string]$Lock.ci.chost
+    MSYSTEM_CARCH = [string]$Lock.ci.msystem_carch
+    MSYSTEM_CHOST = [string]$Lock.ci.msystem_chost
+    SOURCE_DATE_EPOCH = [string]$Lock.ci.source_date_epoch
   }
 }
 
@@ -438,14 +547,22 @@ function Invoke-PrivateHostLaunch {
     [Parameter(Mandatory = $true)][string]$BashCommand,
     [string[]]$BashArguments,
     [Parameter(Mandatory = $true)][bool]$AllowFixturePackages,
+    [Parameter(Mandatory = $true)][string]$CurlPath,
     [string]$TarPath
   )
 
   Assert-LockSchema -Lock $Lock -AllowFixturePackages $AllowFixturePackages
   Assert-NoAmbientShellFallback
+  if (-not $AllowFixturePackages) {
+    Assert-Field -Value $CurlPath -Name 'bootstrap.curl.path'
+    Assert-Field -Value $TarPath -Name 'bootstrap.tar.path'
+  }
 
   foreach ($assetName in 'git', 'bash') {
     Assert-AssetReady -Asset $Lock.assets.host.$assetName -Name "assets.host.$assetName" -AllowFixturePackages $AllowFixturePackages
+  }
+  foreach ($toolName in @($Lock.assets.tools.PSObject.Properties.Name)) {
+    Assert-AssetReady -Asset $Lock.assets.tools.PSObject.Properties[$toolName].Value -Name "assets.tools.$toolName" -AllowFixturePackages $AllowFixturePackages
   }
 
   $rootPath = Assert-Contained -Parent $TrustedParent -Child $Root -Name 'private root'
@@ -457,26 +574,43 @@ function Invoke-PrivateHostLaunch {
     New-ExclusiveDirectory -Path (Join-Path $rootPath $subdir) -Name $subdir | Out-Null
   }
   New-ExclusiveDirectory -Path (Join-Path $rootPath 'var\log') -Name 'var\log' | Out-Null
+  New-ExclusiveDirectory -Path (Join-Path $rootPath 'var\lib') -Name 'var\lib' | Out-Null
+  New-ExclusiveDirectory -Path (Join-Path $rootPath 'var\cache') -Name 'var\cache' | Out-Null
+  New-ExclusiveDirectory -Path (Join-Path $rootPath 'var\lib\pacman') -Name 'var\lib\pacman' | Out-Null
+  New-ExclusiveDirectory -Path (Join-Path $rootPath 'var\cache\pacman') -Name 'var\cache\pacman' | Out-Null
   New-ExclusiveDirectory -Path (Join-Path $rootPath 'etc\pacman.d') -Name 'etc\pacman.d' | Out-Null
   New-ExclusiveDirectory -Path (Join-Path $rootPath 'stage\downloads') -Name 'downloads root' | Out-Null
   New-ExclusiveDirectory -Path (Join-Path $rootPath 'stage\extract') -Name 'extract root' | Out-Null
+  New-ExclusiveDirectory -Path (Join-Path $rootPath 'var\cache\pacman\pkg') -Name 'var\cache\pacman\pkg' | Out-Null
+  New-ExclusiveDirectory -Path (Join-Path $rootPath 'var\lib\pacman\sync') -Name 'var\lib\pacman\sync' | Out-Null
+  New-ExclusiveDirectory -Path (Join-Path $rootPath 'etc\pacman.d\gnupg') -Name 'etc\pacman.d\gnupg' | Out-Null
 
-  Install-ArchiveTree -Asset $Lock.assets.host.git -Root $rootPath -Stage (Join-Path $rootPath 'stage') -Name 'git' -AllowFixturePackages $AllowFixturePackages -TarPath $TarPath
-  Install-ArchiveTree -Asset $Lock.assets.host.bash -Root $rootPath -Stage (Join-Path $rootPath 'stage') -Name 'bash' -AllowFixturePackages $AllowFixturePackages -TarPath $TarPath
+  Install-ArchiveTree -Asset $Lock.assets.host.git -Root $rootPath -Stage (Join-Path $rootPath 'stage') -Name 'git' -AllowFixturePackages $AllowFixturePackages -CurlPath $CurlPath -TarPath $TarPath
+  Install-ArchiveTree -Asset $Lock.assets.host.bash -Root $rootPath -Stage (Join-Path $rootPath 'stage') -Name 'bash' -AllowFixturePackages $AllowFixturePackages -CurlPath $CurlPath -TarPath $TarPath
+  foreach ($toolName in @($Lock.assets.tools.PSObject.Properties.Name)) {
+    Install-ArchiveTree -Asset $Lock.assets.tools.PSObject.Properties[$toolName].Value -Root $rootPath -Stage (Join-Path $rootPath 'stage') -Name $toolName -AllowFixturePackages $AllowFixturePackages -CurlPath $CurlPath -TarPath $TarPath
+  }
 
   $pacmanConf = New-ExclusiveFile -Path (Join-Path $rootPath 'etc\pacman.conf') -Name 'pacman.conf'
   $pacmanLog = New-ExclusiveFile -Path (Join-Path $rootPath 'var\log\pacman.log') -Name 'pacman.log'
-  Set-Content -LiteralPath $pacmanConf -Value @"
-[options]
-RootDir = $rootPath
-DBPath = $($Lock.private_root.dbpath)
-CacheDir = $($Lock.private_root.cache)
-LogFile = $pacmanLog
-HookDir = $($Lock.private_root.hooks)
-GPGDir = $($Lock.private_root.gpg)
-Architecture = aarch64
-SigLevel = Required DatabaseOptional
-"@
+  $pacmanLines = @(
+    '[options]',
+    "RootDir = $rootPath",
+    "DBPath = $($Lock.private_root.dbpath)",
+    "CacheDir = $($Lock.private_root.cache)",
+    "LogFile = $pacmanLog",
+    "HookDir = $($Lock.private_root.hooks)",
+    "GPGDir = $($Lock.private_root.gpg)",
+    'Architecture = aarch64',
+    'SigLevel = Required DatabaseOptional'
+  )
+  foreach ($repo in @($Lock.repositories)) {
+    $pacmanLines += ''
+    $pacmanLines += "[$($repo.name)]"
+    $pacmanLines += "Server = $($repo.server)"
+    $pacmanLines += "SigLevel = $($repo.siglevel)"
+  }
+  Set-Content -LiteralPath $pacmanConf -Value $pacmanLines
 
   $bashExe = Resolve-PrivateTool -Root $rootPath -RelativePath 'usr\bin\bash.exe' -Name 'bash.exe'
   $gitExe = Resolve-PrivateTool -Root $rootPath -RelativePath 'usr\bin\git.exe' -Name 'git.exe'
@@ -500,7 +634,7 @@ SigLevel = Required DatabaseOptional
    git_exec_path = $gitExecPath
   } | ConvertTo-Json -Depth 4 | Write-Host
 
-  $childEnv = Build-MinimalEnvironment -Root $rootPath -GitExecPath $gitExecPath
+  $childEnv = Build-MinimalEnvironment -Root $rootPath -Lock $Lock -GitExecPath $gitExecPath
   $arguments = if ($null -ne $BashArguments -and $BashArguments.Count -gt 0) {
    @($BashArguments)
   } else {
@@ -515,7 +649,9 @@ SigLevel = Required DatabaseOptional
   $psi.RedirectStandardError = $false
   $psi.Environment.Clear()
   foreach ($entry in $childEnv.GetEnumerator()) {
-   $psi.Environment[$entry.Key] = [string]$entry.Value
+   if ($null -ne $entry.Value -and $entry.Value -ne '') {
+     $psi.Environment[$entry.Key] = [string]$entry.Value
+   }
   }
   foreach ($argument in @($arguments)) {
    [void]$psi.ArgumentList.Add([string]$argument)
@@ -535,5 +671,5 @@ if ($Mode -eq 'Test') {
   exit $LASTEXITCODE
 }
 
-$exitCode = Invoke-PrivateHostLaunch -Lock $lock -Root $PrivateRoot -TrustedParent $TrustedParent -RepoRoot $RepoRoot -BashCommand $BashCommand -BashArguments $BashArguments -AllowFixturePackages ([bool]$AllowFixturePackages) -TarPath $TarPath
+$exitCode = Invoke-PrivateHostLaunch -Lock $lock -Root $PrivateRoot -TrustedParent $TrustedParent -RepoRoot $RepoRoot -BashCommand $BashCommand -BashArguments $BashArguments -AllowFixturePackages ([bool]$AllowFixturePackages) -CurlPath $CurlPath -TarPath $TarPath
 exit $exitCode
