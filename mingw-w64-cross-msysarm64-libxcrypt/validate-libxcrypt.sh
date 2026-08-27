@@ -86,6 +86,8 @@ grep -Fx "Version: 4.5.2" "${pkgconfig}"
 
 export PATH="/opt/bin:${PATH}"
 export LIBRARY_PATH="${root}/lib:/opt/${target}/usr/lib:/opt/${target}/lib"
+export PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1
+export PKG_CONFIG_ALLOW_SYSTEM_LIBS=1
 PKG_CONFIG_SYSROOT_DIR="${dest}" \
 PKG_CONFIG_LIBDIR="${root}/lib/pkgconfig" \
   "${pkg_config}" --cflags --libs libcrypt \
