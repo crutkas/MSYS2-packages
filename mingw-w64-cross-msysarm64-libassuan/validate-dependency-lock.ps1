@@ -3,7 +3,7 @@ param(
   [Parameter(Mandatory)]
   [string] $LockPath,
 
-  [string] $SealPath,
+  [string] $EvidencePath,
 
   [string] $PackageDirectory,
 
@@ -57,9 +57,16 @@ function Assert-NonEmptyString {
   }
 }
 
+function Assert-PositiveInteger {
+  param([object] $Value, [string] $Name)
+  if ($Value -isnot [long] -or $Value -le 0) {
+    throw "$Name must be a positive integer"
+  }
+}
+
 function Assert-ExactStringArray {
-  param([object[]] $Actual, [string[]] $Expected, [string] $Name)
-  $actualSorted = @($Actual | ForEach-Object {
+  param([object] $Actual, [string[]] $Expected, [string] $Name)
+  $actualSorted = @(@($Actual) | ForEach-Object {
       Assert-NonEmptyString $_ "$Name entry"
       [string] $_
     } | Sort-Object)
@@ -99,7 +106,7 @@ function Assert-NoDuplicateProperties {
 }
 
 function Read-StrictJson {
-  param([string] $Path, [string] $Name)
+  param([string] $Path)
   $resolved = (Resolve-Path -LiteralPath $Path).Path
   $text = [IO.File]::ReadAllText($resolved)
   $document = [System.Text.Json.JsonDocument]::Parse($text)
@@ -112,24 +119,10 @@ function Read-StrictJson {
   $text | ConvertFrom-Json
 }
 
-function Assert-Asset {
-  param(
-    [object] $Asset,
-    [string] $Name,
-    [string] $ReleaseTag,
-    [switch] $PackageFields
-  )
-  $properties = @('assetId', 'bytes', 'filename', 'sha256', 'url')
-  if ($PackageFields) {
-    $properties += @('arch', 'depends', 'pkgname', 'pkgver', 'provides')
-  }
-  Assert-ExactProperties $Asset $properties $Name
-  if ($Asset.assetId -isnot [long] -or $Asset.assetId -le 0) {
-    throw "$Name.assetId must be a positive integer"
-  }
-  if ($Asset.bytes -isnot [long] -or $Asset.bytes -le 0) {
-    throw "$Name.bytes must be a positive integer"
-  }
+function Assert-AssetFields {
+  param([object] $Asset, [string] $Name, [string] $ReleaseTag)
+  Assert-PositiveInteger $Asset.assetId "$Name.assetId"
+  Assert-PositiveInteger $Asset.bytes "$Name.bytes"
   Assert-NonEmptyString $Asset.filename "$Name.filename"
   if ([IO.Path]::GetFileName($Asset.filename) -cne $Asset.filename) {
     throw "$Name.filename must not contain a path"
@@ -149,7 +142,7 @@ function Assert-PackageAdmission {
     'arch', 'assetId', 'bytes', 'depends', 'filename', 'pkgname',
     'pkgver', 'provides', 'sha256', 'url'
   ) $Name
-  Assert-Asset $Package $Name $ReleaseTag -PackageFields
+  Assert-AssetFields $Package $Name $ReleaseTag
   foreach ($property in @('pkgname', 'pkgver', 'arch')) {
     Assert-NonEmptyString $Package.$property "$Name.$property"
   }
@@ -157,23 +150,22 @@ function Assert-PackageAdmission {
     throw "$Name.arch must be x86_64"
   }
   foreach ($property in @('depends', 'provides')) {
-    if ($Package.$property -isnot [object[]] -or $Package.$property.Count -eq 0) {
+    if (@($Package.$property).Count -eq 0) {
       throw "$Name.$property must be a nonempty array"
     }
-    foreach ($entry in $Package.$property) {
+    foreach ($entry in @($Package.$property)) {
       Assert-NonEmptyString $entry "$Name.$property entry"
     }
   }
 }
 
-function Read-PkgInfo {
-  param([string] $Archive, [string] $Tool)
-  $lines = @(& $Tool -xOf $Archive .PKGINFO)
-  if ($LASTEXITCODE -ne 0 -or $lines.Count -eq 0) {
-    throw "Unable to extract .PKGINFO from $Archive"
+function Read-PkgInfoLines {
+  param([string[]] $Lines, [string] $Name)
+  if ($Lines.Count -eq 0) {
+    throw "$Name is empty"
   }
   $fields = @{}
-  foreach ($line in $lines) {
+  foreach ($line in $Lines) {
     if ($line -match '^([^#][^ ]*) = (.*)$') {
       if (-not $fields.ContainsKey($Matches[1])) {
         $fields[$Matches[1]] = [Collections.Generic.List[string]]::new()
@@ -184,12 +176,171 @@ function Read-PkgInfo {
   $fields
 }
 
-$lock = Read-StrictJson $LockPath 'dependency lock'
+function Read-PackageInfo {
+  param([string] $Archive, [string] $Tool)
+  $lines = @(& $Tool -xOf $Archive .PKGINFO)
+  if ($LASTEXITCODE -ne 0) {
+    throw "Unable to extract .PKGINFO from $Archive"
+  }
+  Read-PkgInfoLines $lines "$Archive .PKGINFO"
+}
+
+function Assert-PkgInfo {
+  param([hashtable] $PkgInfo, [object] $Package, [string] $Name)
+  foreach ($field in @('pkgname', 'pkgver', 'arch')) {
+    if (-not $PkgInfo.ContainsKey($field) -or
+        $PkgInfo[$field].Count -ne 1 -or
+        $PkgInfo[$field][0] -cne $Package.$field) {
+      throw "$Name $field does not match the admission lock"
+    }
+  }
+  Assert-ExactStringArray $PkgInfo['depend'] $Package.depends "$Name depends"
+  Assert-ExactStringArray $PkgInfo['provides'] $Package.provides "$Name provides"
+}
+
+function ConvertTo-SafeManifestPath {
+  param([string] $Value, [string] $Name)
+  Assert-NonEmptyString $Value $Name
+  $normalized = $Value.Replace('\', '/')
+  if ($normalized -match '(^/|^[A-Za-z]:|^//|(^|/)\.\.(/|$)|(^|/)\.(/|$)|//)') {
+    throw "$Name contains an unsafe path: $Value"
+  }
+  $normalized
+}
+
+function Join-ManifestPath {
+  param([string] $Root, [string] $Relative)
+  $result = $Root
+  foreach ($segment in $Relative.Split('/')) {
+    $result = Join-Path $result $segment
+  }
+  $result
+}
+
+function Test-EvidenceArchive {
+  param(
+    [object] $Admission,
+    [string] $Archive,
+    [string] $Tool
+  )
+
+  $evidence = $Admission.evidence
+  $file = Get-Item -LiteralPath $Archive
+  if ($file.Name -cne $evidence.filename -or
+      $file.Length -ne $evidence.bytes -or
+      (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.
+        ToLowerInvariant() -cne $evidence.sha256) {
+    throw 'Downloaded dependency evidence does not match its admitted asset'
+  }
+
+  $entries = @(& $Tool -tf $file.FullName)
+  if ($LASTEXITCODE -ne 0 -or $entries.Count -ne $evidence.archiveEntries) {
+    throw 'Dependency evidence archive entry count is invalid'
+  }
+  $rootPrefix = "$($evidence.rootDirectory)/"
+  foreach ($entry in $entries) {
+    $safe = ConvertTo-SafeManifestPath $entry 'evidence archive entry'
+    if ($safe -cne $evidence.rootDirectory -and
+        -not $safe.StartsWith($rootPrefix, [StringComparison]::Ordinal)) {
+      throw "Dependency evidence archive escapes its admitted root: $entry"
+    }
+  }
+
+  $temp = Join-Path ([IO.Path]::GetTempPath()) "libassuan-evidence-$PID-$([Guid]::NewGuid())"
+  New-Item -ItemType Directory -Force $temp | Out-Null
+  try {
+    & $Tool -xf $file.FullName -C $temp
+    if ($LASTEXITCODE -ne 0) {
+      throw 'Unable to extract dependency evidence archive'
+    }
+    $root = Join-Path $temp $evidence.rootDirectory
+    $manifestPath = Join-Path $root 'MANIFEST.sha256'
+    $sealPath = Join-Path $root 'SEAL.sha256'
+    $manifest = Get-Item -LiteralPath $manifestPath
+    if ((Get-FileHash -LiteralPath $manifest.FullName -Algorithm SHA256).Hash.
+        ToLowerInvariant() -cne $evidence.manifestSha256) {
+      throw 'Dependency evidence manifest hash is invalid'
+    }
+    $expectedSeal = "$($evidence.manifestSha256)  MANIFEST.sha256  STATUS=$($evidence.sealStatus)  COMMIT=$($Admission.producerCommit)"
+    $actualSeal = [IO.File]::ReadAllText($sealPath).TrimEnd("`r", "`n")
+    if ($actualSeal -cne $expectedSeal) {
+      throw 'Dependency evidence seal does not bind the admitted manifest and producer'
+    }
+
+    $records = [Collections.Generic.List[object]]::new()
+    $recordPaths = [Collections.Generic.HashSet[string]]::new(
+      [StringComparer]::Ordinal)
+    foreach ($line in [IO.File]::ReadAllLines($manifest.FullName)) {
+      if ($line -cnotmatch '^([0-9a-f]{64})  ([0-9]+)  (.+)$') {
+        throw "Malformed dependency evidence manifest line: $line"
+      }
+      $relative = ConvertTo-SafeManifestPath $Matches[3] 'evidence manifest entry'
+      if (-not $recordPaths.Add($relative)) {
+        throw "Duplicate dependency evidence manifest path: $relative"
+      }
+      $record = [ordered]@{
+        sha256 = $Matches[1]
+        bytes = [long] $Matches[2]
+        path = $relative
+      }
+      $payload = Get-Item -LiteralPath (Join-ManifestPath $root $relative)
+      if ($payload.Length -ne $record.bytes -or
+          (Get-FileHash -LiteralPath $payload.FullName -Algorithm SHA256).Hash.
+            ToLowerInvariant() -cne $record.sha256) {
+        throw "Dependency evidence payload does not match its manifest: $relative"
+      }
+      $records.Add([pscustomobject] $record)
+    }
+    if ($records.Count -ne $evidence.manifestEntries) {
+      throw 'Dependency evidence manifest entry count is invalid'
+    }
+
+    $files = @(Get-ChildItem -LiteralPath $root -Recurse -File)
+    if ($files.Count -ne $evidence.regularFiles) {
+      throw 'Dependency evidence regular-file count is invalid'
+    }
+    foreach ($payload in $files) {
+      $relative = $payload.FullName.Substring($root.Length + 1).Replace('\', '/')
+      if ($relative -notin @('MANIFEST.sha256', 'SEAL.sha256') -and
+          -not $recordPaths.Contains($relative)) {
+        throw "Unmanifested dependency evidence payload: $relative"
+      }
+    }
+
+    foreach ($packageRole in @('runtime', 'devel')) {
+      $package = $Admission.$packageRole
+      $packageRelative = "ci/pr-packages/$($package.filename)"
+      $record = @($records | Where-Object path -CEQ $packageRelative)
+      if ($record.Count -ne 1 -or
+          $record[0].bytes -ne $package.bytes -or
+          $record[0].sha256 -cne $package.sha256) {
+        throw "Dependency evidence manifest does not bind the $packageRole package"
+      }
+      $internalArchive = Join-ManifestPath $root $packageRelative
+      Assert-PkgInfo (Read-PackageInfo $internalArchive $Tool) $package `
+        "evidence $packageRole package .PKGINFO"
+
+      $pkgInfoRelative = "evidence/$packageRole-final.PKGINFO"
+      if (-not $recordPaths.Contains($pkgInfoRelative)) {
+        throw "Dependency evidence does not bind $pkgInfoRelative"
+      }
+      $pkgInfoPath = Join-ManifestPath $root $pkgInfoRelative
+      Assert-PkgInfo (Read-PkgInfoLines @(
+          [IO.File]::ReadAllLines($pkgInfoPath)
+        ) $pkgInfoRelative) $package "evidence $pkgInfoRelative"
+    }
+  }
+  finally {
+    Remove-Item -LiteralPath $temp -Recurse -Force
+  }
+}
+
+$lock = Read-StrictJson $LockPath
 Assert-ExactProperties $lock @(
   'admission', 'approved', 'dependency', 'rejectedSha256', 'repository',
   'requiredVersion', 'schemaVersion'
 ) 'dependency lock'
-if ($lock.schemaVersion -ne 1 -or
+if ($lock.schemaVersion -ne 2 -or
     $lock.dependency -cne 'libgpg-error' -or
     $lock.requiredVersion -cne '1.56-1' -or
     $lock.repository -cne 'crutkas/MSYS2-packages') {
@@ -199,7 +350,7 @@ if ($lock.approved -isnot [bool]) {
   throw 'Dependency lock approved must be a Boolean'
 }
 Assert-ExactStringArray $lock.rejectedSha256 $requiredRejectedHashes 'rejectedSha256'
-foreach ($hash in $lock.rejectedSha256) {
+foreach ($hash in @($lock.rejectedSha256)) {
   Assert-HexSha256 $hash 'rejectedSha256 entry'
 }
 
@@ -207,7 +358,7 @@ if (-not $lock.approved) {
   if ($null -ne $lock.admission) {
     throw 'An unapproved dependency lock must have a null admission'
   }
-  if ($RequireApproved -or $SealPath -or $PackageDirectory -or $Bsdtar) {
+  if ($RequireApproved -or $EvidencePath -or $PackageDirectory -or $Bsdtar) {
     throw 'libgpg-error admission is closed; final fixed-linker coordinates are not approved'
   }
   Write-Output 'Dependency lock is structurally valid and intentionally unapproved.'
@@ -218,18 +369,58 @@ if ($null -eq $lock.admission) {
   throw 'An approved dependency lock must contain an admission'
 }
 Assert-ExactProperties $lock.admission @(
-  'devel', 'producerCommit', 'releaseTag', 'runtime', 'seal'
+  'devel', 'evidence', 'producerCommit', 'publicAudit', 'releaseId',
+  'releaseTag', 'runtime', 'tagObject'
 ) 'admission'
+Assert-PositiveInteger $lock.admission.releaseId 'admission.releaseId'
 Assert-NonEmptyString $lock.admission.releaseTag 'admission.releaseTag'
-if ($lock.admission.producerCommit -cnotmatch '^[0-9a-f]{40}$') {
-  throw 'admission.producerCommit must be a lowercase full commit SHA'
+foreach ($property in @('producerCommit', 'tagObject')) {
+  if ($lock.admission.$property -cnotmatch '^[0-9a-f]{40}$') {
+    throw "admission.$property must be a lowercase full commit SHA"
+  }
 }
-Assert-Asset $lock.admission.seal 'admission.seal' $lock.admission.releaseTag
-Assert-PackageAdmission $lock.admission.runtime 'admission.runtime' $lock.admission.releaseTag
-Assert-PackageAdmission $lock.admission.devel 'admission.devel' $lock.admission.releaseTag
+
+Assert-ExactProperties $lock.admission.evidence @(
+  'archiveEntries', 'assetId', 'bytes', 'filename', 'manifestEntries',
+  'manifestSha256', 'regularFiles', 'rootDirectory', 'sealStatus',
+  'sha256', 'url'
+) 'admission.evidence'
+Assert-AssetFields $lock.admission.evidence 'admission.evidence' `
+  $lock.admission.releaseTag
+foreach ($property in @('archiveEntries', 'manifestEntries', 'regularFiles')) {
+  Assert-PositiveInteger $lock.admission.evidence.$property "admission.evidence.$property"
+}
+foreach ($property in @('rootDirectory', 'sealStatus')) {
+  Assert-NonEmptyString $lock.admission.evidence.$property "admission.evidence.$property"
+}
+Assert-HexSha256 $lock.admission.evidence.manifestSha256 `
+  'admission.evidence.manifestSha256'
+
+Assert-ExactProperties $lock.admission.publicAudit @(
+  'manifestBytes', 'manifestSha256', 'reportBytes', 'reportSha256', 'result'
+) 'admission.publicAudit'
+foreach ($property in @('manifestBytes', 'reportBytes')) {
+  Assert-PositiveInteger $lock.admission.publicAudit.$property `
+    "admission.publicAudit.$property"
+}
+foreach ($property in @('manifestSha256', 'reportSha256')) {
+  Assert-HexSha256 $lock.admission.publicAudit.$property `
+    "admission.publicAudit.$property"
+}
+if ($lock.admission.publicAudit.result -cne 'PASS') {
+  throw 'admission.publicAudit.result must be PASS'
+}
+
+Assert-PackageAdmission $lock.admission.runtime 'admission.runtime' `
+  $lock.admission.releaseTag
+Assert-PackageAdmission $lock.admission.devel 'admission.devel' `
+  $lock.admission.releaseTag
 
 $allAdmissionHashes = @(
-  $lock.admission.seal.sha256,
+  $lock.admission.evidence.sha256,
+  $lock.admission.evidence.manifestSha256,
+  $lock.admission.publicAudit.manifestSha256,
+  $lock.admission.publicAudit.reportSha256,
   $lock.admission.runtime.sha256,
   $lock.admission.devel.sha256
 )
@@ -250,75 +441,28 @@ foreach ($package in @($lock.admission.runtime, $lock.admission.devel)) {
   }
 }
 
-if ($SealPath) {
-  $sealFile = Get-Item -LiteralPath $SealPath
-  if ($sealFile.Name -cne $lock.admission.seal.filename -or
-      $sealFile.Length -ne $lock.admission.seal.bytes -or
-      (Get-FileHash -LiteralPath $sealFile.FullName -Algorithm SHA256).Hash.ToLowerInvariant() -cne
-      $lock.admission.seal.sha256) {
-    throw 'Downloaded dependency seal does not match its admitted asset'
+if ($EvidencePath) {
+  if (-not $Bsdtar) {
+    throw 'Evidence validation requires Bsdtar'
   }
-  $seal = Read-StrictJson $sealFile.FullName 'dependency seal'
-  Assert-ExactProperties $seal @(
-    'packages', 'producerCommit', 'releaseTag', 'repository', 'schemaVersion'
-  ) 'dependency seal'
-  if ($seal.schemaVersion -ne 1 -or
-      $seal.repository -cne $lock.repository -or
-      $seal.releaseTag -cne $lock.admission.releaseTag -or
-      $seal.producerCommit -cne $lock.admission.producerCommit) {
-    throw 'Dependency seal identity does not match the admission lock'
-  }
-  if ($seal.packages -isnot [object[]] -or $seal.packages.Count -ne 2) {
-    throw 'Dependency seal must bind exactly two package assets'
-  }
-  $sealedPackages = @($seal.packages | Sort-Object pkgname)
-  $lockedPackages = @(
-    $lock.admission.runtime,
-    $lock.admission.devel
-  ) | Sort-Object pkgname
-  for ($index = 0; $index -lt 2; $index++) {
-    Assert-PackageAdmission $sealedPackages[$index] "seal.packages[$index]" $seal.releaseTag
-    foreach ($property in @(
-        'arch', 'assetId', 'bytes', 'filename', 'pkgname', 'pkgver',
-        'sha256', 'url')) {
-      if ($sealedPackages[$index].$property -cne $lockedPackages[$index].$property) {
-        throw "Dependency seal package $property does not match the admission lock"
-      }
-    }
-    foreach ($property in @('depends', 'provides')) {
-      Assert-ExactStringArray $sealedPackages[$index].$property `
-        $lockedPackages[$index].$property "seal package $property"
-    }
-  }
+  Test-EvidenceArchive $lock.admission $EvidencePath $Bsdtar
 }
 elseif ($PackageDirectory -or $Bsdtar) {
-  throw 'Package validation requires the admitted seal'
+  throw 'Package or archive validation requires the admitted evidence archive'
 }
 
-if ($PackageDirectory -or $Bsdtar) {
-  if (-not $PackageDirectory -or -not $Bsdtar) {
-    throw 'PackageDirectory and Bsdtar must be supplied together'
-  }
+if ($PackageDirectory) {
   foreach ($package in @($lock.admission.runtime, $lock.admission.devel)) {
     $archive = Join-Path $PackageDirectory $package.filename
     $file = Get-Item -LiteralPath $archive
     if ($file.Length -ne $package.bytes -or
-        (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne
-        $package.sha256) {
+        (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.
+          ToLowerInvariant() -cne $package.sha256) {
       throw "$($package.pkgname) bytes do not match the admission lock"
     }
-    $pkginfo = Read-PkgInfo $archive $Bsdtar
-    foreach ($field in @('pkgname', 'pkgver', 'arch')) {
-      if ($pkginfo[$field].Count -ne 1 -or
-          $pkginfo[$field][0] -cne $package.$field) {
-        throw "$($package.pkgname) .PKGINFO $field does not match the admission lock"
-      }
-    }
-    Assert-ExactStringArray $pkginfo['depend'] $package.depends `
-      "$($package.pkgname) .PKGINFO depends"
-    Assert-ExactStringArray $pkginfo['provides'] $package.provides `
-      "$($package.pkgname) .PKGINFO provides"
+    Assert-PkgInfo (Read-PackageInfo $archive $Bsdtar) $package `
+      "$($package.pkgname) .PKGINFO"
   }
 }
 
-Write-Output 'Dependency admission lock, seal, and supplied package metadata are valid.'
+Write-Output 'Dependency admission lock, evidence seal, and supplied package metadata are valid.'

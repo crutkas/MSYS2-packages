@@ -1,10 +1,68 @@
 {
-  "schemaVersion": 1,
-  "approved": false,
+  "schemaVersion": 2,
+  "approved": true,
   "dependency": "libgpg-error",
   "requiredVersion": "1.56-1",
   "repository": "crutkas/MSYS2-packages",
-  "admission": null,
+  "admission": {
+    "releaseId": 378064013,
+    "releaseTag": "msysarm64-libgpg-error-pr16-06ae2f9-20260827",
+    "tagObject": "0bbfd4a6d689df90ee88f3199161fc2e287c9baa",
+    "producerCommit": "06ae2f9c2ad5d69e736e4d056772a7be1546a076",
+    "evidence": {
+      "assetId": 532755292,
+      "bytes": 938654,
+      "filename": "msysarm64-libgpg-error-pr16-06ae2f9-evidence.tar.zst",
+      "sha256": "728303c5c96e38dfd6edae3e6df6871f3d16d08f0279527bf8c1a49d66005068",
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-libgpg-error-pr16-06ae2f9-20260827/msysarm64-libgpg-error-pr16-06ae2f9-evidence.tar.zst",
+      "rootDirectory": "libgpg-error-final-admission-20260827",
+      "archiveEntries": 125,
+      "regularFiles": 110,
+      "manifestSha256": "b97366ac3866c7c716c671c3609ba0ce9e4406e67fa940b8cf0058927651645b",
+      "manifestEntries": 108,
+      "sealStatus": "CI_SUCCESS_READY_FOR_COORDINATOR_ADMISSION"
+    },
+    "publicAudit": {
+      "manifestBytes": 3778,
+      "manifestSha256": "e7eb01c6efd66a4b2692a365d3bb0bfcb63f552651474425a583e211ed0a558c",
+      "reportBytes": 5592,
+      "reportSha256": "13dd8feac84996bb0c090f8741180fa8c36c852a3951690d76076f88c74de740",
+      "result": "PASS"
+    },
+    "runtime": {
+      "assetId": 532755293,
+      "bytes": 125720,
+      "filename": "mingw-w64-cross-msysarm64-libgpg-error-1.56-1-x86_64.pkg.tar.zst",
+      "sha256": "ca9c377b91896f3286071fd456389006ade6e297e7dd21efb06ab572ccb55d34",
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-libgpg-error-pr16-06ae2f9-20260827/mingw-w64-cross-msysarm64-libgpg-error-1.56-1-x86_64.pkg.tar.zst",
+      "pkgname": "mingw-w64-cross-msysarm64-libgpg-error",
+      "pkgver": "1.56-1",
+      "arch": "x86_64",
+      "provides": [
+        "aarch64-pc-msys-libgpg-error=1.56"
+      ],
+      "depends": [
+        "aarch64-pc-msys-runtime=3.6.10.r0.ga527ace21"
+      ]
+    },
+    "devel": {
+      "assetId": 532755294,
+      "bytes": 123170,
+      "filename": "mingw-w64-cross-msysarm64-libgpg-error-devel-1.56-1-x86_64.pkg.tar.zst",
+      "sha256": "642880ad8fc5498fa7b755825b30008d466dbefa0dd07de80f5f5516b7968a2a",
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-libgpg-error-pr16-06ae2f9-20260827/mingw-w64-cross-msysarm64-libgpg-error-devel-1.56-1-x86_64.pkg.tar.zst",
+      "pkgname": "mingw-w64-cross-msysarm64-libgpg-error-devel",
+      "pkgver": "1.56-1",
+      "arch": "x86_64",
+      "provides": [
+        "aarch64-pc-msys-libgpg-error-devel=1.56"
+      ],
+      "depends": [
+        "aarch64-pc-msys-libgpg-error=1.56",
+        "aarch64-pc-msys-runtime=3.6.10.r0.ga527ace21"
+      ]
+    }
+  },
   "rejectedSha256": [
     "0b8a6c6fd865ca09858f8f5f130233910c17d58dddb41719cecf1722a3964645",
     "3af7e6c7f9735554f39a601cd42b5a9cc379646318c63e613105908743ed6f2c",

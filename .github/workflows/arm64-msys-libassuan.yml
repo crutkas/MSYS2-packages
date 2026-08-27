@@ -30,6 +30,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw 'Dependency lock policy fixtures failed'
           }
+          & .\mingw-w64-cross-msysarm64-libassuan\test-buildinfo-path.ps1
+          if ($LASTEXITCODE -ne 0) {
+            throw '.BUILDINFO path policy fixtures failed'
+          }
 
       - name: Reject shared-client and floating-action regressions
         shell: pwsh
@@ -58,6 +62,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Admit dependency and materialize immutable private root
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -72,6 +78,49 @@ jobs:
             throw 'The fixed-linker libgpg-error pair is not coordinator-admitted'
           }
           $lock = Get-Content -Raw -LiteralPath $lockPath | ConvertFrom-Json
+
+          $apiHeaders = @{
+            Accept = 'application/vnd.github+json'
+            Authorization = "Bearer $env:GITHUB_TOKEN"
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $release = Invoke-RestMethod `
+            -Headers $apiHeaders `
+            -Uri "https://api.github.com/repos/crutkas/MSYS2-packages/releases/$($lock.admission.releaseId)"
+          if ($release.id -ne $lock.admission.releaseId -or
+              $release.tag_name -cne $lock.admission.releaseTag -or
+              $release.draft -or -not $release.prerelease -or
+              @($release.assets).Count -ne 3) {
+            throw 'Public dependency release identity is not the admitted prerelease'
+          }
+          foreach ($asset in @(
+              $lock.admission.evidence,
+              $lock.admission.runtime,
+              $lock.admission.devel)) {
+            $published = @($release.assets | Where-Object id -CEQ $asset.assetId)
+            if ($published.Count -ne 1 -or
+                $published[0].name -cne $asset.filename -or
+                $published[0].size -ne $asset.bytes -or
+                $published[0].browser_download_url -cne $asset.url -or
+                $published[0].digest -cne "sha256:$($asset.sha256)") {
+              throw "Public dependency release asset is not admitted: $($asset.filename)"
+            }
+          }
+          $escapedTag = [Uri]::EscapeDataString($lock.admission.releaseTag)
+          $tagReference = Invoke-RestMethod `
+            -Headers $apiHeaders `
+            -Uri "https://api.github.com/repos/crutkas/MSYS2-packages/git/ref/tags/$escapedTag"
+          if ($tagReference.object.type -cne 'tag' -or
+              $tagReference.object.sha -cne $lock.admission.tagObject) {
+            throw 'Dependency release does not use the admitted annotated tag object'
+          }
+          $tagObject = Invoke-RestMethod `
+            -Headers $apiHeaders `
+            -Uri "https://api.github.com/repos/crutkas/MSYS2-packages/git/tags/$($lock.admission.tagObject)"
+          if ($tagObject.object.type -cne 'commit' -or
+              $tagObject.object.sha -cne $lock.admission.producerCommit) {
+            throw 'Dependency release tag does not peel to the admitted producer commit'
+          }
 
           $inputs = Join-Path $env:RUNNER_TEMP 'libassuan-inputs'
           $privateBase = Join-Path $env:RUNNER_TEMP 'libassuan-private-base'
@@ -112,15 +161,14 @@ jobs:
             return $destination
           }
 
-          # The lock itself binds this first download. No sibling package bytes
-          # are requested until the seal has matched the reviewed lock.
-          $sealSpec = $lock.admission.seal
-          $sealPath = Receive-PinnedFile `
-            -Url $sealSpec.url `
-            -Filename $sealSpec.filename `
-            -Sha256 $sealSpec.sha256 `
-            -Bytes $sealSpec.bytes
-          & $validator -LockPath $lockPath -SealPath $sealPath -RequireApproved
+          # The checked-in lock binds this first download. The evidence manifest
+          # must verify before either sibling package asset is requested.
+          $evidenceSpec = $lock.admission.evidence
+          $evidencePath = Receive-PinnedFile `
+            -Url $evidenceSpec.url `
+            -Filename $evidenceSpec.filename `
+            -Sha256 $evidenceSpec.sha256 `
+            -Bytes $evidenceSpec.bytes
 
           $baseName = 'msys2-base-x86_64-20260611.tar.zst'
           $baseArchive = Receive-PinnedFile `
@@ -141,6 +189,11 @@ jobs:
               throw "Pinned base archive is missing $tool"
             }
           }
+          & $validator `
+            -LockPath $lockPath `
+            -EvidencePath $evidencePath `
+            -Bsdtar $bsdtar `
+            -RequireApproved
 
           $hostPackages = @(
             @('make-4.4.1-2-x86_64.pkg.tar.zst', 519783,
@@ -227,14 +280,14 @@ jobs:
           }
           $gpgEvidence = Join-Path $inputs 'libgpg-error-admission'
           New-Item -ItemType Directory -Force $gpgEvidence | Out-Null
-          Copy-Item -LiteralPath $sealPath -Destination $gpgEvidence
+          Copy-Item -LiteralPath $evidencePath -Destination $gpgEvidence
           foreach ($package in @($lock.admission.runtime, $lock.admission.devel)) {
             Copy-Item -LiteralPath (Join-Path $inputs $package.filename) `
               -Destination $gpgEvidence
           }
           & $validator `
             -LockPath $lockPath `
-            -SealPath $sealPath `
+            -EvidencePath $evidencePath `
             -PackageDirectory $inputs `
             -Bsdtar $bsdtar `
             -RequireApproved
@@ -426,11 +479,20 @@ jobs:
             $candidateDir, $logDir, $candidatePayload | Out-Null
 
           $bash = Join-Path $root 'usr\bin\bash.exe'
+          $deterministicRoot = Join-Path $root `
+            'usr\src\debug\mingw-w64-cross-msysarm64-libassuan-3.0.2'
+          $recipeStage = Join-Path $deterministicRoot 'recipe'
+          New-Item -ItemType Directory -Force $deterministicRoot | Out-Null
+          Copy-Item -LiteralPath `
+            (Join-Path $env:GITHUB_WORKSPACE 'mingw-w64-cross-msysarm64-libassuan') `
+            -Destination $recipeStage -Recurse
           $repo = (& $bash -c "/usr/bin/cygpath -u '$env:GITHUB_WORKSPACE'").Trim()
           $inputsPosix = (& $bash -c "/usr/bin/cygpath -u '$inputs'").Trim()
           $candidatePosix = (& $bash -c "/usr/bin/cygpath -u '$candidateDir'").Trim()
           $logsPosix = (& $bash -c "/usr/bin/cygpath -u '$logDir'").Trim()
           $gpgHomePosix = "$inputsPosix/gnupg-build"
+          $buildRootPosix = '/usr/src/debug/mingw-w64-cross-msysarm64-libassuan-3.0.2/build'
+          $recipeStagePosix = '/usr/src/debug/mingw-w64-cross-msysarm64-libassuan-3.0.2/recipe'
           $script = @"
           set -euo pipefail
           export PATH=/opt/aarch64-pc-msys/usr/bin:/opt/bin:/usr/bin
@@ -438,17 +500,25 @@ jobs:
           mkdir -p "`$GNUPGHOME"
           chmod 700 "`$GNUPGHOME"
           gpg --batch --import '$inputsPosix/signature_key.asc'
-          cd '$repo/mingw-w64-cross-msysarm64-libassuan'
+          cd '$recipeStagePosix'
           export SRCDEST='$inputsPosix'
           export PKGDEST='$candidatePosix'
           export LOGDEST='$logsPosix'
+          export BUILDDIR='$buildRootPosix'
           export MAKEFLAGS='-j2'
+          rm -rf "`$BUILDDIR"
+          mkdir -p "`$BUILDDIR"
           makepkg --cleanbuild --force --noconfirm --log --check
           "@
           & $bash -c $script
           if ($LASTEXITCODE -ne 0) {
             throw 'libassuan build or binary audit failed'
           }
+          $buildAudit = Join-Path $env:RUNNER_TEMP 'libassuan-build-audit'
+          Copy-Item -LiteralPath `
+            (Join-Path $deterministicRoot `
+              'build\mingw-w64-cross-msysarm64-libassuan\src\audit-report') `
+            -Destination $buildAudit -Recurse
 
           $runtimeNames = @(
             'mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
@@ -496,7 +566,7 @@ jobs:
             '$repo/mingw-w64-cross-msysarm64-libassuan/context-smoke.c' \
             '$repo/mingw-w64-cross-msysarm64-libassuan/pipe-smoke.c' \
             '$transactionPosix/opt/aarch64-pc-msys' \
-            '$repo/mingw-w64-cross-msysarm64-libassuan/src/libassuan-3.0.2/src/libassuan.vers'
+            '$buildRootPosix/mingw-w64-cross-msysarm64-libassuan/src/libassuan-3.0.2/src/libassuan.vers'
           "@
           & $bash -c $postAudit
           if ($LASTEXITCODE -ne 0) {
@@ -512,8 +582,7 @@ jobs:
             (Join-Path $postReport 'smoke\context-static.exe'),
             (Join-Path $postReport 'smoke\context-config.exe'),
             (Join-Path $postReport 'smoke\pipe-dynamic.exe'),
-            (Join-Path $env:GITHUB_WORKSPACE `
-              'mingw-w64-cross-msysarm64-libassuan\src\audit-report\dependency-preflight\gpg-error-link.exe')
+            (Join-Path $buildAudit 'dependency-preflight\gpg-error-link.exe')
           )
           foreach ($pe in $peFiles) {
             $output = Join-Path $scannerReport "$([IO.Path]::GetFileName($pe)).json"
@@ -556,7 +625,7 @@ jobs:
             ${{ runner.temp }}/libassuan-transaction-report/*
             ${{ runner.temp }}/libassuan-post-package-audit/*
             ${{ runner.temp }}/libassuan-scanner-report/*
-            ${{ github.workspace }}/mingw-w64-cross-msysarm64-libassuan/src/audit-report/*
+            ${{ runner.temp }}/libassuan-build-audit/*
 
       - name: Upload deterministic native smoke bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

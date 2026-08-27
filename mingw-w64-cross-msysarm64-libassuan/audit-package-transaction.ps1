@@ -24,6 +24,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $env:MSYS = 'winsymlinks:sys'
+$buildInfoValidator = Join-Path $PSScriptRoot 'validate-buildinfo-path.ps1'
 $expectedNames = @(
     'mingw-w64-cross-msysarm64-libassuan',
     'mingw-w64-cross-msysarm64-libassuan-devel',
@@ -269,6 +270,9 @@ foreach ($archive in $CandidateArchives) {
 
     $pkgInfoPath = Join-Path $ReportDirectory "$name.PKGINFO"
     Export-ArchiveMember -Archive $archive -Member '.PKGINFO' -Destination $pkgInfoPath
+    $buildInfoPath = Join-Path $ReportDirectory "$name.BUILDINFO"
+    Export-ArchiveMember -Archive $archive -Member '.BUILDINFO' -Destination $buildInfoPath
+    & $buildInfoValidator -Path $buildInfoPath
     $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
     $packageRecords += [pscustomobject]@{
         name = $name
@@ -278,6 +282,8 @@ foreach ($archive in $CandidateArchives) {
         sha256 = $hash
         pkginfoSize = (Get-Item -LiteralPath $pkgInfoPath).Length
         pkginfoSha256 = (Get-FileHash -Algorithm SHA256 $pkgInfoPath).Hash.ToLowerInvariant()
+        buildinfoSize = (Get-Item -LiteralPath $buildInfoPath).Length
+        buildinfoSha256 = (Get-FileHash -Algorithm SHA256 $buildInfoPath).Hash.ToLowerInvariant()
         files = $files.Count
         depends = @($info.depend)
         provides = @($info.provides)
