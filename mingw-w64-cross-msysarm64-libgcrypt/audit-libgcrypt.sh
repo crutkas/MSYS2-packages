@@ -11,6 +11,7 @@ smoke_source="${2:-}"
 report_dir="${3:-${TMPDIR:-/tmp}/libgcrypt-audit}"
 target="${TARGET_TRIPLET:-aarch64-pc-msys}"
 dependency_root="${DEPENDENCY_ROOT:-/opt/${target}/usr}"
+tools_bin="${MSYSARM64_TOOLS_BIN:-/opt/bin}"
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 validator="${PSEUDO_RELOC_VALIDATOR:-${script_dir}/audit-aarch64-pseudo-reloc.ps1}"
 policy_validator="${PSEUDO_RELOC_POLICY_VALIDATOR:-${script_dir}/check-aarch64-pseudo-relocs.ps1}"
@@ -18,7 +19,7 @@ objdump="${target}-objdump"
 ar="${target}-ar"
 nm="${target}-nm"
 strings="${target}-strings"
-cc="${target}-gcc"
+cc=("${target}-gcc" "-B${tools_bin}/")
 
 rm -rf "${report_dir}"
 mkdir -p "${report_dir}"
@@ -49,6 +50,8 @@ audit_pseudo_reloc() {
   local nm_path
   local objdump_path
   local objcopy_path
+  local policy_nm_path
+  local policy_objdump_path
   local status
   local pwsh="${PWSH:-pwsh.exe}"
   name="$(basename "${pe}")"
@@ -59,7 +62,7 @@ audit_pseudo_reloc() {
     '59bbf47759a56001ec50edc694bcac9b23a095ce035c18f5c90cbcef0def4780' ||
     fail "pseudo-reloc validator seal mismatch"
   test "$(sha256sum "${policy_validator}" | cut -d' ' -f1)" = \
-    '9d086e655a8636e733c96a8c514942bc249dd60218fa496507c390110867d201' ||
+    '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9' ||
     fail "pseudo-reloc policy validator seal mismatch"
   command -v "${pwsh}" >/dev/null || fail "PowerShell 7 is required for pseudo-reloc audit"
   nm_path="$(command -v "${target}-nm")" ||
@@ -68,6 +71,25 @@ audit_pseudo_reloc() {
     fail "missing ${target}-objdump"
   objcopy_path="$(command -v "${target}-objcopy")" ||
     fail "missing ${target}-objcopy"
+  policy_nm_path="$(command -v aarch64-pc-cygwin-nm)" ||
+    fail "missing package-owned aarch64-pc-cygwin-nm"
+  policy_objdump_path="$(command -v aarch64-pc-cygwin-objdump)" ||
+    fail "missing package-owned aarch64-pc-cygwin-objdump"
+  test "$(sha256sum "${policy_nm_path}" | cut -d' ' -f1)" = \
+    '80b4716108b362ba05f48cd9228d20a4193897b4a5eeb8eb19e80f4c83e3e90a' ||
+    fail "fixed-binutils nm identity mismatch"
+  test "$(sha256sum "${policy_objdump_path}" | cut -d' ' -f1)" = \
+    'bb0d53db4128aff7f6b20c46be4e3625b1d82134476d7b03e58ed22015136e6e' ||
+    fail "fixed-binutils objdump identity mismatch"
+  test "$(sha256sum "${nm_path}" | cut -d' ' -f1)" = \
+    '80b4716108b362ba05f48cd9228d20a4193897b4a5eeb8eb19e80f4c83e3e90a' ||
+    fail "fixed-binutils aarch64-pc-msys nm bridge mismatch"
+  test "$(sha256sum "${objdump_path}" | cut -d' ' -f1)" = \
+    'bb0d53db4128aff7f6b20c46be4e3625b1d82134476d7b03e58ed22015136e6e' ||
+    fail "fixed-binutils aarch64-pc-msys objdump bridge mismatch"
+  test "$(sha256sum "${objcopy_path}" | cut -d' ' -f1)" = \
+    '64808b2baef1fdb7f9a3db4d22f9eafcd75846cfa037f55d268c391891348daf' ||
+    fail "fixed-binutils aarch64-pc-msys objcopy bridge mismatch"
 
   set +e
   "${pwsh}" -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "${validator}")" \
@@ -89,8 +111,8 @@ audit_pseudo_reloc() {
   "${pwsh}" -NoProfile -ExecutionPolicy Bypass -File "$(cygpath -w "${policy_validator}")" \
     -PePath "$(cygpath -w "${pe}")" \
     -OutputPath "$(cygpath -w "${report_dir}/${name}.pseudo-reloc.json")" \
-    -Nm "$(cygpath -w "${nm_path}")" \
-    -Objdump "$(cygpath -w "${objdump_path}")" \
+    -Nm "$(cygpath -w "${policy_nm_path}")" \
+    -Objdump "$(cygpath -w "${policy_objdump_path}")" \
     >"${report_dir}/${name}.pseudo-reloc-policy.txt" 2>&1
   status=$?
   set -e
@@ -225,10 +247,10 @@ if [[ -n "${smoke_source}" ]]; then
   printf '%s\n' "${static_cflags} ${static_flags}" >"${report_dir}/static.flags.txt"
 
   # shellcheck disable=SC2086
-  "${cc}" -o "${report_dir}/version-smoke-dynamic.exe" "${smoke_source}" \
+  "${cc[@]}" -o "${report_dir}/version-smoke-dynamic.exe" "${smoke_source}" \
     ${dynamic_flags} -Wl,--no-undefined,-Map,"${report_dir}/dynamic.map"
   # shellcheck disable=SC2086
-  "${cc}" -o "${report_dir}/version-smoke-static.exe" "${smoke_source}" \
+  "${cc[@]}" -o "${report_dir}/version-smoke-static.exe" "${smoke_source}" \
     ${static_cflags} -L"${merged}/lib" \
     -Wl,-Bstatic -lgcrypt -lgpg-error -Wl,-Bdynamic ${static_flags} \
     -Wl,--no-undefined,-Map,"${report_dir}/static.map"

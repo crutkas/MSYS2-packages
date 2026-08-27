@@ -6,12 +6,14 @@ _package_target_root="/opt/${_target}"
 _package_target_usr="${_package_target_root}/usr"
 _target_root="${MSYSARM64_TARGET_ROOT:-${_package_target_root}}"
 _target_usr="${_target_root}/usr"
+_tools_bin="${MSYSARM64_TOOLS_BIN:-/opt/bin}"
 # Immutable a527 runtime identity. Final packages must be rebuilt with the
 # reviewed fixed binutils before publication.
 _runtime_version=3.6.10.r0.ga527ace21
 _runtime_pkgrel=1
 _gcc_version=15.0.1dev
 _libgpg_error_version=1.56
+_binutils_version=2.44.50-2
 
 pkgbase=mingw-w64-cross-msysarm64-libgcrypt
 pkgname=(
@@ -36,7 +38,7 @@ depends=(
 makedepends=(
   'autotools'
   'gcc'
-  'mingw-w64-cross-cygwinarm64-binutils'
+  "mingw-w64-cross-cygwinarm64-binutils=${_binutils_version}"
   "mingw-w64-cross-msysarm64-gcc=${_gcc_version}-1"
   "mingw-w64-cross-msysarm64-gcc-libs=${_gcc_version}-1"
   "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
@@ -52,16 +54,18 @@ source=(
   audit-package-set.sh
   audit-aarch64-pseudo-reloc.ps1
   check-aarch64-pseudo-relocs.ps1
+  aarch64-pseudo-reloc-adaptation.json
   pseudo-reloc-decoder-v2.SHA256SUMS
   version-smoke.c
 )
 sha256sums=('7ce33c2492221a0436f96a8500215e9f3e3dcb5fd26a757cd415e7a843babd5e'
             'SKIP'
             '2c6ed2ec757eb0ce3cdabdafcdd8929a454cdb66bc43f6529c70fdea17eabd55'
-            '74bd695f4e621451483de448b731453c2f47d3541951c0efe10e378daa891dc3'
-            'a8104382918196f29d88f2cbbcd37186fae457402f598644221766a15221be2e'
+            '909dd3dfcb6648de52dfd64ab1a4596b74bd877abc1e6db3f449d1e67103e681'
+            '15dcbc99b8ad4c7b0a72db50fbe6f4599079fed4b856b092f2e35d4bc17d724b'
             '59bbf47759a56001ec50edc694bcac9b23a095ce035c18f5c90cbcef0def4780'
-            '9d086e655a8636e733c96a8c514942bc249dd60218fa496507c390110867d201'
+            '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9'
+            'a2103549e801f2473f6d8dba71f270ce12174f695331d83981476449b22072f0'
             '6705e5c5f74ba7b5c219625edd3bb245df53b89569f18b4ff3d7352d4a30cc2a'
             '4d352d56a65b230551de4ccbe625f0b0fe3ee7e95f7d0f2ff07eebd1c8c9df67')
 # These might be signed by any of these keys: https://gnupg.org/signature_key.html
@@ -97,7 +101,7 @@ build() {
   rm -rf "${srcdir}/build-${_target}" "${srcdir}/dest"
   mkdir -p "${srcdir}/build-${_target}" "${srcdir}/dest"
 
-  export PATH="/opt/bin:${PATH}"
+  export PATH="${_tools_bin}:${PATH}"
   export lt_cv_deplibs_check_method=pass_all
   export lt_cv_archive_cmds_need_lc=no
   export REAL_GPG_ERROR_CONFIG="${_target_usr}/bin/gpg-error-config"
@@ -112,7 +116,7 @@ build() {
     's/cygwin\* \| mingw\* \| windows\* \| pw32\* \| cegcc\*/cygwin* | msys* | mingw* | windows* | pw32* | cegcc*/g; s/\n    cygwin\*\)\n      # Cygwin DLLs use '\''cyg'\'' prefix rather than '\''lib'\''/\n    cygwin* | msys*)\n      # Cygwin DLLs use '\''cyg'\'' prefix rather than '\''lib'\''/g' \
     "${srcdir}/${_realname}-${pkgver}/configure"
   "${srcdir}/${_realname}-${pkgver}/configure" \
-    CC="${_target}-gcc" \
+    CC="${_target}-gcc -B${_tools_bin}/" \
     AR="${_target}-ar" \
     RANLIB="${_target}-ranlib" \
     LD="${_target}-ld" \
@@ -199,6 +203,8 @@ package_mingw-w64-cross-msysarm64-libgcrypt-devel() {
     "${pkgdir}/usr/share/doc/${pkgbase}/audit-aarch64-pseudo-reloc.ps1"
   install -Dm644 "${srcdir}/check-aarch64-pseudo-relocs.ps1" \
     "${pkgdir}/usr/share/doc/${pkgbase}/check-aarch64-pseudo-relocs.ps1"
+  install -Dm644 "${srcdir}/aarch64-pseudo-reloc-adaptation.json" \
+    "${pkgdir}/usr/share/doc/${pkgbase}/aarch64-pseudo-reloc-adaptation.json"
   install -Dm644 "${srcdir}/pseudo-reloc-decoder-v2.SHA256SUMS" \
     "${pkgdir}/usr/share/doc/${pkgbase}/pseudo-reloc-decoder-v2.SHA256SUMS"
   install -Dm644 "${srcdir}/version-smoke.c" \

@@ -12,6 +12,7 @@ shift 2
 dependency_packages=("$@")
 target=aarch64-pc-msys
 base=mingw-w64-cross-msysarm64-libgcrypt
+pacman_bin="${PACMAN_BIN:-pacman}"
 packages=()
 
 rm -rf "${evidence_dir}"
@@ -31,8 +32,28 @@ db_manifest() {
     cut -d' ' -f1
 }
 
+file_sha256() {
+  if [[ -f "$1" ]]; then
+    sha256sum "$1" | cut -d' ' -f1
+  else
+    printf 'absent\n'
+  fi
+}
+
+pacman_path() {
+  local path="$1"
+  if [[ -n "${PACMAN_BIN:-}" &&
+        "${path}" =~ ^/cygdrive/([[:alpha:]])(/.*)?$ ]]; then
+    printf '/%s%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+  else
+    printf '%s\n' "${path}"
+  fi
+}
+
 shared_db_before="$(db_manifest)"
 printf '%s\n' "${shared_db_before}" >"${evidence_dir}/shared-db.before.sha256"
+shared_log_before="$(file_sha256 /var/log/pacman.log)"
+printf '%s\n' "${shared_log_before}" >"${evidence_dir}/shared-pacman-log.before.sha256"
 
 for suffix in '' '-devel' '-tools'; do
   expected="${base}${suffix}"
@@ -103,7 +124,10 @@ TARGET_TRIPLET="${target}" \
 root="${evidence_dir}/transaction-root"
 db="${root}/var/lib/pacman"
 cache="${root}/var/cache/pacman/pkg"
-mkdir -p "${db}" "${cache}" "${root}/etc"
+log="${root}/var/log/pacman.log"
+hooks="${root}/etc/pacman.d/hooks"
+gpg="${root}/etc/pacman.d/gnupg"
+mkdir -p "${db}" "${cache}" "${hooks}" "${gpg}" "${root}/var/log"
 cat >"${evidence_dir}/pacman.conf" <<EOF
 [options]
 Architecture = x86_64
@@ -111,15 +135,32 @@ SigLevel = Never
 LocalFileSigLevel = Never
 EOF
 
+pacman_root="$(pacman_path "${root}")"
+pacman_db="$(pacman_path "${db}")"
+pacman_cache="$(pacman_path "${cache}")"
+pacman_log="$(pacman_path "${log}")"
+pacman_config="$(pacman_path "${evidence_dir}/pacman.conf")"
+pacman_hooks="$(pacman_path "${hooks}")"
+pacman_gpg="$(pacman_path "${gpg}")"
 pacman_cmd=(
-  pacman
-  --root "${root}"
-  --dbpath "${db}"
-  --cachedir "${cache}"
-  --config "${evidence_dir}/pacman.conf"
+  "${pacman_bin}"
+  --root "${pacman_root}"
+  --dbpath "${pacman_db}"
+  --cachedir "${pacman_cache}"
+  --logfile "${pacman_log}"
+  --config "${pacman_config}"
+  --hookdir "${pacman_hooks}"
+  --gpgdir "${pacman_gpg}"
   --noconfirm
 )
-transaction_inputs=("${dependency_packages[@]}" "${packages[@]}")
+printf 'executable=%s\nroot=%s\ndbpath=%s\ncachedir=%s\nlogfile=%s\nconfig=%s\nhookdir=%s\ngpgdir=%s\n' \
+  "${pacman_bin}" "${pacman_root}" "${pacman_db}" "${pacman_cache}" \
+  "${pacman_log}" "${pacman_config}" "${pacman_hooks}" "${pacman_gpg}" \
+  >"${evidence_dir}/private-pacman-paths.txt"
+transaction_inputs=()
+for package in "${dependency_packages[@]}" "${packages[@]}"; do
+  transaction_inputs+=("$(pacman_path "${package}")")
+done
 "${pacman_cmd[@]}" -U "${transaction_inputs[@]}" \
   >"${evidence_dir}/install.log" 2>&1
 "${pacman_cmd[@]}" -Q >"${evidence_dir}/installed.txt"
@@ -136,7 +177,11 @@ for package_name in "${base}" "${base}-devel" "${base}-tools"; do
   fi
 done
 
-"${pacman_cmd[@]}" -U "${packages[@]}" \
+reinstall_packages=()
+for package in "${packages[@]}"; do
+  reinstall_packages+=("$(pacman_path "${package}")")
+done
+"${pacman_cmd[@]}" -U "${reinstall_packages[@]}" \
   >"${evidence_dir}/reinstall.log" 2>&1
 "${pacman_cmd[@]}" -Q >"${evidence_dir}/reinstalled.txt"
 
@@ -144,6 +189,10 @@ shared_db_after="$(db_manifest)"
 printf '%s\n' "${shared_db_after}" >"${evidence_dir}/shared-db.after.sha256"
 test "${shared_db_before}" = "${shared_db_after}" ||
   fail "shared pacman database changed"
+shared_log_after="$(file_sha256 /var/log/pacman.log)"
+printf '%s\n' "${shared_log_after}" >"${evidence_dir}/shared-pacman-log.after.sha256"
+test "${shared_log_before}" = "${shared_log_after}" ||
+  fail "shared pacman log changed"
 
 for package in "${packages[@]}"; do
   sha256sum "${package}"
