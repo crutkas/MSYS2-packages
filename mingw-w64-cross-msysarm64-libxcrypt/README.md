@@ -31,7 +31,9 @@ snapshots must also prove that the build host's pacman database was untouched.
 
 Cross checks cover AA64 PE/COFF identity, imports, exported symbols, import
 archive members, static archive members, headers, pkg-config metadata, and
-dynamic/static link probes. A `windows-11-arm` job runs the known DES vector
+dynamic/static link probes. Both `libcrypt` and `libxcrypt` pkg-config aliases
+must produce the same staged-sysroot flags and drive the dynamic consumer link,
+matching APR-style detection. A `windows-11-arm` job runs the known DES vector
 `crypt("password", "ab") == "abJnggxhB/yWI"` natively.
 
 This package and its releases are for `crutkas/MSYS2-packages` only. They must

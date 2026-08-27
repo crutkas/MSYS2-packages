@@ -30,6 +30,7 @@ makedepends=(
   'autotools'
   'make'
   'perl'
+  'pkgconf'
   "mingw-w64-cross-msysarm64-gcc=${_gcc_version}-${_gcc_pkgrel}"
   "mingw-w64-cross-msysarm64-gcc-libs=${_gcc_version}-${_gcc_pkgrel}"
   "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
@@ -50,8 +51,8 @@ sha256sums=(
   'SKIP'
   'd7fc862abcae33cf62c4c267e321ad02ac831d1897f0296cb96a0d8e528ab183'
   'bab215235696be1338184944f6956cea1fbf004c34ff50d2c729b77cc70357a0'
-  '63686199271fd84eb2f0e02be91bc5ed1a6f6a09bff0a9eefdd202f3bb22fe6a'
-  '04a431c953a15988f579201ce4a8f01d503dac2248f66bcd864bbcb459bce50f'
+  'f655e9d04e1f4a40579adaf556ee6382b342d28cace7af169b483100f1fb43e5'
+  'fb60a2bad91cb01137826743d7ffa256094e862960191e894f3fcae9deeebd7d'
 )
 validpgpkeys=('678CE3FEE430311596DB8C16F52E98007594C21D')
 
@@ -115,6 +116,7 @@ check() {
   TARGET="${_target}" \
   TARGET_CC="${_target}-gcc" \
   TARGET_TOOL_ROOT="/opt/${_tool_target}/bin" \
+  PKG_CONFIG=pkg-config \
     bash "${srcdir}/validate-libxcrypt.sh" \
       "${_dest}" \
       "${_report}" \

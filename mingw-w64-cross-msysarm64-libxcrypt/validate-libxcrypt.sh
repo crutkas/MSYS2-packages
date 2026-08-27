@@ -13,6 +13,7 @@ smoke_source=$3
 target=${TARGET:?TARGET is required}
 cc=${TARGET_CC:?TARGET_CC is required}
 toolroot=${TARGET_TOOL_ROOT:?TARGET_TOOL_ROOT is required}
+pkg_config=${PKG_CONFIG:?PKG_CONFIG is required}
 root="${dest}/usr"
 dll="${root}/bin/msys-crypt-2.dll"
 import_lib="${root}/lib/libcrypt.dll.a"
@@ -85,15 +86,33 @@ grep -Fx "Version: 4.5.2" "${pkgconfig}"
 
 export PATH="/opt/bin:${PATH}"
 export LIBRARY_PATH="${root}/lib:/opt/${target}/usr/lib:/opt/${target}/lib"
+PKG_CONFIG_SYSROOT_DIR="${dest}" \
+PKG_CONFIG_LIBDIR="${root}/lib/pkgconfig" \
+  "${pkg_config}" --cflags --libs libcrypt \
+  > "${report}/pkgconfig-libcrypt-flags.txt"
+PKG_CONFIG_SYSROOT_DIR="${dest}" \
+PKG_CONFIG_LIBDIR="${root}/lib/pkgconfig" \
+  "${pkg_config}" --cflags --libs libxcrypt \
+  > "${report}/pkgconfig-libxcrypt-flags.txt"
+cmp \
+  "${report}/pkgconfig-libcrypt-flags.txt" \
+  "${report}/pkgconfig-libxcrypt-flags.txt"
+grep -F -- "-I${root}/include" \
+  "${report}/pkgconfig-libcrypt-flags.txt"
+grep -F -- "-L${root}/lib" \
+  "${report}/pkgconfig-libcrypt-flags.txt"
+grep -Eq '(^|[[:space:]])-lcrypt([[:space:]]|$)' \
+  "${report}/pkgconfig-libcrypt-flags.txt"
+read -r -a pkgconfig_flags \
+  < "${report}/pkgconfig-libcrypt-flags.txt"
+
 common_flags=(
   "--sysroot=/opt/${target}"
-  "-I${root}/include"
-  "-L${root}/lib"
   -Wl,--dynamicbase,--nxcompat
 )
 
 "${cc}" "${common_flags[@]}" \
-  "${smoke_source}" -lcrypt \
+  "${smoke_source}" "${pkgconfig_flags[@]}" \
   -o "${report}/native-crypt-smoke.exe"
 "${objdump}" -f -p "${report}/native-crypt-smoke.exe" \
   > "${report}/dynamic-smoke-pe.txt"
@@ -110,6 +129,7 @@ if grep -Ei 'cygwin1\.dll|x86_64|pei-i386' \
 fi
 
 "${cc}" "${common_flags[@]}" \
+  "-I${root}/include" \
   "${smoke_source}" "${static_lib}" \
   -o "${report}/static-crypt-smoke.exe"
 "${objdump}" -f -p "${report}/static-crypt-smoke.exe" \
