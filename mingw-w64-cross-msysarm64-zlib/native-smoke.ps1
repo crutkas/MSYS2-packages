@@ -144,6 +144,7 @@ function Start-BinaryProcess {
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
     $start.Environment['MSYSTEM'] = 'MSYS'
+    $start.Environment['MSYS'] = 'winsymlinks:sys'
     if ($Hold) {
         $start.Environment['MSYS_ZLIB_NATIVE_HOLD'] = '1'
     }
@@ -306,53 +307,52 @@ if ($scan.input.sha256 -ne (Get-Sha256 -Path $cxxPath) -or
     throw 'C++ native input is not bound to a passing scanner report'
 }
 
-$inputBytes = $utf8.GetBytes(("native ARM64 MSYS zlib roundtrip`n" * 256))
-$compress = Start-BinaryProcess `
+$minigzip = Start-BinaryProcess `
     -Path (Join-Path $bin 'minigzip.exe') `
     -WorkingDirectory $bin
 Start-Sleep -Milliseconds 500
-$compressEvidence = [ordered]@{
-    label = 'minigzip-compress'
-    executable_sha256 = Get-Sha256 -Path $compress.StartInfo.FileName
-    process = Get-Wow64Evidence -Process $compress
-    modules = Get-ModuleEvidence -Process $compress -PayloadRoot $bin
+$minigzipEvidence = [ordered]@{
+    label = 'minigzip-loaded'
+    executable_sha256 = Get-Sha256 -Path $minigzip.StartInfo.FileName
+    process = Get-Wow64Evidence -Process $minigzip
+    modules = Get-ModuleEvidence -Process $minigzip -PayloadRoot $bin
 }
-$compress.StandardInput.BaseStream.Write($inputBytes, 0, $inputBytes.Length)
-$compress.StandardInput.Close()
-$compressed = [IO.MemoryStream]::new()
-$compress.StandardOutput.BaseStream.CopyTo($compressed)
-$compressError = $compress.StandardError.ReadToEnd()
-$compress.WaitForExit()
-if ($compress.ExitCode -ne 0) {
-    throw "Native compression failed: $compressError"
+$minigzip.StandardInput.Close()
+$emptyCompressed = [IO.MemoryStream]::new()
+$minigzip.StandardOutput.BaseStream.CopyTo($emptyCompressed)
+$minigzipError = $minigzip.StandardError.ReadToEnd()
+$minigzip.WaitForExit()
+if ($minigzip.ExitCode -ne 0 -or $emptyCompressed.Length -eq 0) {
+    throw "Native minigzip load probe failed: $minigzipError"
 }
 
-$decompress = Start-BinaryProcess `
-    -Path (Join-Path $bin 'minigzip.exe') `
-    -WorkingDirectory $bin `
-    -Arguments '-d'
-Start-Sleep -Milliseconds 500
-$decompressEvidence = [ordered]@{
-    label = 'minigzip-decompress'
-    executable_sha256 = Get-Sha256 -Path $decompress.StartInfo.FileName
-    process = Get-Wow64Evidence -Process $decompress
-    modules = Get-ModuleEvidence -Process $decompress -PayloadRoot $bin
+$inputBytes = $utf8.GetBytes(("native ARM64 MSYS zlib roundtrip`n" * 256))
+$inputPath = Join-Path $installationRoot 'roundtrip.input'
+$compressedPath = "$inputPath.gz"
+$outputPath = "$inputPath.out"
+[IO.File]::WriteAllBytes($inputPath, $inputBytes)
+$env:MSYSTEM = 'MSYS'
+$env:MSYS = 'winsymlinks:sys'
+Push-Location $bin
+try {
+    & $env:ComSpec /d /c (
+        "`"minigzip.exe`" < `"$inputPath`" > `"$compressedPath`""
+    )
+    if ($LASTEXITCODE -ne 0) {
+        throw "Native file compression failed with exit code $LASTEXITCODE"
+    }
+    & $env:ComSpec /d /c (
+        "`"minigzip.exe`" -d < `"$compressedPath`" > `"$outputPath`""
+    )
+    if ($LASTEXITCODE -ne 0) {
+        throw "Native file decompression failed with exit code $LASTEXITCODE"
+    }
 }
-$compressedBytes = $compressed.ToArray()
-$decompress.StandardInput.BaseStream.Write(
-    $compressedBytes,
-    0,
-    $compressedBytes.Length
-)
-$decompress.StandardInput.Close()
-$roundtrip = [IO.MemoryStream]::new()
-$decompress.StandardOutput.BaseStream.CopyTo($roundtrip)
-$decompressError = $decompress.StandardError.ReadToEnd()
-$decompress.WaitForExit()
-if ($decompress.ExitCode -ne 0) {
-    throw "Native decompression failed: $decompressError"
+finally {
+    Pop-Location
 }
-$outputBytes = $roundtrip.ToArray()
+$compressedBytes = [IO.File]::ReadAllBytes($compressedPath)
+$outputBytes = [IO.File]::ReadAllBytes($outputPath)
 $inputHash = [Convert]::ToHexString(
     [Security.Cryptography.SHA256]::HashData($inputBytes)
 ).ToLowerInvariant()
@@ -404,8 +404,7 @@ $attestation = [ordered]@{
         }
     )
     executions = @(
-        $compressEvidence
-        $decompressEvidence
+        $minigzipEvidence
         $cxxEvidence
     )
     roundtrip = [ordered]@{
