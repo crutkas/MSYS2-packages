@@ -65,6 +65,7 @@ done
 test -f "${payload_prefix}/include/sqlite3.h"
 test -f "${payload_prefix}/include/sqlite3ext.h"
 test -f "${payload_prefix}/lib/pkgconfig/sqlite3.pc"
+test -f "${payload_prefix}/lib/pkgconfig/sqlite3-static.pc"
 test -f "${payload_prefix}/lib/sqlite3.def"
 
 runtime_dll="${payload_root%/}${target_prefix}/bin/msys-2.0.dll"
@@ -214,6 +215,12 @@ grep -Fx "prefix=${target_prefix}" \
   "${payload_prefix}/lib/pkgconfig/sqlite3.pc"
 grep -Fx 'Libs: -L${libdir} -lsqlite3' \
   "${payload_prefix}/lib/pkgconfig/sqlite3.pc"
+grep -Fx 'Cflags: -I${includedir} -DSQLITE_API=__declspec(dllimport)' \
+  "${payload_prefix}/lib/pkgconfig/sqlite3.pc"
+grep -Fx 'Libs: -L${libdir} -l:libsqlite3.a -lm' \
+  "${payload_prefix}/lib/pkgconfig/sqlite3-static.pc"
+grep -Fx 'Cflags: -I${includedir}' \
+  "${payload_prefix}/lib/pkgconfig/sqlite3-static.pc"
 if grep -Eiq 'cygwin|mingw|x86_64|i[3-6]86' \
     "${payload_prefix}/lib/pkgconfig/sqlite3.pc"; then
   echo "foreign target leaked into sqlite3.pc" >&2

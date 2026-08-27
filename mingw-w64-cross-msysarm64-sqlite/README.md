@@ -8,7 +8,8 @@ MinGW, Cygwin, x64 MSYS, or sibling native-library package outputs.
 
 - `mingw-w64-cross-msysarm64-libsqlite` owns `msys-sqlite3-0.dll`.
 - `mingw-w64-cross-msysarm64-libsqlite-devel` owns the headers, static and
-  import libraries, pkg-config metadata, validation report, and validator.
+  import libraries, dynamic/static pkg-config metadata, validation report,
+  and validator.
 - `mingw-w64-cross-msysarm64-sqlite` owns the native `sqlite3.exe` shell.
 
 All target payloads live below `/opt/aarch64-pc-msys`. Package archives use the

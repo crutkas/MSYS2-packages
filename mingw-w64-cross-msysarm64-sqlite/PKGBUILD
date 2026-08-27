@@ -65,9 +65,9 @@ source=(
 sha256sums=(
   '1e71ddf93849c6a6ecf58b827c0692073d2dd7ee40196158068f7b29f422e87d'
   '0b76663a90e034f3d7f2af5bfada4cedec5ebc275361899eccc5c18e6f01ff1f'
-  '5541be0a10902a6f9ded3d7ef599ecadd0ecbecda670e0b3131fc55c67f5c2e7'
+  '8ddf6ee335f7f4cabf40376db3e4fc5ddabc61b5c7fe24dba679a6d4078cf525'
   'a98a5030567f02f6ae1d63bbbf376a2300984ba07e9cbc8453859759db8ca4ce'
-  'fc9d446bbf31763ae99287739cf5dfbc3c0ffed2cdebe8d794cb87982190d28a'
+  '8f280537cd0ae4af9d476ecc14b9d812a3932e75634346a64ec9460da5a1888c'
   '3ad4b5b808158c3cef7499b6e8a4d5fce79af727a7f50529faf097702507902b'
   '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9'
 )
@@ -216,6 +216,7 @@ build() {
     "${target_flags[@]}" \
     "${compile_flags[@]}" \
     "${_sqlite_features[@]}" \
+    '-DSQLITE_API=__declspec(dllimport)' \
     -c "${source_dir}/shell.c" \
     -o "${build_dir}/shell.o"
   "${_target}-gcc" \
@@ -258,6 +259,21 @@ Description: SQL database engine
 Version: ${pkgver}
 Libs: -L\${libdir} -lsqlite3
 Libs.private: -lm
+Cflags: -I\${includedir}
+EOF
+  sed -i \
+    's|^Cflags:.*|Cflags: -I${includedir} -DSQLITE_API=__declspec(dllimport)|' \
+    "${target_root}/lib/pkgconfig/sqlite3.pc"
+  cat > "${target_root}/lib/pkgconfig/sqlite3-static.pc" <<EOF
+prefix=${_prefix}
+exec_prefix=\${prefix}
+libdir=\${exec_prefix}/lib
+includedir=\${prefix}/include
+
+Name: SQLite static
+Description: Statically linked SQL database engine
+Version: ${pkgver}
+Libs: -L\${libdir} -l:libsqlite3.a -lm
 Cflags: -I\${includedir}
 EOF
 
@@ -311,7 +327,8 @@ check() {
   local target_root="${stage_dir}${_prefix}"
   local dynamic_smoke="${report_dir}/sqlite-api-dynamic-smoke.exe"
   local static_smoke="${report_dir}/sqlite-api-static-smoke.exe"
-  local smoke_object="${report_dir}/sqlite-api-smoke.o"
+  local dynamic_smoke_object="${report_dir}/sqlite-api-dynamic-smoke.o"
+  local static_smoke_object="${report_dir}/sqlite-api-static-smoke.o"
   local scanner="${srcdir}/check-aarch64-pseudo-relocs.ps1"
   local scanner_dir="${report_dir}/pseudo-relocs"
   local binutils_bindir="${MSYSARM64_BINUTILS_BINDIR:-/opt/bin}"
@@ -331,17 +348,35 @@ check() {
     "${target_flags[@]}" \
     -O2 \
     -D_WIN64 \
+    '-DSQLITE_API=__declspec(dllimport)' \
     "-I${target_root}/include" \
     -c "${srcdir}/sqlite-smoke.c" \
-    -o "${smoke_object}"
+    -o "${dynamic_smoke_object}"
   "${_target}-gcc" \
     "${target_flags[@]}" \
-    "${smoke_object}" \
+    "${dynamic_smoke_object}" \
     "${target_root}/lib/libsqlite3.dll.a" \
     -o "${dynamic_smoke}"
+  "${_target}-nm" -an "${dynamic_smoke}" \
+    > "${report_dir}/sqlite-api-dynamic-smoke.symbols.txt"
+  grep -Eq '[[:space:]]I[[:space:]]+__imp_sqlite3_version$' \
+    "${report_dir}/sqlite-api-dynamic-smoke.symbols.txt"
+  if grep -Eq \
+      '__fu[0-9]+_sqlite3_version|__aarch64_auto_import_sqlite3_version' \
+      "${report_dir}/sqlite-api-dynamic-smoke.symbols.txt"; then
+    echo 'dynamic smoke unexpectedly uses auto-import data stubs' >&2
+    return 1
+  fi
   "${_target}-gcc" \
     "${target_flags[@]}" \
-    "${smoke_object}" \
+    -O2 \
+    -D_WIN64 \
+    "-I${target_root}/include" \
+    -c "${srcdir}/sqlite-smoke.c" \
+    -o "${static_smoke_object}"
+  "${_target}-gcc" \
+    "${target_flags[@]}" \
+    "${static_smoke_object}" \
     "${target_root}/lib/libsqlite3.a" \
     -lm \
     -o "${static_smoke}"
@@ -354,7 +389,8 @@ check() {
   for object in \
     "${build_dir}/sqlite3.o" \
     "${build_dir}/shell.o" \
-    "${smoke_object}"
+    "${dynamic_smoke_object}" \
+    "${static_smoke_object}"
   do
     object_name=$(basename "${object}")
     "${_target}-objdump" -f "${object}" \
@@ -444,7 +480,11 @@ print("{}\t{}\t{}\t{}".format(
   install -Dm755 \
     "${static_smoke}" \
     "${srcdir}/native-smoke/sqlite-api-static-smoke.exe"
-  rm -f "${dynamic_smoke}" "${static_smoke}" "${smoke_object}"
+  rm -f \
+    "${dynamic_smoke}" \
+    "${static_smoke}" \
+    "${dynamic_smoke_object}" \
+    "${static_smoke_object}"
   find "${report_dir}" -type f -exec \
     sed -i "s#${srcdir}/##g" {} +
 
