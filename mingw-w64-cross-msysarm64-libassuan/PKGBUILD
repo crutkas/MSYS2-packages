@@ -4,13 +4,15 @@ _realname=libassuan
 _target=aarch64-pc-msys
 _runtime_version=3.6.10.r0.ga527ace21
 _runtime_pkgrel=1
+_binutils_version=2.44.50
+_binutils_pkgrel=2
 _gcc_version=15.0.1dev
 _gcc_pkgrel=1
-_libgpg_error_version=1.55
+_libgpg_error_version=1.56
 _libgpg_error_pkgrel=1
 
 # The a527 runtime is immutable. Candidate packages remain provisional until
-# rebuilt with the coordinator-approved fixed binutils and native ARM64 passes.
+# the coordinator-approved fixed-binutils build passes native ARM64 CI.
 pkgbase=mingw-w64-cross-msysarm64-libassuan
 pkgname=(
   mingw-w64-cross-msysarm64-libassuan
@@ -28,8 +30,9 @@ license=('spdx:LGPL-2.1-or-later' 'spdx:GPL-3.0-or-later')
 makedepends=(
   'autotools'
   'gcc'
+  'perl'
   'pkgconf'
-  'mingw-w64-cross-cygwinarm64-binutils>=2.44.50'
+  "mingw-w64-cross-cygwinarm64-binutils=${_binutils_version}-${_binutils_pkgrel}"
   "mingw-w64-cross-msysarm64-gcc=${_gcc_version}-${_gcc_pkgrel}"
   "mingw-w64-cross-msysarm64-gcc-libs=${_gcc_version}-${_gcc_pkgrel}"
   "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
@@ -40,13 +43,15 @@ makedepends=(
 options=('!strip' '!buildflags' '!emptydirs' 'libtool')
 source=(
   "https://gnupg.org/ftp/gcrypt/${_realname}/${_realname}-${pkgver}.tar.bz2"{,.sig}
+  funopen-size_t.patch
   audit-msysarm64.sh
   context-smoke.c
   pipe-smoke.c
 )
 sha256sums=('d2931cdad266e633510f9970e1a2f346055e351bb19f9b78912475b8074c36f6'
             'SKIP'
-            '1b6576327dc2c3b93690948d01373c0e9f85c095ef3e07f877329bbaa4608c37'
+            'f28d3514eef7aafccc0c60ebb2195b27db9a5d3799747397219ff0275d1d8d2c'
+            'c2121d6e240683155d2f68e3c16821a9b0174eb7e8f69c4071cf2c5d46c45095'
             'a2851e6e30ce02a7ecce214006e6def5bc61689d51087ae6e59d4803fb86d400'
             '2142faf66e8bc82dbb8ba08d52bc8a2a25f5844cdd5baa6e366ba2d8772625ae')
 validpgpkeys=('6DAA6E64A76D2840571B4902528897B826403ADA'
@@ -55,24 +60,57 @@ validpgpkeys=('6DAA6E64A76D2840571B4902528897B826403ADA'
 prepare() {
   cd "${srcdir}/${_realname}-${pkgver}"
 
+  patch -Np1 -i "${srcdir}/funopen-size_t.patch"
   # MSYS uses the Cygwin libtool model while retaining its own target triplet.
   perl -0pi -e 's/\*-\*-cygwin\*\)/\*-\*-cygwin* | *-*-msys*)/' configure.ac
   autoreconf -fi
-  perl -0pi -e 's/cygwin\* \| mingw\* \| windows\* \| pw32\* \| cegcc\*/cygwin* | msys* | mingw* | windows* | pw32* | cegcc*/g; s/cygwin\*\)/cygwin* | msys*)/g' m4/libtool.m4 configure
+  perl -0pi -e 's/\*cygwin\*,\*lai,yes,no,\*\.dll/*cygwin*,*lai,yes,no,*.dll | *msys*,*lai,yes,no,*.dll/g; s/\*-\*-cygwin\*(?!\s*\|\s*\*-\*-msys\*)/*-*-cygwin* | *-*-msys*/g; s/(?<!-)cygwin\*(?!,|\s*\|\s*msys\*)/cygwin* | msys*/g' \
+    m4/libtool.m4 configure build-aux/ltmain.sh
 }
 
 build() {
   cd "${srcdir}/${_realname}-${pkgver}"
 
   local _build_triplet
+  local _target_usr="/opt/${_target}/usr"
+  local _dependency_version
+  local _preflight="${srcdir}/dependency-preflight"
+  local _debug_prefix="/usr/src/debug/${pkgbase}-${pkgver}"
   _build_triplet="$(gcc -dumpmachine)"
 
   export PATH="/opt/${_target}/usr/bin:/opt/bin:${PATH}"
   export PKG_CONFIG_SYSROOT_DIR="/opt/${_target}"
-  export PKG_CONFIG_LIBDIR="/opt/${_target}/usr/lib/pkgconfig"
+  export PKG_CONFIG_LIBDIR="${_target_usr}/lib/pkgconfig"
   export GPGRT_CONFIG=no
-  export GPG_ERROR_CONFIG="/opt/${_target}/usr/bin/gpg-error-config"
+  export GPG_ERROR_CONFIG="${_target_usr}/bin/gpg-error-config"
+  export CPPFLAGS="-isystem ${_target_usr}/include"
+  export CFLAGS="-O2 -g0 -ffile-prefix-map=${srcdir}=${_debug_prefix} -fdebug-prefix-map=${srcdir}=${_debug_prefix} -fmacro-prefix-map=${srcdir}=${_debug_prefix}"
+  export LDFLAGS="-L${_target_usr}/lib"
   export lt_cv_deplibs_check_method=pass_all
+  export lt_cv_archive_cmds_need_lc=no
+
+  test -x "${GPG_ERROR_CONFIG}"
+  test -f "${_target_usr}/include/gpg-error.h"
+  test -f "${_target_usr}/lib/libgpg-error.dll.a"
+  _dependency_version="$("${GPG_ERROR_CONFIG}" --version)"
+  [[ "${_dependency_version%%-*}" == "${_libgpg_error_version}" ]]
+
+  rm -rf "${_preflight}"
+  mkdir -p "${_preflight}"
+  printf '#include <gpg-error.h>\n' |
+    "${_target}-gcc" -isystem "${_target_usr}/include" \
+      -E -H -x c - -o /dev/null 2> "${_preflight}/include-trace.txt"
+  grep -Fq "${_target_usr}/include/gpg-error.h" \
+    "${_preflight}/include-trace.txt"
+
+  printf '#include <gpg-error.h>\nint main(void) { return gpg_error_check_version(0) ? 0 : 1; }\n' |
+    "${_target}-gcc" -isystem "${_target_usr}/include" -x c - \
+      -L"${_target_usr}/lib" -Wl,--trace -lgpg-error \
+      -o "${_preflight}/gpg-error-link.exe" \
+      > "${_preflight}/link-trace.txt" 2>&1
+  grep -Fq "${_target_usr}/lib/libgpg-error.dll.a" \
+    "${_preflight}/link-trace.txt"
+  printf '%s\n' "${_dependency_version}" > "${_preflight}/version.txt"
 
   ./configure \
     CC="${_target}-gcc" \
@@ -91,7 +129,17 @@ build() {
     --enable-shared \
     --enable-static
 
-  make no_undefined="-no-undefined"
+  sed -n '/global:/,/local:/{
+    s/^[[:space:]]*\([_A-Za-z][_A-Za-z0-9]*\);[[:space:]]*$/\1/p
+  }' src/libassuan.vers > src/libassuan.exports
+  if [[ ! -s src/libassuan.exports ]]; then
+    printf 'error: sealed source export map produced no symbols\n' >&2
+    return 1
+  fi
+
+  make \
+    no_undefined="-no-undefined" \
+    export_symbols="-export-symbols ${srcdir}/${_realname}-${pkgver}/src/libassuan.exports"
   make DESTDIR="${srcdir}/dest" install
   sed -i "s|/opt/${_target}/usr|/usr|g" \
     "${srcdir}/dest/usr/bin/libassuan-config" \
@@ -106,6 +154,9 @@ check() {
     "${srcdir}/pipe-smoke.c" \
     "/opt/${_target}" \
     "${srcdir}/${_realname}-${pkgver}/src/libassuan.vers"
+  mkdir -p "${srcdir}/audit-report/dependency-preflight"
+  cp -a "${srcdir}/dependency-preflight/." \
+    "${srcdir}/audit-report/dependency-preflight/"
 }
 
 package_mingw-w64-cross-msysarm64-libassuan() {
@@ -134,7 +185,7 @@ package_mingw-w64-cross-msysarm64-libassuan-devel() {
   )
   provides=("aarch64-pc-msys-libassuan-devel=${pkgver}")
   conflicts=('aarch64-pc-msys-libassuan-devel')
-  options=('staticlibs' 'libtool')
+  options=('!strip' '!buildflags' '!emptydirs' 'staticlibs' 'libtool')
 
   install -d "${pkgdir}/opt/${_target}/usr/share"
   cp -a "${srcdir}/dest/usr/include" "${pkgdir}/opt/${_target}/usr/"

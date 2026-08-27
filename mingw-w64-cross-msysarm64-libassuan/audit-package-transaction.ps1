@@ -17,10 +17,13 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ReportDirectory,
 
-    [string]$SharedDatabase = 'C:\msys64\var\lib\pacman\local'
+    [string]$SharedDatabase = 'C:\msys64\var\lib\pacman\local',
+
+    [string]$SharedLog = 'C:\msys64\var\log\pacman.log'
 )
 
 $ErrorActionPreference = 'Stop'
+$env:MSYS = 'winsymlinks:sys'
 $expectedNames = @(
     'mingw-w64-cross-msysarm64-libassuan',
     'mingw-w64-cross-msysarm64-libassuan-devel',
@@ -53,6 +56,54 @@ function Get-DirectorySeal {
     }
     finally {
         $sha.Dispose()
+    }
+}
+
+function Write-DirectoryManifest {
+    param(
+        [string]$Path,
+        [string]$Destination
+    )
+
+    $lines = Get-ChildItem -LiteralPath $Path -Recurse -File |
+        Sort-Object FullName |
+        ForEach-Object {
+            $relative = $_.FullName.Substring($Path.Length).Replace('\', '/')
+            '{0}  {1}' -f (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant(), $relative
+        }
+    $lines | Set-Content -Encoding ascii $Destination
+    return (Get-FileHash -Algorithm SHA256 $Destination).Hash.ToLowerInvariant()
+}
+
+function Write-CanonicalDatabaseManifest {
+    param(
+        [string]$Path,
+        [string]$Destination
+    )
+
+    Get-ChildItem -LiteralPath $Path -Recurse -File |
+        Sort-Object FullName |
+        ForEach-Object {
+            [pscustomobject]@{
+                path = $_.FullName.Substring($Path.Length + 1)
+                length = $_.Length
+                lastWriteUtc = $_.LastWriteTimeUtc.ToString('o')
+                sha256 = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant()
+            }
+        } |
+        Export-Csv $Destination -NoTypeInformation -Encoding utf8
+    return (Get-FileHash -Algorithm SHA256 $Destination).Hash.ToLowerInvariant()
+}
+
+function Get-FileSeal {
+    param([string]$Path)
+
+    $item = Get-Item -LiteralPath $Path
+    return [pscustomobject]@{
+        path = $item.FullName
+        size = $item.Length
+        lastWriteUtc = $item.LastWriteTimeUtc.ToString('o')
+        sha256 = (Get-FileHash -Algorithm SHA256 $item.FullName).Hash.ToLowerInvariant()
     }
 }
 
@@ -92,6 +143,34 @@ function Get-PackageFiles {
     })
 }
 
+function Export-ArchiveMember {
+    param(
+        [string]$Archive,
+        [string]$Member,
+        [string]$Destination
+    )
+
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $Bsdtar
+    $startInfo.ArgumentList.Add('-xOf')
+    $startInfo.ArgumentList.Add($Archive)
+    $startInfo.ArgumentList.Add($Member)
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.UseShellExecute = $false
+    $process = [Diagnostics.Process]::Start($startInfo)
+    $stream = [IO.File]::Create($Destination)
+    try {
+        $process.StandardOutput.BaseStream.CopyTo($stream)
+    }
+    finally {
+        $stream.Dispose()
+    }
+    $process.WaitForExit()
+    if ($process.ExitCode -ne 0) {
+        throw "Unable to extract $Member from $Archive"
+    }
+}
+
 function Invoke-Pacman {
     param([string[]]$Arguments)
 
@@ -104,6 +183,19 @@ function Invoke-Pacman {
 New-Item -ItemType Directory -Force -Path $ReportDirectory | Out-Null
 $sharedBefore = Get-DirectorySeal -Path $SharedDatabase
 $sharedBefore | Set-Content -Encoding ascii (Join-Path $ReportDirectory 'shared-db-before.sha256')
+$sharedManifestBefore = Write-DirectoryManifest `
+    -Path $SharedDatabase `
+    -Destination (Join-Path $ReportDirectory 'shared-db-before.manifest')
+$sharedManifestBefore |
+    Set-Content -Encoding ascii (Join-Path $ReportDirectory 'shared-db-before.manifest.sha256')
+$sharedCanonicalBefore = Write-CanonicalDatabaseManifest `
+    -Path $SharedDatabase `
+    -Destination (Join-Path $ReportDirectory 'shared-db-before.csv')
+$sharedCanonicalBefore |
+    Set-Content -Encoding ascii (Join-Path $ReportDirectory 'shared-db-before.csv.sha256')
+$sharedLogBefore = Get-FileSeal -Path $SharedLog
+$sharedLogBefore | ConvertTo-Json |
+    Set-Content -Encoding utf8 (Join-Path $ReportDirectory 'shared-log-before.json')
 
 if ($CandidateArchives.Count -ne 3) {
     throw "Expected three candidate archives, found $($CandidateArchives.Count)"
@@ -130,13 +222,13 @@ foreach ($archive in $CandidateArchives) {
         'mingw-w64-cross-msysarm64-libassuan' {
             @(
                 'aarch64-pc-msys-runtime=3.6.10.r0.ga527ace21',
-                'aarch64-pc-msys-libgpg-error=1.55'
+                'aarch64-pc-msys-libgpg-error=1.56'
             )
         }
         'mingw-w64-cross-msysarm64-libassuan-devel' {
             @(
                 'aarch64-pc-msys-libassuan=3.0.2',
-                'aarch64-pc-msys-libgpg-error-devel=1.55'
+                'aarch64-pc-msys-libgpg-error-devel=1.56'
             )
         }
         'mingw-w64-cross-msysarm64-libassuan-tools' {
@@ -175,6 +267,8 @@ foreach ($archive in $CandidateArchives) {
         $owners[$file] = $name
     }
 
+    $pkgInfoPath = Join-Path $ReportDirectory "$name.PKGINFO"
+    Export-ArchiveMember -Archive $archive -Member '.PKGINFO' -Destination $pkgInfoPath
     $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
     $packageRecords += [pscustomobject]@{
         name = $name
@@ -182,12 +276,12 @@ foreach ($archive in $CandidateArchives) {
         archive = (Resolve-Path -LiteralPath $archive).Path
         size = (Get-Item -LiteralPath $archive).Length
         sha256 = $hash
+        pkginfoSize = (Get-Item -LiteralPath $pkgInfoPath).Length
+        pkginfoSha256 = (Get-FileHash -Algorithm SHA256 $pkgInfoPath).Hash.ToLowerInvariant()
         files = $files.Count
         depends = @($info.depend)
         provides = @($info.provides)
     }
-    $infoText = & $Bsdtar -xOf $archive .PKGINFO
-    $infoText | Set-Content -Encoding utf8 (Join-Path $ReportDirectory "$name.PKGINFO")
     $files | Sort-Object | Set-Content -Encoding utf8 (Join-Path $ReportDirectory "$name.files")
 }
 
@@ -204,8 +298,9 @@ if (Test-Path -LiteralPath $TransactionRoot) {
 $db = Join-Path $TransactionRoot 'var\lib\pacman'
 $cache = Join-Path $TransactionRoot 'var\cache\pacman\pkg'
 $log = Join-Path $TransactionRoot 'var\log\pacman.log'
-$config = Join-Path $TransactionRoot 'pacman-local.conf'
-New-Item -ItemType Directory -Force -Path $db, $cache, (Split-Path $log) | Out-Null
+$config = Join-Path $TransactionRoot 'etc\pacman-local.conf'
+$hooks = Join-Path $TransactionRoot 'etc\pacman.d\hooks'
+New-Item -ItemType Directory -Force -Path $db, $cache, (Split-Path $log), $hooks | Out-Null
 @'
 [options]
 Architecture = auto
@@ -220,6 +315,7 @@ $common = @(
     '--cachedir', $cache,
     '--logfile', $log,
     '--config', $config,
+    '--hookdir', $hooks,
     '--noconfirm'
 )
 Invoke-Pacman -Arguments ($common + @(
@@ -269,6 +365,29 @@ foreach ($name in $expectedNames) {
 Copy-Item -LiteralPath $log -Destination (Join-Path $ReportDirectory 'transaction-pacman.log')
 $sharedAfter = Get-DirectorySeal -Path $SharedDatabase
 $sharedAfter | Set-Content -Encoding ascii (Join-Path $ReportDirectory 'shared-db-after.sha256')
+$sharedManifestAfter = Write-DirectoryManifest `
+    -Path $SharedDatabase `
+    -Destination (Join-Path $ReportDirectory 'shared-db-after.manifest')
+$sharedManifestAfter |
+    Set-Content -Encoding ascii (Join-Path $ReportDirectory 'shared-db-after.manifest.sha256')
+$sharedCanonicalAfter = Write-CanonicalDatabaseManifest `
+    -Path $SharedDatabase `
+    -Destination (Join-Path $ReportDirectory 'shared-db-after.csv')
+$sharedCanonicalAfter |
+    Set-Content -Encoding ascii (Join-Path $ReportDirectory 'shared-db-after.csv.sha256')
+$sharedLogAfter = Get-FileSeal -Path $SharedLog
+$sharedLogAfter | ConvertTo-Json |
+    Set-Content -Encoding utf8 (Join-Path $ReportDirectory 'shared-log-after.json')
 if ($sharedAfter -ne $sharedBefore) {
     throw 'Shared C:\msys64 package database changed during isolated transactions'
+}
+if ($sharedManifestAfter -ne $sharedManifestBefore) {
+    throw 'Shared C:\msys64 package database manifest changed during isolated transactions'
+}
+if ($sharedCanonicalAfter -ne $sharedCanonicalBefore) {
+    throw 'Shared C:\msys64 canonical package database manifest changed during isolated transactions'
+}
+if ($sharedLogAfter.sha256 -ne $sharedLogBefore.sha256 -or
+    $sharedLogAfter.size -ne $sharedLogBefore.size) {
+    throw 'Shared C:\msys64 pacman log changed during isolated transactions'
 }

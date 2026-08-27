@@ -16,7 +16,9 @@ target=aarch64-pc-msys
 prefix="${dest}/usr"
 objdump="${target}-objdump"
 ar="${target}-ar"
+nm="${target}-nm"
 cc="${target}-gcc"
+strings="${target}-strings"
 
 rm -rf "${report}"
 mkdir -p "${report}/archive-members" "${report}/smoke"
@@ -24,6 +26,25 @@ mkdir -p "${report}/archive-members" "${report}/smoke"
 fail() {
   echo "audit failure: $*" >&2
   exit 1
+}
+
+audit_source_paths() {
+  local file=$1
+  local name=$2
+  local safe=${name//\//_}
+  safe=${safe//:/_}
+  local strings_file="${report}/${safe}.strings.txt"
+  local leaks="${report}/${safe}.path-leaks.txt"
+
+  "${strings}" "${file}" > "${strings_file}"
+  if grep -Eiq '(^|[^[:alnum:]])(/[a-z]/Users/|[A-Za-z]:[/\\]Users[/\\])' \
+    "${strings_file}"; then
+    grep -Ei '(^|[^[:alnum:]])(/[a-z]/Users/|[A-Za-z]:[/\\]Users[/\\])' \
+      "${strings_file}" > "${leaks}"
+    fail "${name} leaks a user-profile build path"
+  fi
+  : > "${leaks}"
+  rm -f "${strings_file}"
 }
 
 audit_pe() {
@@ -39,6 +60,7 @@ audit_pe() {
     fail "${name} is not PE/COFF ARM64"
   ! grep -Eiq 'i386|x86-64|pei-x86-64' "${format}" ||
     fail "${name} contains an x86 architecture marker"
+  audit_source_paths "${file}" "${name}"
   "${objdump}" -h "${file}" > "${sections}"
   awk '$2 == ".pdata" && $3 !~ /^0+$/ { found=1 } END { exit !found }' \
     "${sections}" || fail "${name} has no nonempty ARM64 SEH .pdata section"
@@ -85,7 +107,11 @@ mapfile -d '' archives < <(find "${prefix}" -type f -name '*.a' -print0)
 for archive in "${archives[@]}"; do
   archive_name=$(basename "${archive}")
   member_dir="${report}/archive-members/${archive_name}"
+  armap="${report}/archive-members/${archive_name}.armap.txt"
   mkdir -p "${member_dir}"
+  "${nm}" --print-armap "${archive}" > "${armap}"
+  grep -Fq 'Archive index:' "${armap}" ||
+    fail "${archive_name} has no archive symbol index"
   member_count=0
   declare -A member_occurrences=()
   while IFS= read -r member_name; do
@@ -112,6 +138,8 @@ for archive in "${archives[@]}"; do
       fail "${archive_name}:${member_name} is not ARM64"
     ! grep -Eiq 'i386|x86-64|pei-x86-64' "${member_format}" ||
       fail "${archive_name}:${member_name} contains an x86 marker"
+    audit_source_paths "${preserved}" \
+      "${archive_name}:${member_count}-${member_name}"
   done < <("${ar}" t "${archive}")
   rm -rf "${member_dir}/extract"
   (( member_count > 0 )) || fail "${archive_name} has no auditable members"
@@ -124,9 +152,23 @@ mapfile -d '' libassuan_dlls < <(
   fail "expected exactly one dynamic libassuan DLL, found ${#libassuan_dlls[@]}"
 dll=${libassuan_dlls[0]}
 "${objdump}" -p "${dll}" > "${report}/libassuan.exports.txt"
-sed -n '/^[[:space:]]*\[Ordinal\/Name Pointer\] Table$/,${
-  s/^[[:space:]]*\[[[:space:]]*[0-9][0-9]*\][[:space:]]*\([^[:space:]]\+\).*$/\1/p
-}' "${report}/libassuan.exports.txt" | sort -u > "${report}/exports.actual.txt"
+grep -Eiq 'DLL Name: msys-gpg-error-[0-9]+\.dll' \
+  "${report}/libassuan.exports.txt" ||
+  fail "libassuan DLL does not dynamically import MSYS libgpg-error"
+grep -Fiq 'DLL Name: msys-2.0.dll' "${report}/libassuan.exports.txt" ||
+  fail "libassuan DLL does not dynamically import the MSYS runtime"
+awk '
+  /^[[:space:]]*\[Ordinal\/Name Pointer\] Table/ {
+    names = 1
+    next
+  }
+  names && /^[[:space:]]*$/ {
+    exit
+  }
+  names && /^[[:space:]]*\[/ {
+    print $NF
+  }
+' "${report}/libassuan.exports.txt" | sort -u > "${report}/exports.actual.txt"
 sed -n '/global:/,/local:/{
   s/^[[:space:]]*\([_A-Za-z][_A-Za-z0-9]*\);[[:space:]]*$/\1/p
 }' "${export_map}" | sort -u > "${report}/exports.expected.txt"
@@ -146,10 +188,10 @@ grep -Fxq 'Requires.private: gpg-error' "${pc}" ||
   fail "pkg-config private dependency is not gpg-error"
 grep -Eq '^Libs: .* -lassuan$' "${pc}" ||
   fail "pkg-config link flags do not expose libassuan"
-! grep -Eiq '(^|[ =])([A-Za-z]:|/mingw|/ucrt|/clang|/opt/|/c/|/d/)' "${pc}" ||
+! grep -Eiq '(^|[^[:alnum:]])[A-Za-z]:[/\\]|/(mingw|ucrt|clang|opt|c|d)/' "${pc}" ||
   fail "pkg-config metadata leaks a build or host path"
 while IFS= read -r -d '' metadata; do
-  ! grep -Eiq '([A-Za-z]:|/mingw|/ucrt|/clang|/opt/|/c/|/d/)' "${metadata}" ||
+  ! grep -Eiq '(^|[^[:alnum:]])[A-Za-z]:[/\\]|/(mingw|ucrt|clang|opt|c|d)/' "${metadata}" ||
     fail "${metadata#${dest}/} leaks a build or host path"
 done < <(
   find "${prefix}" -type f \
@@ -158,17 +200,18 @@ done < <(
 )
 
 config_version=$("${config}" --version)
+config_version_base=${config_version%%-*}
 config_host=$("${config}" --host)
 config_cflags=$("${config}" --cflags)
 config_libs=$("${config}" --libs)
-[[ "${config_version}" == '3.0.2' ]] ||
+[[ "${config_version_base}" == '3.0.2' ]] ||
   fail "libassuan-config reports ${config_version}"
 [[ "${config_host}" == "${target}" ]] ||
   fail "libassuan-config reports host ${config_host}"
 [[ "${config_libs}" == *'-lassuan'* && "${config_libs}" == *'-lgpg-error'* ]] ||
   fail "libassuan-config omits required libraries"
 ! printf '%s\n' "${config_cflags}" "${config_libs}" |
-  grep -Eiq '([A-Za-z]:|/mingw|/ucrt|/clang|/opt/|/c/|/d/)' ||
+  grep -Eiq '(^|[^[:alnum:]])[A-Za-z]:[/\\]|/(mingw|ucrt|clang|opt|c|d)/' ||
   fail "libassuan-config leaks a build or host path"
 
 export PKG_CONFIG_SYSROOT_DIR="${target_root}"
@@ -202,6 +245,14 @@ common_flags=(
 
 for smoke in "${report}/smoke/"*.exe; do
   audit_pe "${smoke}"
+done
+for smoke in \
+  "${report}/smoke/context-dynamic.exe" \
+  "${report}/smoke/pipe-dynamic.exe"; do
+  dynamic_imports="${smoke%.exe}.imports-full.txt"
+  "${objdump}" -p "${smoke}" > "${dynamic_imports}"
+  grep -Eiq 'DLL Name: msys-assuan-[0-9]+\.dll' "${dynamic_imports}" ||
+    fail "$(basename "${smoke}") does not dynamically import libassuan"
 done
 "${objdump}" -p "${report}/smoke/context-static.exe" \
   > "${report}/context-static.imports-full.txt"
