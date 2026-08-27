@@ -66,7 +66,10 @@ prepare() {
   # outside the signed release tag changes PACKAGE_VERSION to 3.0.2-unknown.
   perl -0pi -e 's/\*cygwin\*,\*lai,yes,no,\*\.dll/*cygwin*,*lai,yes,no,*.dll | *msys*,*lai,yes,no,*.dll/g; s/\*-\*-cygwin\*(?!\s*\|\s*\*-\*-msys\*)/*-*-cygwin* | *-*-msys*/g; s/(?<!-)cygwin\*(?!,|\s*\|\s*msys\*)/cygwin* | msys*/g' \
     m4/libtool.m4 configure build-aux/ltmain.sh
+  sed -i 's@s/\^lib/cyg/@s/\^lib/msys-/@g' m4/libtool.m4 configure
   sed -i "s/${pkgver}-unknown/${pkgver}/g" configure
+  grep -Fq 's/^lib/msys-/' configure
+  ! grep -Fq 's/^lib/cyg/' configure
   grep -Fq "PACKAGE_VERSION='${pkgver}'" configure
   ! grep -Fq "${pkgver}-unknown" configure
 }
