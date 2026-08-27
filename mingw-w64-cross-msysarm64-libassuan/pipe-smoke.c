@@ -41,23 +41,24 @@ run_server (void)
 }
 
 static int
-run_client (const char *self)
+run_client (void)
 {
   assuan_context_t ctx = NULL;
   assuan_fd_t no_close[2];
   const char *argv[3];
+  const char *server = "/proc/self/exe";
   gpg_error_t err;
   int status = 0;
 
   no_close[0] = assuan_fd_from_posix_fd (2);
   no_close[1] = ASSUAN_INVALID_FD;
-  argv[0] = self;
+  argv[0] = server;
   argv[1] = "--server";
   argv[2] = NULL;
 
   err = assuan_new (&ctx);
   if (!err)
-    err = assuan_pipe_connect (ctx, self, argv, no_close, NULL, NULL, 0);
+    err = assuan_pipe_connect (ctx, server, argv, no_close, NULL, NULL, 0);
   if (!err)
     err = assuan_transact (ctx, "PING", NULL, NULL, NULL, NULL, NULL, NULL);
   if (!err)
@@ -68,7 +69,8 @@ run_client (const char *self)
   assuan_release (ctx);
   if (err)
     {
-      fprintf (stderr, "client failed: %u\n", (unsigned int) err);
+      fprintf (stderr, "client failed: %s (%u)\n",
+               gpg_strerror (err), (unsigned int) err);
       return 20;
     }
   if (status)
@@ -97,5 +99,5 @@ main (int argc, char **argv)
     return run_server ();
   if (argc != 1)
     return 2;
-  return run_client (argv[0]);
+  return run_client ();
 }
