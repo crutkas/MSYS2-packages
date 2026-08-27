@@ -115,13 +115,17 @@ build() {
     local probe_dir
     probe_dir=$(mktemp -d)
     cat > "${probe_dir}/probe.c" <<'EOF'
-int main(void) { return 0; }
+#include <unistd.h>
+
+int main(void) { return (getpid() == 0); }
 EOF
+    set -x
     "${perl_cc}" -std=c99 -c "${probe_dir}/probe.c" -o "${probe_dir}/probe.o"
     "${perl_cc}" -std=c99 "${probe_dir}/probe.c" \
       -Wl,--subsystem,console \
       -lkernel32 -lntdll \
       -o "${probe_dir}/probe.exe"
+    set +x
     local probe_object_info probe_exe_info probe_imports
     probe_object_info=$("${perl_objdump}" -f "${probe_dir}/probe.o" 2>&1)
     if ! grep -F 'file format pe-aarch64-little' <<<"${probe_object_info}" >/dev/null; then
