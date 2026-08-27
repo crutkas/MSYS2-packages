@@ -485,8 +485,9 @@ jobs:
             throw 'windows-11-arm did not report an ARM64 operating system'
           }
 
-          $targetBin = Join-Path $env:MSYS_ROOT 'opt\aarch64-pc-msys\usr\bin'
-          $env:PATH = "$targetBin;$env:PATH"
+          $targetUsrBin = Join-Path $env:MSYS_ROOT 'opt\aarch64-pc-msys\usr\bin'
+          $targetRuntimeBin = Join-Path $env:MSYS_ROOT 'opt\aarch64-pc-msys\bin'
+          $env:PATH = "$targetUsrBin;$targetRuntimeBin;$env:PATH"
           foreach ($kind in @('dynamic', 'static')) {
             $exe = Join-Path $env:RUNNER_TEMP "libgpg-error-native\$kind-consumer.exe"
             $output = @(& $exe 2>&1 | ForEach-Object ToString)
