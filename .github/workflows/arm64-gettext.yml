@@ -21,15 +21,18 @@ jobs:
     if: >-
       ${{
         github.repository == 'crutkas/MSYS2-packages' &&
-        (github.ref_name == 'crutkas-arm64-gettext-libintl' ||
-         github.head_ref == 'crutkas-arm64-gettext-libintl')
+        ((github.event_name == 'pull_request' &&
+          github.head_ref == 'crutkas-arm64-gettext-libintl' &&
+          github.event.pull_request.head.repo.full_name == github.repository) ||
+         (github.event_name != 'pull_request' &&
+          github.ref_name == 'crutkas-arm64-gettext-libintl'))
       }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
       final_build_admitted: ${{ steps.admission.outputs.final_build_admitted }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
@@ -42,6 +45,10 @@ jobs:
           if ('${{ github.event_name }}' -eq 'pull_request') {
             if ('${{ github.head_ref }}' -ne 'crutkas-arm64-gettext-libintl') {
               throw 'Unexpected pull request head'
+            }
+            if ('${{ github.event.pull_request.head.repo.full_name }}' -ne
+                $env:GITHUB_REPOSITORY) {
+              throw 'Pull request head must be in the trusted fork repository'
             }
             if ('${{ github.base_ref }}' -ne 'master') {
               throw 'Unexpected pull request base'
@@ -125,7 +132,7 @@ jobs:
       SOURCE_DATE_EPOCH: 1787858185
       GETTEXT_FINAL_BUILD_ADMITTED: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: source
           persist-credentials: false
@@ -220,13 +227,15 @@ jobs:
             config = Join-Path $root 'etc\gettext-pacman.conf'
             hooks = Join-Path $root 'etc\pacman.d\gettext-hooks'
             gpg = Join-Path $root 'etc\pacman.d\gettext-gnupg'
+            wrapper = Join-Path $root 'opt\private-bin\pacman'
           }
           foreach ($directory in @(
               $paths.db,
               $paths.cache,
               (Split-Path $paths.log),
               $paths.hooks,
-              $paths.gpg
+              $paths.gpg,
+              (Split-Path $paths.wrapper)
             )) {
             New-Item -ItemType Directory -Force -Path $directory | Out-Null
           }
@@ -236,6 +245,27 @@ jobs:
           SigLevel = Never
           LocalFileSigLevel = Never
           '@ | Set-Content $paths.config -Encoding ascii
+          $wrapper = @'
+          #!/usr/bin/bash
+          exec /usr/bin/pacman \
+            --root / \
+            --dbpath /var/lib/pacman \
+            --cachedir /var/cache/pacman/pkg \
+            --logfile /var/log/gettext-pacman.log \
+            --config /etc/gettext-pacman.conf \
+            --hookdir /etc/pacman.d/gettext-hooks \
+            --gpgdir /etc/pacman.d/gettext-gnupg \
+            "$@"
+          '@
+          [System.IO.File]::WriteAllText(
+            $paths.wrapper,
+            $wrapper.Replace("`r`n", "`n"),
+            [System.Text.UTF8Encoding]::new($false)
+          )
+          & '${{ steps.private.outputs.bash }}' -lc 'chmod 755 /opt/private-bin/pacman'
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to activate the private pacman wrapper'
+          }
           foreach ($entry in $paths.GetEnumerator()) {
             "$($entry.Key)=$($entry.Value)" >> $env:GITHUB_OUTPUT
           }
@@ -267,11 +297,15 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $lock = Get-Content 'source\mingw-w64-cross-msysarm64-gettext\dependency-lock.json' -Raw |
             ConvertFrom-Json
+          $hostLock = Get-Content 'source\mingw-w64-cross-msysarm64-gettext\host-build-lock.json' -Raw |
+            ConvertFrom-Json
           $inputRoot = Join-Path $env:RUNNER_TEMP 'admitted-inputs'
+          $hostRoot = Join-Path $inputRoot 'host'
           $toolchainRoot = Join-Path $inputRoot 'toolchain'
           $runtimeRoot = Join-Path $inputRoot 'runtime'
           $libiconvRoot = Join-Path $inputRoot 'libiconv'
-          New-Item -ItemType Directory -Force -Path $toolchainRoot, $runtimeRoot, $libiconvRoot |
+          New-Item -ItemType Directory -Force `
+            -Path $hostRoot, $toolchainRoot, $runtimeRoot, $libiconvRoot |
             Out-Null
 
           function Receive-Asset($Asset, [string] $Destination) {
@@ -290,6 +324,27 @@ jobs:
             }
           }
 
+          function Receive-UrlAsset($Asset, [string] $Destination) {
+            if ($Asset.size -isnot [long] -and $Asset.size -isnot [int]) {
+              throw "Invalid immutable asset size: $($Asset.filename)"
+            }
+            if ($Asset.size -le 0 -or $Asset.sha256 -notmatch '^[0-9a-f]{64}$') {
+              throw "Incomplete immutable asset: $($Asset.filename)"
+            }
+            $path = Join-Path $Destination $Asset.filename
+            Invoke-WebRequest -Uri $Asset.url -OutFile $path
+            if ((Get-Item $path).Length -ne $Asset.size) {
+              throw "Size mismatch for $($Asset.filename)"
+            }
+            $actual = (Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $Asset.sha256) {
+              throw "SHA-256 mismatch for $($Asset.filename): $actual"
+            }
+          }
+
+          foreach ($asset in $hostLock.assets) {
+            Receive-UrlAsset $asset $hostRoot
+          }
           foreach ($asset in $lock.admitted_assets) {
             $destination = if ($asset.tag -eq 'msysarm64-runtime-pr10-a527-20260824') {
               $runtimeRoot
@@ -299,7 +354,7 @@ jobs:
             Receive-Asset $asset $destination
           }
           foreach ($asset in $lock.target_dependency_assets) {
-            if (-not $asset.admitted) {
+            if ($asset.admitted -isnot [bool] -or -not $asset.admitted) {
               throw "Refusing provisional dependency bytes for $($asset.package)"
             }
             Receive-Asset ([pscustomobject]@{
@@ -316,12 +371,126 @@ jobs:
             throw 'Unable to derive the admitted libiconv identity'
           }
           "root=$inputRoot" >> $env:GITHUB_OUTPUT
+          "host=$hostRoot" >> $env:GITHUB_OUTPUT
           "toolchain=$toolchainRoot" >> $env:GITHUB_OUTPUT
           "runtime=$runtimeRoot" >> $env:GITHUB_OUTPUT
           "libiconv=$libiconvRoot" >> $env:GITHUB_OUTPUT
           "libiconv_admission_sha256=$admissionHash" >> $env:GITHUB_OUTPUT
 
-      - name: Install exact toolchain into private root
+      - name: Install complete immutable x64 host build closure
+        shell: pwsh
+        run: |
+          $pacman = '${{ steps.private.outputs.pacman }}'
+          $args = @(
+            '--root', '${{ steps.private.outputs.root }}',
+            '--dbpath', '${{ steps.pacman.outputs.db }}',
+            '--cachedir', '${{ steps.pacman.outputs.cache }}',
+            '--logfile', '${{ steps.pacman.outputs.log }}',
+            '--config', '${{ steps.pacman.outputs.config }}',
+            '--hookdir', '${{ steps.pacman.outputs.hooks }}',
+            '--gpgdir', '${{ steps.pacman.outputs.gpg }}',
+            '--noconfirm', '-U'
+          )
+          $packages = Get-ChildItem '${{ steps.inputs.outputs.host }}' `
+            -File -Filter '*.pkg.tar.zst' |
+            Sort-Object Name |
+            Select-Object -ExpandProperty FullName
+          $env:MSYS = 'winsymlinks:sys'
+          & $pacman @args @packages
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Private x64 host build closure transaction failed'
+          }
+
+      - name: Import exact gettext signer into private build keyring
+        shell: pwsh
+        run: |
+          $fingerprint = '9001B85AF9E1B83DF1BDA942F5BE8B267C6A406D'
+          $keyPath = Join-Path $env:RUNNER_TEMP 'gettext-final-signing-key.asc'
+          Invoke-WebRequest `
+            -Uri "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x$fingerprint" `
+            -OutFile $keyPath
+          $bash = '${{ steps.private.outputs.bash }}'
+          $env:GETTEXT_SIGNING_KEY_WINDOWS = $keyPath
+          $env:GETTEXT_SOURCE_GNUPGHOME = '/etc/gettext-source-gnupg'
+          $script = @'
+          set -euo pipefail
+          key="$(cygpath -u "${GETTEXT_SIGNING_KEY_WINDOWS}")"
+          install -d -m 700 "${GETTEXT_SOURCE_GNUPGHOME}"
+          gpg --homedir "${GETTEXT_SOURCE_GNUPGHOME}" --batch \
+            --show-keys --with-colons "${key}" |
+            grep -F 'fpr:::::::::9001B85AF9E1B83DF1BDA942F5BE8B267C6A406D:'
+          gpg --homedir "${GETTEXT_SOURCE_GNUPGHOME}" --batch --import "${key}"
+          gpg --homedir "${GETTEXT_SOURCE_GNUPGHOME}" --batch \
+            --list-keys --with-colons |
+            grep -F 'fpr:::::::::9001B85AF9E1B83DF1BDA942F5BE8B267C6A406D:'
+          '@
+          & $bash -lc $script
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Private gettext signer keyring initialization failed'
+          }
+
+      - name: Verify libiconv split metadata and owned paths independently
+        shell: pwsh
+        run: |
+          $lock = Get-Content 'source\mingw-w64-cross-msysarm64-gettext\dependency-lock.json' -Raw |
+            ConvertFrom-Json
+          $bsdtar = Join-Path '${{ steps.private.outputs.root }}' 'usr\bin\bsdtar.exe'
+          $records = @($lock.target_dependency_assets)
+          foreach ($record in $records) {
+            $archive = Join-Path '${{ steps.inputs.outputs.libiconv }}' $record.asset_name
+            $listing = @(& $bsdtar -tf $archive)
+            if ($LASTEXITCODE -ne 0) {
+              throw "Unable to list $($record.asset_name)"
+            }
+            $pkginfo = @(& $bsdtar -xOf $archive .PKGINFO)
+            if ($LASTEXITCODE -ne 0) {
+              throw "Unable to read metadata from $($record.asset_name)"
+            }
+            $actualPackageNames = @(
+              $pkginfo |
+                Where-Object { $_ -match '^pkgname = ' } |
+                ForEach-Object { $_ -replace '^pkgname = ', '' }
+            )
+            $actualPackageVersions = @(
+              $pkginfo |
+                Where-Object { $_ -match '^pkgver = ' } |
+                ForEach-Object { $_ -replace '^pkgver = ', '' }
+            )
+            if ($actualPackageNames.Count -ne 1 -or
+                $actualPackageNames[0] -ne $record.package -or
+                $actualPackageVersions.Count -ne 1 -or
+                $actualPackageVersions[0] -ne $record.required_version) {
+              throw "Package identity mismatch in $($record.asset_name)"
+            }
+            $actualProvides = @(
+              $pkginfo |
+                Where-Object { $_ -match '^provides = ' } |
+                ForEach-Object { $_ -replace '^provides = ', '' } |
+                Sort-Object -Unique
+            )
+            $expectedProvides = @($record.provides | Sort-Object -Unique)
+            if (Compare-Object $expectedProvides $actualProvides) {
+              throw "Exact provides mismatch in $($record.asset_name)"
+            }
+            $actualTargetPaths = @(
+              $listing |
+                ForEach-Object { $_ -replace '^\./', '' } |
+                Where-Object {
+                  $_ -like 'opt/aarch64-pc-msys/usr/*' -and
+                  -not $_.EndsWith('/')
+                } |
+                ForEach-Object { "/$_" } |
+                Sort-Object -Unique
+            )
+            $expectedTargetPaths = @($record.owned_paths | Sort-Object -Unique)
+            $pathDifference = Compare-Object $expectedTargetPaths $actualTargetPaths
+            if ($pathDifference) {
+              $details = $pathDifference | Out-String
+              throw "Exact target ownership mismatch in $($record.asset_name):`n$details"
+            }
+          }
+
+      - name: Install exact target toolchain and dependency graph
         shell: pwsh
         run: |
           $pacman = '${{ steps.private.outputs.pacman }}'
@@ -343,7 +512,7 @@ jobs:
           $env:MSYS = 'winsymlinks:sys'
           & $pacman @args @packages
           if ($LASTEXITCODE -ne 0) {
-            throw 'Private toolchain transaction failed'
+            throw 'Private target toolchain transaction failed'
           }
 
       - name: Build twice for reproducibility
@@ -352,6 +521,7 @@ jobs:
         env:
           PRIVATE_MSYS_ROOT_WINDOWS: ${{ steps.private.outputs.root }}
           LIBICONV_ADMISSION_SHA256: ${{ steps.inputs.outputs.libiconv_admission_sha256 }}
+          GETTEXT_SOURCE_GNUPGHOME: /etc/gettext-source-gnupg
         run: |
           $ErrorActionPreference = 'Stop'
           $bash = '${{ steps.private.outputs.bash }}'
@@ -364,7 +534,7 @@ jobs:
             $work = Join-Path $buildRoot $pass
             Copy-Item $sourcePackage $work -Recurse
             $env:GETTEXT_BUILD_WINDOWS = $work
-            $env:PACMAN = '/usr/bin/pacman'
+            $env:PACMAN = '/opt/private-bin/pacman'
             $env:PACMAN_DBPATH = '/var/lib/pacman'
             $env:PACMAN_CACHEDIR = '/var/cache/pacman/pkg'
             $env:PACMAN_LOGFILE = '/var/log/gettext-pacman.log'
@@ -377,9 +547,10 @@ jobs:
           export PATH=/usr/bin:/bin:/opt/bin
           export CARCH=x86_64
           export GETTEXT_FINAL_BUILD_ADMITTED=1
+          export GNUPGHOME="${GETTEXT_SOURCE_GNUPGHOME}"
           build_dir="$(cygpath -u "${GETTEXT_BUILD_WINDOWS}")"
           cd "${build_dir}"
-          makepkg --cleanbuild --nodeps --noconfirm
+          makepkg --cleanbuild --noconfirm
           '@
             & $bash -lc $script
             if ($LASTEXITCODE -ne 0) {
@@ -515,13 +686,13 @@ jobs:
             }
           }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: MSYS-arm64-gettext-packages
           path: ${{ steps.build.outputs.root }}/one/*.pkg.tar.zst
           if-no-files-found: error
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: MSYS-arm64-gettext-smoke
           path: |
@@ -529,7 +700,7 @@ jobs:
             ${{ steps.build.outputs.build_one }}/src/gettext-check/locale/**
           if-no-files-found: error
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: MSYS-arm64-gettext-evidence
           path: |
@@ -549,16 +720,16 @@ jobs:
     runs-on: windows-11-arm
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: MSYS-arm64-gettext-packages
           path: packages
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: MSYS-arm64-gettext-smoke
           path: smoke
@@ -574,7 +745,7 @@ jobs:
               $lock.target_dependency_assets
             )) {
             if ($asset.PSObject.Properties.Name -contains 'release_tag') {
-              if (-not $asset.admitted) {
+              if ($asset.admitted -isnot [bool] -or -not $asset.admitted) {
                 throw "Native dependency is not admitted: $($asset.package)"
               }
               $tag = $asset.release_tag
@@ -599,27 +770,54 @@ jobs:
       - name: Extract target package graph without pacman
         shell: pwsh
         run: |
-          $root = Join-Path $env:RUNNER_TEMP 'gettext-native-root'
-          New-Item -ItemType Directory -Path $root | Out-Null
+          $lock = Get-Content 'mingw-w64-cross-msysarm64-gettext\dependency-lock.json' -Raw |
+            ConvertFrom-Json
+          $fullRoot = Join-Path $env:RUNNER_TEMP 'gettext-native-full-root'
+          $runtimeRoot = Join-Path $env:RUNNER_TEMP 'gettext-native-runtime-root'
+          New-Item -ItemType Directory -Path $fullRoot, $runtimeRoot | Out-Null
           Get-ChildItem packages -File -Filter '*.pkg.tar.zst' |
             Sort-Object Name |
             ForEach-Object {
-              tar.exe -xf $_.FullName -C $root
+              tar.exe -xf $_.FullName -C $fullRoot
               if ($LASTEXITCODE -ne 0) {
                 throw "Unable to extract $($_.Name)"
               }
             }
-          "NATIVE_TARGET_ROOT=$root\opt\aarch64-pc-msys\usr" >> $env:GITHUB_ENV
+          $runtimeSupport = $lock.admitted_assets |
+            Where-Object {
+              $_.name -eq 'mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst'
+            } |
+            Select-Object -ExpandProperty name -First 1
+          $libiconvRuntime = $lock.target_dependency_assets |
+            Where-Object package -eq 'mingw-w64-cross-msysarm64-libiconv' |
+            Select-Object -ExpandProperty asset_name -First 1
+          $runtimeArchives = @(
+            (Join-Path 'packages' $runtimeSupport)
+            (Join-Path 'packages' $libiconvRuntime)
+            (Join-Path 'packages' 'mingw-w64-cross-msysarm64-libintl-0.22.5-1-x86_64.pkg.tar.zst')
+          )
+          foreach ($archive in $runtimeArchives) {
+            if (-not (Test-Path $archive -PathType Leaf)) {
+              throw "Runtime-only archive is absent: $archive"
+            }
+            tar.exe -xf $archive -C $runtimeRoot
+            if ($LASTEXITCODE -ne 0) {
+              throw "Unable to extract runtime-only archive $archive"
+            }
+          }
+          "NATIVE_FULL_TARGET_ROOT=$fullRoot\opt\aarch64-pc-msys\usr" >> $env:GITHUB_ENV
+          "NATIVE_RUNTIME_TARGET_ROOT=$runtimeRoot\opt\aarch64-pc-msys\usr" >> $env:GITHUB_ENV
 
       - name: Run native locale domain thread and process-module smoke
         shell: pwsh
         run: |
           & 'mingw-w64-cross-msysarm64-gettext\native-smoke.ps1' `
-            -TargetRoot $env:NATIVE_TARGET_ROOT `
+            -RuntimeTargetRoot $env:NATIVE_RUNTIME_TARGET_ROOT `
+            -FullTargetRoot $env:NATIVE_FULL_TARGET_ROOT `
             -SmokeRoot 'smoke' `
             -ReportPath 'native-smoke.txt'
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: MSYS-arm64-gettext-native-smoke
           path: native-smoke.txt

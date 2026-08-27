@@ -137,9 +137,10 @@ snapshot() {
 payload_manifest() {
   local name=$1
   local package path
+  shift
 
   : > "${evidence}/${name}-payload.sha256"
-  for package in "${packages[@]}"; do
+  for package in "$@"; do
     private_query -Qlq "${package}" |
       while IFS= read -r path; do
         if [[ -f "${root}${path}" ]]; then
@@ -158,15 +159,32 @@ runtime_archives=(
   "${runtime_dir}/mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst"
   "${runtime_dir}/mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst"
 )
-mapfile -t libiconv_archives < <(
-  find "${libiconv_dir}" -maxdepth 1 -type f \
-    -name 'mingw-w64-cross-msysarm64-libiconv-*.pkg.tar.zst' |
-    LC_ALL=C sort
+libiconv_runtime_archive="${libiconv_dir}/mingw-w64-cross-msysarm64-libiconv-1.18-1-x86_64.pkg.tar.zst"
+libiconv_devel_archive="${libiconv_dir}/mingw-w64-cross-msysarm64-libiconv-devel-1.18-1-x86_64.pkg.tar.zst"
+intl_runtime_archive="${package_dir}/mingw-w64-cross-msysarm64-libintl-0.22.5-1-x86_64.pkg.tar.zst"
+intl_devel_archive="${package_dir}/mingw-w64-cross-msysarm64-libintl-devel-0.22.5-1-x86_64.pkg.tar.zst"
+gettext_libs_archive="${package_dir}/mingw-w64-cross-msysarm64-gettext-libs-0.22.5-1-x86_64.pkg.tar.zst"
+gettext_devel_archive="${package_dir}/mingw-w64-cross-msysarm64-gettext-devel-0.22.5-1-x86_64.pkg.tar.zst"
+tools_archive="${package_dir}/mingw-w64-cross-msysarm64-gettext-0.22.5-1-x86_64.pkg.tar.zst"
+libiconv_archives=(
+  "${libiconv_runtime_archive}"
+  "${libiconv_devel_archive}"
 )
-mapfile -t package_archives < <(
-  find "${package_dir}" -maxdepth 1 -type f \
-    -name 'mingw-w64-cross-msysarm64-*.pkg.tar.zst' |
-    LC_ALL=C sort
+runtime_package_archives=(
+  "${intl_runtime_archive}"
+  "${gettext_libs_archive}"
+)
+development_package_archives=(
+  "${intl_devel_archive}"
+  "${gettext_devel_archive}"
+  "${tools_archive}"
+)
+package_archives=(
+  "${intl_runtime_archive}"
+  "${intl_devel_archive}"
+  "${gettext_libs_archive}"
+  "${gettext_devel_archive}"
+  "${tools_archive}"
 )
 test "${#runtime_archives[@]}" -eq 5
 test "${#libiconv_archives[@]}" -eq 2
@@ -180,7 +198,35 @@ done
 snapshot empty
 sentinel_snapshot before
 MSYS=winsymlinks:sys private_query --noconfirm -U \
-  "${runtime_archives[@]}" "${libiconv_archives[@]}" "${package_archives[@]}"
+  "${runtime_archives[@]}" \
+  "${libiconv_runtime_archive}" \
+  "${runtime_package_archives[@]}"
+for package in "${runtime}" "${gettext_libs}"; do
+  test "$(private_query -Q "${package}")" = "${package} 0.22.5-1"
+  private_query -Qk "${package}"
+done
+for package in "${intl_devel}" "${gettext_devel}" "${tools}"; do
+  ! private_query -Q "${package}" >/dev/null 2>&1
+done
+test "$(private_query -Qoq "${root}${target}/bin/msys-intl-8.dll")" = \
+  "${runtime}"
+for dll in \
+  msys-asprintf-0.dll \
+  msys-gettextpo-0.dll \
+  msys-gettextlib-0-22-5.dll \
+  msys-gettextsrc-0-22-5.dll
+do
+  test "$(private_query -Qoq "${root}${target}/bin/${dll}")" = \
+    "${gettext_libs}"
+done
+test ! -e "${root}${target}/include/libintl.h"
+test ! -e "${root}${target}/lib/libintl.dll.a"
+test ! -e "${root}${target}/bin/gettext.exe"
+snapshot runtime-only
+payload_manifest runtime-only "${runtime}" "${gettext_libs}"
+
+MSYS=winsymlinks:sys private_query --noconfirm -U \
+  "${libiconv_devel_archive}" "${development_package_archives[@]}"
 for package in "${packages[@]}"; do
   test "$(private_query -Q "${package}")" = "${package} 0.22.5-1"
   private_query -Qk "${package}"
@@ -193,10 +239,14 @@ test "$(private_query -Qoq "${root}${target}/lib/libintl.dll.a")" = \
   "${intl_devel}"
 test "$(private_query -Qoq "${root}${target}/bin/msys-gettextpo-0.dll")" = \
   "${gettext_libs}"
+test "$(private_query -Qoq "${root}${target}/bin/msys-gettextlib-0-22-5.dll")" = \
+  "${gettext_libs}"
+test "$(private_query -Qoq "${root}${target}/bin/msys-gettextsrc-0-22-5.dll")" = \
+  "${gettext_libs}"
 test "$(private_query -Qoq "${root}${target}/bin/gettext.exe")" = \
   "${tools}"
 snapshot installed
-payload_manifest installed
+payload_manifest installed "${packages[@]}"
 
 private_query --noconfirm -R \
   "${gettext_devel}" "${tools}" "${gettext_libs}" "${intl_devel}" "${runtime}"
@@ -214,7 +264,7 @@ for package in "${packages[@]}"; do
   private_query -Qk "${package}"
 done
 snapshot reinstalled
-payload_manifest reinstalled
+payload_manifest reinstalled "${packages[@]}"
 diff -u \
   "${evidence}/installed-payload.sha256" \
   "${evidence}/reinstalled-payload.sha256"
@@ -252,5 +302,5 @@ hookdir=${hookdir}
 gpgdir=${gpgdir}
 shared_root=${shared_root}
 EOF
-printf 'empty=0\ninstalled=12\nremaining-after-remove=7\nreinstalled=12\n' \
+printf 'empty=0\nruntime-only=8\ninstalled=12\nremaining-after-remove=7\nreinstalled=12\n' \
   > "${evidence}/summary.txt"

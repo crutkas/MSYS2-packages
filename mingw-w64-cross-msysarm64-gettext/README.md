@@ -10,9 +10,10 @@ The static contract is intentionally landable while the final build is
 blocked. Native libiconv 1.18-1 is not admitted because the ARM64 MSYS
 argv/fork runtime defect is still being fixed. Both libiconv split records in
 `dependency-lock.json` therefore have null release, asset, size, and hash
-fields. CI rejects any provisional/worktree package bytes and does not enter
-the final build job until those records and the private base signature are
-fully admitted.
+fields. Admission requires actual JSON booleans, the canonical release tag,
+exact package/provides/owned-path records, individual split archives, and
+full-record digests. CI rejects provisional, swapped, or partially described
+bytes and does not enter the final build job until both splits are admitted.
 
 The private x64 host base is pinned to
 `https://repo.msys2.org/distrib/x86_64/msys2-base-x86_64-20260611.tar.xz`,
@@ -25,6 +26,11 @@ and signer `E0AA0F031DBD80FFBA57B06D5A62D0CAB6264964`.
 No step invokes the shared `C:\msys64` pacman. An admitted build extracts a
 fresh private root and uses its own executable, root, database, cache, log,
 configuration, hook directory, GPG directory, and sentinel snapshots.
+`host-build-lock.json` additionally pins the complete recursive x86_64 build
+closure (including Python, make, patch, GCC, autotools, libtool, and pkgconf).
+The final transaction installs that closure with dependency checks enabled,
+and the final source-verification keyring imports and verifies the exact
+gettext signer.
 
 ## Package split
 
@@ -32,7 +38,7 @@ configuration, hook directory, GPG directory, and sentinel snapshots.
 | --- | --- |
 | `mingw-w64-cross-msysarm64-libintl` | `msys-intl-8.dll` runtime |
 | `mingw-w64-cross-msysarm64-libintl-devel` | `libintl.h`, static library, import library, and libtool metadata |
-| `mingw-w64-cross-msysarm64-gettext-libs` | `libgettextpo` and `libasprintf` runtime DLLs |
+| `mingw-w64-cross-msysarm64-gettext-libs` | `libgettextpo`, `libasprintf`, `msys-gettextlib-0-22-5.dll`, and `msys-gettextsrc-0-22-5.dll` runtimes |
 | `mingw-w64-cross-msysarm64-gettext-devel` | remaining target headers, libraries, macros, and development data |
 | `mingw-w64-cross-msysarm64-gettext` | target ARM64 tools, helper executables, catalogs, manuals, and runtime data |
 
@@ -68,6 +74,16 @@ static/shared catalog consumers, UTF-8 output, locale/domain behavior,
 threading, module loading, isolated install/remove/reinstall, two-build
 reproducibility, provenance, and path leakage.
 
+Lifecycle evidence first installs the runtime-only libiconv/libintl graph and
+proves that no headers, libraries, or tools leak into it. It then adds the
+development and tools splits, checks exact ownership and import closure for
+both internal gettext DLLs, and repeats remove/reinstall validation. Native
+evidence likewise keeps separate runtime-only and full target roots.
+
 The native consumers take no arguments and do not fork. This preserves
 locale/domain/thread/module coverage without treating the unresolved
 Windows-to-MSYS argv or fork state-copy paths as evidence.
+
+All GitHub actions are pinned to full commit SHAs. Branch-name CI routing is
+trusted only when the pull request head repository is this repository, so an
+external fork cannot suppress the generic workflow by copying the lane name.

@@ -1,6 +1,8 @@
 param(
     [Parameter(Mandatory = $true)]
-    [string] $TargetRoot,
+    [string] $RuntimeTargetRoot,
+    [Parameter(Mandatory = $true)]
+    [string] $FullTargetRoot,
     [Parameter(Mandatory = $true)]
     [string] $SmokeRoot,
     [Parameter(Mandatory = $true)]
@@ -14,15 +16,16 @@ if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'Arm
     throw 'Native smoke requires Windows ARM64'
 }
 
-$target = (Resolve-Path $TargetRoot).Path
+$runtimeTarget = (Resolve-Path $RuntimeTargetRoot).Path
+$fullTarget = (Resolve-Path $FullTargetRoot).Path
 $smoke = (Resolve-Path $SmokeRoot).Path
-$runtime = Join-Path $target 'bin\msys-intl-8.dll'
-$libiconv = Join-Path $target 'bin\msys-iconv-2.dll'
-$gettext = Join-Path $target 'bin\gettext.exe'
-$msgfmt = Join-Path $target 'bin\msgfmt.exe'
-$header = Join-Path $target 'include\libintl.h'
-$importLibrary = Join-Path $target 'lib\libintl.dll.a'
-$staticLibrary = Join-Path $target 'lib\libintl.a'
+$runtime = Join-Path $runtimeTarget 'bin\msys-intl-8.dll'
+$libiconv = Join-Path $runtimeTarget 'bin\msys-iconv-2.dll'
+$gettext = Join-Path $fullTarget 'bin\gettext.exe'
+$msgfmt = Join-Path $fullTarget 'bin\msgfmt.exe'
+$header = Join-Path $fullTarget 'include\libintl.h'
+$importLibrary = Join-Path $fullTarget 'lib\libintl.dll.a'
+$staticLibrary = Join-Path $fullTarget 'lib\libintl.a'
 
 foreach ($path in @(
         $runtime,
@@ -38,6 +41,29 @@ foreach ($path in @(
     )) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "Required native smoke input is absent: $path"
+    }
+}
+
+$runtimeForbidden = @(
+    (Join-Path $runtimeTarget 'bin\gettext.exe'),
+    (Join-Path $runtimeTarget 'bin\msgfmt.exe'),
+    (Join-Path $runtimeTarget 'include\libintl.h'),
+    (Join-Path $runtimeTarget 'lib\libintl.a'),
+    (Join-Path $runtimeTarget 'lib\libintl.dll.a'),
+    (Join-Path $runtimeTarget 'bin\msys-gettextlib-0-22-5.dll'),
+    (Join-Path $runtimeTarget 'bin\msys-gettextsrc-0-22-5.dll')
+)
+foreach ($path in $runtimeForbidden) {
+    if (Test-Path -LiteralPath $path) {
+        throw "Runtime-only root contains a non-libintl-runtime payload: $path"
+    }
+}
+foreach ($internalDll in @(
+        'msys-gettextlib-0-22-5.dll',
+        'msys-gettextsrc-0-22-5.dll'
+    )) {
+    if (-not (Test-Path (Join-Path $fullTarget "bin\$internalDll") -PathType Leaf)) {
+        throw "Full target graph omits internal runtime DLL: $internalDll"
     }
 }
 
@@ -62,7 +88,7 @@ function Get-PeMachine([string] $Path) {
 }
 
 $peFiles = @(
-    Get-ChildItem (Join-Path $target 'bin') -File |
+    Get-ChildItem (Join-Path $fullTarget 'bin') -File |
         Where-Object { $_.Extension -in @('.dll', '.exe') }
     Get-ChildItem $smoke -File -Filter '*-consumer.exe'
 )
@@ -86,7 +112,7 @@ Copy-Item (Join-Path $smoke 'static-consumer.exe') $runRoot
 Copy-Item (Join-Path $smoke 'locale') $runRoot -Recurse
 
 $oldPath = $env:PATH
-$env:PATH = "$(Join-Path $target 'bin');$oldPath"
+$env:PATH = "$(Join-Path $runtimeTarget 'bin');$oldPath"
 try {
     $results = foreach ($name in @('dynamic-consumer.exe', 'static-consumer.exe')) {
         $stdout = Join-Path $runRoot "$name.stdout"
@@ -120,6 +146,7 @@ $report = @(
     'personality=MSYS'
     'abi=LP64/AAPCS64/SEH'
     'coverage=native locale/domain/thread/module smoke'
+    'runtime_only=true'
     'catalog_encoding=UTF-8'
     "pe_count=$($peFiles.Count)"
     "runtime_sha256=$((Get-FileHash $runtime -Algorithm SHA256).Hash.ToLowerInvariant())"

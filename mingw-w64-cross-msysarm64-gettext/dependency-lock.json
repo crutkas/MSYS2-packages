@@ -113,19 +113,45 @@
     {
       "package": "mingw-w64-cross-msysarm64-libiconv",
       "required_version": "1.18-1",
+      "expected_asset_name": "mingw-w64-cross-msysarm64-libiconv-1.18-1-x86_64.pkg.tar.zst",
+      "provides": [
+        "aarch64-pc-msys-libiconv=1.18"
+      ],
+      "owned_paths": [
+        "/opt/aarch64-pc-msys/usr/bin/msys-charset-1.dll",
+        "/opt/aarch64-pc-msys/usr/bin/msys-iconv-2.dll"
+      ],
       "release_tag": null,
       "asset_name": null,
       "size": null,
       "sha256": null,
+      "record_sha256": null,
       "admitted": false
     },
     {
       "package": "mingw-w64-cross-msysarm64-libiconv-devel",
       "required_version": "1.18-1",
+      "expected_asset_name": "mingw-w64-cross-msysarm64-libiconv-devel-1.18-1-x86_64.pkg.tar.zst",
+      "provides": [
+        "aarch64-pc-msys-libiconv-devel=1.18"
+      ],
+      "owned_paths": [
+        "/opt/aarch64-pc-msys/usr/include/libcharset.h",
+        "/opt/aarch64-pc-msys/usr/include/localcharset.h",
+        "/opt/aarch64-pc-msys/usr/include/iconv.h",
+        "/opt/aarch64-pc-msys/usr/lib/libcharset.a",
+        "/opt/aarch64-pc-msys/usr/lib/libcharset.dll.a",
+        "/opt/aarch64-pc-msys/usr/lib/libcharset.la",
+        "/opt/aarch64-pc-msys/usr/lib/libiconv.a",
+        "/opt/aarch64-pc-msys/usr/lib/libiconv.dll.a",
+        "/opt/aarch64-pc-msys/usr/lib/libiconv.la",
+        "/opt/aarch64-pc-msys/usr/lib/pkgconfig/libiconv.pc"
+      ],
       "release_tag": null,
       "asset_name": null,
       "size": null,
       "sha256": null,
+      "record_sha256": null,
       "admitted": false
     }
   ],
@@ -135,6 +161,10 @@
     "libcroco": "gettext-0.22.5 source archive",
     "glib": "gettext-0.22.5 source archive",
     "gettext": "gettext-0.22.5 source archive"
+  },
+  "libiconv_admission": {
+    "canonical_release_tag": null,
+    "contract_sha256": "71296227bbaafb51a6dca62cf15ce57008a59608737c3fd84bd856e1d2a92af2"
   },
   "final_build_admitted": false
 }
