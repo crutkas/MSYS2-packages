@@ -194,6 +194,11 @@ jobs:
         run: |
           $destination = Join-Path $env:RUNNER_TEMP 'msysarm64-gcc-inputs'
           New-Item -ItemType Directory -Force -Path $destination | Out-Null
+          gh release download msysarm64-gcc-pr13-support-20260826 `
+            --repo crutkas/MSYS2-packages `
+            --pattern 'mingw-w64-cross-msysarm64-libstdc++-headers-*.pkg.tar.zst' `
+            --pattern 'mingw-w64-cross-msysarm64-w32api-runtime-*.pkg.tar.zst' `
+            --dir $destination
           gh release download msysarm64-gcc-pr13-20260826 `
             --repo crutkas/MSYS2-packages `
             --pattern 'mingw-w64-cross-msysarm64-gcc-*.pkg.tar.zst' `
@@ -201,6 +206,8 @@ jobs:
             --dir $destination
 
           $expected = @{
+            'mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst' = '9715aab6894379bf5ab936a3a559f286fb4aedbb64f0774d7457182e00648e08'
+            'mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst' = '7727936f4212e5af04e9739eca60f157c0875796c1e82fcfb79fd4398b111e24'
             'mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst' = 'a74887c76a933ec424933bf662729d94975b83138af783bd93f2e7acd95c3a22'
             'mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst' = '990f163cacf9ffce1b58445be91fedc57f135cc26a88d7dba109806446b41438'
           }
@@ -211,7 +218,18 @@ jobs:
             }
           }
 
-      - name: Install fork-local AArch64 MSYS GCC release
+      - name: Install fork-local AArch64 MSYS GCC support release
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-native-arm64-npth' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-native-arm64-npth') }}
+        shell: pwsh
+        env:
+          MSYS: winsymlinks:sys
+        run: |
+          $input_dir = Join-Path $env:RUNNER_TEMP 'msysarm64-gcc-inputs'
+          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -U `
+            "$input_dir\mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst" `
+            "$input_dir\mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst"
+
+      - name: Install fork-local AArch64 MSYS GCC compiler release
         if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-native-arm64-npth' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-native-arm64-npth') }}
         shell: pwsh
         env:
@@ -220,9 +238,7 @@ jobs:
           $input_dir = Join-Path $env:RUNNER_TEMP 'msysarm64-gcc-inputs'
           & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -U `
             "$input_dir\mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst" `
-            "$input_dir\mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst" `
-            --assume-installed mingw-w64-cross-msysarm64-w32api-runtime=14.0.0.r0.g9b3dd0125-1 `
-            --assume-installed mingw-w64-cross-msysarm64-libstdc++-headers=15.0.1dev-1
+            "$input_dir\mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst"
 
       - name: Add MSYS tool aliases
         if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-native-arm64-npth' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-native-arm64-npth') }}
