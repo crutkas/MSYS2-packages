@@ -18,8 +18,9 @@ makedepends=(
   'autotools'
   'gcc'
   'mingw-w64-cross-cygwinarm64-binutils'
-  'mingw-w64-cross-cygwinarm64-gcc-stage1=15.0.1dev-2'
-  'mingw-w64-cross-msysarm64-sysroot=3.6.10.r0.g6922c388b-1'
+  'mingw-w64-cross-msysarm64-gcc=15.0.1dev-1'
+  'mingw-w64-cross-msysarm64-gcc-libs=15.0.1dev-1'
+  'mingw-w64-cross-msysarm64-sysroot=3.6.10.r0.ga527ace21-1'
   'pkgconf'
 )
 options=('!strip' '!buildflags' '!emptydirs')
@@ -51,21 +52,22 @@ build() {
   local build_dir="${srcdir}/build-${_target}"
   local _sysroot_include="-isystem ${_prefix}/include"
   local _sysroot_lib="-L${_prefix}/lib"
+  local _prefix_map="-ffile-prefix-map=${srcdir}=. -fdebug-prefix-map=${srcdir}=. -fmacro-prefix-map=${srcdir}=."
 
   rm -rf "${build_dir}" "${srcdir}/dest"
   mkdir -p "${build_dir}" "${srcdir}/dest"
 
   export PATH="/opt/bin:${PATH}"
-  export CC='aarch64-pc-cygwin-gcc'
-  export CXX='aarch64-pc-cygwin-g++'
-  export AR='aarch64-pc-cygwin-ar'
-  export AS='aarch64-pc-cygwin-as'
-  export NM='aarch64-pc-cygwin-nm'
-  export RANLIB='aarch64-pc-cygwin-ranlib'
-  export STRIP='aarch64-pc-cygwin-strip'
+  export CC='aarch64-pc-msys-gcc'
+  export CXX='aarch64-pc-msys-g++'
+  export AR='aarch64-pc-msys-ar'
+  export AS='aarch64-pc-msys-as'
+  export NM='aarch64-pc-msys-nm'
+  export RANLIB='aarch64-pc-msys-ranlib'
+  export STRIP='aarch64-pc-msys-strip'
   export CPPFLAGS="${CPPFLAGS:-} -D__MSYS__ ${_sysroot_include}"
-  export CFLAGS="${CFLAGS:-} -O2 -pipe -D__MSYS__ ${_sysroot_include}"
-  export CXXFLAGS="${CXXFLAGS:-} -O2 -pipe -D__MSYS__ ${_sysroot_include}"
+  export CFLAGS="${CFLAGS:-} -O2 -pipe -D__MSYS__ ${_sysroot_include} ${_prefix_map}"
+  export CXXFLAGS="${CXXFLAGS:-} -O2 -pipe -D__MSYS__ ${_sysroot_include} ${_prefix_map}"
   export LDFLAGS="${LDFLAGS:-} ${_sysroot_lib}"
 
   (
@@ -97,8 +99,7 @@ check() {
   test -f "${pkgroot}/share/aclocal/npth.m4"
   test -f "${pkgroot}/include/npth.h"
   test -f "${pkgroot}/lib/libnpth.a"
-  test -f "${pkgroot}/lib/libnpth.dll.a"
-  test -n "$(find "${pkgroot}/bin" -maxdepth 1 -type f -name '*.dll' -print -quit)"
+  test -n "$(aarch64-pc-msys-ar t "${pkgroot}/lib/libnpth.a")"
 
   grep -Fq "${_prefix}" "${config_script}"
   grep -Fq "prefix=${_prefix}" "${pcdir}/npth.pc"
@@ -148,7 +149,7 @@ int main(void) {
 }
 EOF
 
-  aarch64-pc-cygwin-gcc -c \
+  aarch64-pc-msys-gcc -c \
     -D__MSYS__ \
     $(PKG_CONFIG_PATH="${pcdir}" \
       PKG_CONFIG_SYSROOT_DIR="${srcdir}/dest" \
@@ -156,17 +157,22 @@ EOF
     "${smoke_c}" \
     -o "${smoke_o}"
 
-  aarch64-pc-cygwin-objdump -f "${pkgroot}/bin/"*.dll \
+  aarch64-pc-msys-gcc \
+    "${smoke_o}" \
+    $(PKG_CONFIG_PATH="${pcdir}" \
+      PKG_CONFIG_SYSROOT_DIR="${srcdir}/dest" \
+      pkg-config --libs npth) \
+    -o "${srcdir}/npth-smoke.exe"
+
+  aarch64-pc-msys-objdump -f "${srcdir}/npth-smoke.exe" \
     | grep -F "file format pe-aarch64-little"
-  aarch64-pc-cygwin-objdump -p "${pkgroot}/bin/"*.dll \
+  aarch64-pc-msys-objdump -p "${srcdir}/npth-smoke.exe" \
     | grep -F "DLL Name: msys-2.0.dll"
-  if aarch64-pc-cygwin-objdump -p "${pkgroot}/bin/"*.dll \
+  if aarch64-pc-msys-objdump -p "${srcdir}/npth-smoke.exe" \
       | grep -Ei 'DLL Name: cygwin1\.dll'; then
-    printf 'ERROR: npth DLL imports cygwin1.dll\n' >&2
+    printf 'ERROR: npth smoke executable imports cygwin1.dll\n' >&2
     return 1
   fi
-
-  test -n "$(aarch64-pc-cygwin-ar t "${pkgroot}/lib/libnpth.dll.a")"
 }
 
 package_mingw-w64-cross-msysarm64-npth() {
@@ -174,12 +180,13 @@ package_mingw-w64-cross-msysarm64-npth() {
   local license_dir="${pkgdir}/usr/share/licenses/${pkgname}"
 
   pkgdesc="nPth runtime library for aarch64-pc-msys"
-  depends=("mingw-w64-cross-msysarm64-runtime=3.6.10.r0.gc7932d64f-1")
+  depends=("mingw-w64-cross-msysarm64-runtime=3.6.10.r0.ga527ace21-1")
   provides=("aarch64-pc-msys-npth=${pkgver}")
   conflicts=("aarch64-pc-msys-npth")
 
-  install -d "${pkgdir}/opt/${_target}/bin"
-  cp -a "${pkgroot}/bin/"*.dll "${pkgdir}/opt/${_target}/bin/"
+  install -d "${pkgdir}/opt/${_target}/lib"
+  install -Dm644 "${pkgroot}/lib/libnpth.a" \
+    "${pkgdir}/opt/${_target}/lib/libnpth.a"
   install -Dm644 "${srcdir}/npth-${pkgver}/COPYING.LIB" \
     "${license_dir}/COPYING.LIB"
 }
@@ -191,16 +198,16 @@ package_mingw-w64-cross-msysarm64-npth-devel() {
   pkgdesc="nPth headers, config script, and libraries for aarch64-pc-msys"
   depends=(
     "mingw-w64-cross-msysarm64-npth=${pkgver}-${pkgrel}"
-    "mingw-w64-cross-msysarm64-runtime=3.6.10.r0.gc7932d64f-1"
-    "mingw-w64-cross-msysarm64-sysroot=3.6.10.r0.g6922c388b-1"
+    "mingw-w64-cross-msysarm64-runtime=3.6.10.r0.ga527ace21-1"
+    "mingw-w64-cross-msysarm64-sysroot=3.6.10.r0.ga527ace21-1"
   )
   provides=("aarch64-pc-msys-npth-devel=${pkgver}")
   conflicts=("aarch64-pc-msys-npth-devel")
-  options=('staticlibs')
 
   install -d "${pkgdir}/opt/${_target}"
   cp -a "${pkgroot}/include" "${pkgdir}/opt/${_target}/"
-  cp -a "${pkgroot}/lib" "${pkgdir}/opt/${_target}/"
+  install -d "${pkgdir}/opt/${_target}/lib"
+  cp -a "${pkgroot}/lib/pkgconfig" "${pkgdir}/opt/${_target}/lib/"
   cp -a "${pkgroot}/share" "${pkgdir}/opt/${_target}/"
   install -Dm755 "${pkgroot}/bin/npth-config" \
     "${pkgdir}/opt/${_target}/bin/npth-config"
