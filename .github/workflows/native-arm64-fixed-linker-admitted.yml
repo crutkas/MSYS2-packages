@@ -1,0 +1,130 @@
+name: Native ARM64 admitted fixed linker
+
+on:
+  push:
+    branches:
+      - crutkas-native-arm-gcc-smoke
+    paths:
+      - .github/native-arm64-fixed-linker/**
+      - .github/workflows/native-arm64-fixed-linker-admitted.yml
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: native-arm64-admitted-fixed-linker
+  cancel-in-progress: false
+
+jobs:
+  native-arm64-fixed-linker:
+    if: >-
+      ${{
+        github.repository == 'crutkas/MSYS2-packages' &&
+        github.ref == 'refs/heads/crutkas-native-arm-gcc-smoke'
+      }}
+    name: Native ARM64 fixed linker
+    runs-on: windows-11-arm
+    timeout-minutes: 45
+
+    steps:
+      - name: Configure Git line endings
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          cache: false
+          install: >-
+            gmp
+            isl
+            libiconv
+            libintl
+            libzstd
+            mpc
+            mpfr
+            zlib
+          msystem: MSYS
+          update: true
+
+      - name: Download exact admitted artifact
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $headers = @{
+            Accept = 'application/vnd.github+json'
+            Authorization = "Bearer $env:GITHUB_TOKEN"
+            'User-Agent' = 'native-arm64-fixed-linker'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $run = Invoke-RestMethod -Headers $headers `
+            -Uri 'https://api.github.com/repos/crutkas/MSYS2-packages/actions/runs/33044771291'
+          if ($run.status -ne 'completed' -or
+              $run.conclusion -ne 'success' -or
+              $run.head_sha -ne '3356eec1411983cc252b04afac32bca5f3b8d824') {
+            throw 'Admitted package run identity changed.'
+          }
+          $artifact = Invoke-RestMethod -Headers $headers `
+            -Uri 'https://api.github.com/repos/crutkas/MSYS2-packages/actions/artifacts/9635492584'
+          if ($artifact.name -ne 'fixed-aarch64-binutils-candidate' -or
+              $artifact.expired -or
+              $artifact.size_in_bytes -ne 6713122 -or
+              $artifact.digest -ne 'sha256:2ae2aa00528a7e4db2954b2fda85d800216292a1b6a1c4423a10ff3c9c57ca76' -or
+              $artifact.workflow_run.id -ne 33044771291 -or
+              $artifact.workflow_run.head_sha -ne '3356eec1411983cc252b04afac32bca5f3b8d824') {
+            throw 'Admitted artifact identity changed.'
+          }
+          $zip = Join-Path $env:RUNNER_TEMP 'fixed-aarch64-binutils-candidate.zip'
+          Invoke-WebRequest -Headers $headers `
+            -Uri 'https://api.github.com/repos/crutkas/MSYS2-packages/actions/artifacts/9635492584/zip' `
+            -OutFile $zip
+          if ((Get-Item $zip).Length -ne 6713122) {
+            throw 'Admitted artifact byte size mismatch.'
+          }
+          $hash = (Get-FileHash -Algorithm SHA256 $zip).Hash.ToLowerInvariant()
+          if ($hash -ne '2ae2aa00528a7e4db2954b2fda85d800216292a1b6a1c4423a10ff3c9c57ca76') {
+            throw "Admitted artifact SHA-256 mismatch: $hash"
+          }
+          $destination = Join-Path $env:RUNNER_TEMP 'fixed-binutils-candidate'
+          New-Item -ItemType Directory -Path $destination | Out-Null
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [IO.Compression.ZipFile]::ExtractToDirectory($zip, $destination)
+          $packages = @(Get-ChildItem $destination -Recurse -File `
+            -Filter 'mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst')
+          if ($packages.Count -ne 1) {
+            throw "Expected one admitted package, found $($packages.Count)."
+          }
+
+      - name: Relink, scan, and execute on native ARM64
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          .\.github\native-arm64-fixed-linker\native-arm64-fixed-linker.ps1 `
+            -MsysRoot '${{ steps.msys2.outputs.msys2-location }}' `
+            -CandidateDirectory '${{ runner.temp }}\fixed-binutils-candidate' `
+            -ReportRoot '${{ runner.temp }}\native-arm64-fixed-linker-report' `
+            -AdmissionPath '.\.github\native-arm64-fixed-linker\ADMISSION.json' `
+            -BaselinePath '.\.github\native-arm64-fixed-linker\native-arm64-fixed-linker-baseline.json' `
+            -ExpectedHeadSha '3356eec1411983cc252b04afac32bca5f3b8d824' `
+            -GitHubRunId 33044771291
+
+      - name: Upload admitted native evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: native-arm64-fixed-linker-admitted-${{ github.run_id }}
+          path: ${{ runner.temp }}/native-arm64-fixed-linker-report
+          retention-days: 30

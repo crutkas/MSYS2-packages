@@ -1,0 +1,108 @@
+{
+  "schema": 1,
+  "decision": "ADMIT_EXACT_FIXED_BINUTILS_NATIVE_EXECUTION",
+  "issuer": {
+    "role": "PR18 consumer admission owner",
+    "session": "f1267ad3-725e-42f6-9d4a-be12b3d36cc6",
+    "issued_at": "2026-08-27T06:27:10.3402090Z"
+  },
+  "scope": {
+    "repository": "crutkas/MSYS2-packages",
+    "package_pr": 21,
+    "package_head": "3356eec1411983cc252b04afac32bca5f3b8d824",
+    "package_run_id": 33044771291,
+    "package_run_url": "https://github.com/crutkas/MSYS2-packages/actions/runs/33044771291",
+    "package_job_id": 98426220391,
+    "package_run_conclusion": "success",
+    "artifact_id": 9635492584,
+    "artifact_name": "fixed-aarch64-binutils-candidate",
+    "artifact_api_url": "https://api.github.com/repos/crutkas/MSYS2-packages/actions/artifacts/9635492584",
+    "artifact_bytes": 6713122,
+    "artifact_sha256": "2ae2aa00528a7e4db2954b2fda85d800216292a1b6a1c4423a10ff3c9c57ca76"
+  },
+  "candidate": {
+    "package": "mingw-w64-cross-cygwinarm64-binutils",
+    "version": "2.44.50-2",
+    "filename": "mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst",
+    "bytes": 6545114,
+    "sha256": "3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b",
+    "linker_path": "/opt/bin/aarch64-pc-cygwin-ld.exe",
+    "linker_bytes": 1887140,
+    "linker_sha256": "075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f"
+  },
+  "source": {
+    "repository": "crutkas/binutils-woarm64",
+    "commit": "3f05fc4d3e0eeab265f2157e3257a7067b6e7223",
+    "tree": "ecca625d45883e13128283a8c1750dac7997f729",
+    "archive_bytes": 66204943,
+    "archive_sha256": "d11c2b4453318a6168287fe74655c54aa15bf12f415f9ffe3f0ea32e30a3411e",
+    "handoff_sha256": "2e49f41fe87318294a48369958880abd9457571ebbcb9393eef0f1261f8f0a3f",
+    "design_review_sha256": "43ef9b9a1331d96304c1b232e6adf3b89fc3ccb1a6e71ea56390cd4368c50a58"
+  },
+  "evidence": {
+    "producer_handoff_sha256": "e0944c20ea04d35f40a7d19048019e67ba6586526b569ca8a3ae3436544b5378",
+    "transaction_sha256": "db914186295812e48d9fccc6441fa4ca5c765a378c454506dfccc56fb1b68713",
+    "consumer_summary_sha256": "0addf0986ecebe666201ddc77551ccdad2434083a2189468cae3a62a01d3f200",
+    "pkginfo_sha256": "c49d9b366e4c5e5a564511cce75042a51629d2ef5887aa5a9256c5974eea3826",
+    "independent_audit_zip_sha256": "38747a44178b4f973fd97e87474ca1f55dc0d4e19f19c0242d254fc2e85c815e",
+    "independent_audit_json_sha256": "e17fc2515c8add5284265b8338e5a50c4449836ef02d8e3f6737477edbccdd2b",
+    "failed_run_evidence_zip_sha256": "9696df50a071b846a46f9bb9cecf2466c7f320fa8233e40c6fec7348fc3d66b7"
+  },
+  "verified": {
+    "artifact_digest_matches": true,
+    "owner_and_independent_package_bytes_match": true,
+    "package_identity_matches": true,
+    "host_executables_x86_64": 31,
+    "owned_relative_aliases": 20,
+    "gcc_bridge_overlap": false,
+    "gcc_selects_candidate_ld_as": true,
+    "candidate_linker_hash_matches": true,
+    "safe_remove_rejected": true,
+    "forced_remove_exposes_dependency": true,
+    "shared_database_unchanged": true,
+    "baseline_rollback_identity": "mingw-w64-cross-cygwinarm64-binutils 2.44.50-1",
+    "candidate_reinstall_identity": "mingw-w64-cross-cygwinarm64-binutils 2.44.50-2",
+    "scanner_policy": "empty or scalar64-only",
+    "consumer_flags": {
+      "basic": [],
+      "cxx": [
+        64
+      ],
+      "process": [],
+      "thread": [
+        64,
+        64
+      ]
+    },
+    "flags_12_21_absent": true,
+    "foreign_contamination_absent": true
+  },
+  "execution_contract": {
+    "runner": "windows-11-arm",
+    "immutable_runtime": "msysarm64-runtime-pr10-a527-20260824",
+    "immutable_gcc": "msysarm64-gcc-pr13-20260826",
+    "immutable_support": "msysarm64-gcc-pr13-support-20260826",
+    "replace_only": "mingw-w64-cross-cygwinarm64-binutils",
+    "relink_all": true,
+    "scan_before_execution": true,
+    "allowed_pseudo_reloc_flags": [
+      64
+    ],
+    "forbidden_pseudo_reloc_flags": [
+      12,
+      21
+    ],
+    "native_tests": [
+      "basic C",
+      "dynamic std::cout/exceptions/static constructor",
+      "pthread/std::thread/constinit mutex",
+      "fork/signal/pipe/wait",
+      "LTO bridges",
+      "fixed near and >4GiB far providers"
+    ],
+    "rollback_in_finally": true,
+    "preserve_pr18": true,
+    "modify_releases": false
+  },
+  "authorization": "This exact artifact may be used for one native result lane. Any package, head, run, artifact, digest, or linker mismatch revokes admission."
+}
