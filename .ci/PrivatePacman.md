@@ -2,17 +2,33 @@
 
 Use `PrivatePacman.psm1` for package transactions that must not mutate the
 shared `C:\msys64` installation. The helper creates a fresh, session-owned
-root, writes a root-local `pacman.conf` and empty hook directory, supplies all
-pacman isolation arguments, and records transaction evidence. Mutating
+root atomically below an existing local fixed-drive parent, writes a root-local
+immutable `pacman.conf` and empty hook directory, supplies all pacman isolation
+arguments, and records transaction evidence. Mutating
 operations also compare external snapshots of the shared pacman log and local
-database before and after execution. Drift fails the transaction; the helper
-never repairs or rolls back shared state.
+database plus a complete shared-root fingerprint before and after execution.
+Drift fails the transaction; the helper never repairs or rolls back shared
+state.
+
+## Threat model
+
+This helper prevents accidental direct or partially isolated pacman use and
+preserves evidence integrity. It is not a security sandbox against a malicious
+concurrent process running as the same Windows user. Such a process could
+transiently add and remove a child junction while pacman runs. Directory and
+file locks narrow that race, and the complete shared-root before/after
+fingerprint invalidates the transaction evidence if shared state changes, but
+the helper cannot promise prevention or rollback.
 
 The helper treats only query, dependency-test, version, and help operations as
 read-only. Everything else fails closed as mutating and requires the
 session-owned root sentinel. This explicitly includes download-only sync
 operations such as `-Sw`. Local `-U` package paths additionally require an
-explicit package root and cannot escape it.
+explicit package root and cannot escape it. All invocations force
+`--noscriptlet` when the selected pacman transaction parser supports
+scriptlets; inherently scriptless query/dependency operations omit it.
+`ArgumentList` must begin with one exact, case-sensitive pacman operation
+selector; abbreviated or later operation selectors are rejected.
 
 ```powershell
 Import-Module "$repo\.ci\PrivatePacman.psm1" -Force
@@ -28,9 +44,13 @@ $context = New-PrivatePacmanContext `
     -HookDir "$root\etc\pacman.d\hooks" `
     -GpgDir "$root\etc\pacman.d\gnupg" `
     -EvidenceDir "$root\evidence" `
-    -PacmanPath 'C:\msys64\usr\bin\pacman.exe' `
+    -PacmanPath "$root\usr\bin\pacman.exe" `
+    -PrivatePacmanSeed $privatePacmanSeed `
     -RepositoryRoot $repo `
-    -SessionId $sessionId
+    -SessionId $sessionId `
+    -Repositories @{
+        clangarm64 = 'https://repo.msys2.org/mingw/clangarm64'
+    }
 
 Invoke-PrivatePacman `
     -Context $context `
@@ -39,18 +59,30 @@ Invoke-PrivatePacman `
     -PackagePath $packagePath
 ```
 
-Using the shared `pacman.exe` as a bootstrap client is allowed only because the
-helper still supplies and revalidates every private destination. Prefer a
-pacman executable located inside the private root when one is available.
+Mutating operations require `PacmanPath` itself to resolve inside the immutable
+private root. `PrivatePacmanSeed` must be an independently prepared private
+distribution; a seed or bootstrap client under shared `C:\msys64` is rejected.
+Seeding occurs before the helper writes and seals its managed config and hook
+directories.
 Populate the private GnuPG directory when repository signature validation needs
-an initialized keyring. Callers may add repository sections to the generated
-private config before a sync operation; do not include or edit
-`C:\msys64\etc\pacman.conf`. Isolation options (`--root`, `--dbpath`,
+an initialized keyring. Supply HTTPS repositories through `-Repositories`;
+never edit the generated config. It is hash-checked and locked through process
+completion, and it intentionally contains no destination directives or
+`Include`. Isolation options (`--root`, `--dbpath`,
 `--cachedir`, `--logfile`, `--config`, `--hookdir`, `--gpgdir`, and
 `--sysroot`) are helper-owned and rejected in `ArgumentList`, including
-abbreviated and short forms. Caller-supplied `--` is also rejected.
+abbreviated and short forms. Caller-supplied `--` is also rejected. The helper
+requires PowerShell 7 so native arguments use
+`ProcessStartInfo.ArgumentList`; it removes `POSIXLY_CORRECT`, controls `MSYS`,
+uses `winsymlinks:nativestrict`, and closes child standard input. Native
+reparse links, Cygwin magic-file links, and shortcut links that could escape
+the root are rejected. Relevant directory chains are held against rename or
+deletion through process completion, alongside the config and package-file
+locks. Both the configured hook directory and pacman's root-relative
+`usr\share\libalpm\hooks` directory must be empty for mutations.
 
-Run the fake-client safety tests without invoking pacman:
+Run the compiled argv-recorder safety tests without invoking pacman (`dotnet`
+with the .NET 8 targeting pack is required):
 
 ```powershell
 pwsh -NoProfile -File .ci\Test-PrivatePacman.ps1
