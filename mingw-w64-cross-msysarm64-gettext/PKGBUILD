@@ -1,0 +1,679 @@
+# Maintainer: Chris Reddington <crutkas@microsoft.com>
+
+_realname=gettext
+_target=aarch64-pc-msys
+_configure_host=aarch64-pc-cygwin
+_target_root="/opt/${_target}"
+_dependency_root="${_target_root}/usr"
+_binutils_version=2.44.50-2
+_gcc_version=15.0.1dev-1
+_runtime_version=3.6.10.r0.ga527ace21-1
+_w32api_version=14.0.0.r0.g9b3dd0125-1
+_libiconv_version=1.18-1
+_linker_sha256=075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f
+_scanner_sha256=888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9
+_recipe_commit=73248abe6bc25e73486c29f876094b3eeab79547
+
+pkgbase=mingw-w64-cross-msysarm64-gettext
+pkgname=(
+  mingw-w64-cross-msysarm64-libintl
+  mingw-w64-cross-msysarm64-libintl-devel
+  mingw-w64-cross-msysarm64-gettext-libs
+  mingw-w64-cross-msysarm64-gettext-devel
+  mingw-w64-cross-msysarm64-gettext
+)
+pkgver=0.22.5
+pkgrel=1
+pkgdesc="GNU internationalization libraries and tools for aarch64-pc-msys"
+arch=('x86_64')
+url='https://www.gnu.org/software/gettext/'
+msys2_references=('cpe: cpe:/a:gnu:gettext')
+license=('spdx:GPL-3.0-or-later' 'spdx:LGPL-2.1-or-later')
+groups=('mingw-w64-cross-toolchain' 'mingw-w64-cross')
+depends=()
+makedepends=(
+  'autotools'
+  'gcc'
+  'gettext-devel'
+  'make'
+  'pkgconf'
+  'python'
+  "mingw-w64-cross-cygwinarm64-binutils=${_binutils_version}"
+  "mingw-w64-cross-msysarm64-gcc=${_gcc_version}"
+  "mingw-w64-cross-msysarm64-gcc-libs=${_gcc_version}"
+  "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}"
+  "mingw-w64-cross-msysarm64-sysroot=${_runtime_version}"
+  "mingw-w64-cross-msysarm64-w32api-runtime=${_w32api_version}"
+  "mingw-w64-cross-msysarm64-libiconv=${_libiconv_version}"
+  "mingw-w64-cross-msysarm64-libiconv-devel=${_libiconv_version}"
+)
+options=('!strip' '!buildflags' '!emptydirs')
+validpgpkeys=('9001B85AF9E1B83DF1BDA942F5BE8B267C6A406D')
+source=(
+  "https://ftpmirror.gnu.org/gettext/${_realname}-${pkgver}.tar.gz"
+  "https://ftpmirror.gnu.org/gettext/${_realname}-${pkgver}.tar.gz.sig"
+  "check-aarch64-pseudo-relocs.ps1::https://raw.githubusercontent.com/crutkas/MSYS2-packages/3356eec1411983cc252b04afac32bca5f3b8d824/.ci/check-aarch64-pseudo-relocs.ps1"
+  "gettext-tools-tests-locale-ll-es.patch::https://raw.githubusercontent.com/crutkas/MSYS2-packages/${_recipe_commit}/gettext/gettext-tools-tests-locale-ll-es.patch"
+  "gettext-0.21.1-autopoint-V.patch::https://raw.githubusercontent.com/crutkas/MSYS2-packages/${_recipe_commit}/gettext/gettext-0.21.1-autopoint-V.patch"
+  "gettext-0.21.1-cygwin-ftm.patch::https://raw.githubusercontent.com/crutkas/MSYS2-packages/${_recipe_commit}/gettext/gettext-0.21.1-cygwin-ftm.patch"
+  "gettext-0.22-no-woe32dll-gettext-tools-configure-ac.patch::https://raw.githubusercontent.com/crutkas/MSYS2-packages/${_recipe_commit}/gettext/gettext-0.22-no-woe32dll-gettext-tools-configure-ac.patch"
+  "gettext-0.22-no-woe32dll-m4-woe32-dll-m4.patch::https://raw.githubusercontent.com/crutkas/MSYS2-packages/${_recipe_commit}/gettext/gettext-0.22-no-woe32dll-m4-woe32-dll-m4.patch"
+  "gettext-0.22.5-gettext-runtime-gnulib-lib-localcharset-c.patch::https://raw.githubusercontent.com/crutkas/MSYS2-packages/${_recipe_commit}/gettext/gettext-0.22.5-gettext-runtime-gnulib-lib-localcharset-c.patch"
+  "gettext-0.22.5-gettext-runtime-gnulib-lib-localename-h.patch::https://raw.githubusercontent.com/crutkas/MSYS2-packages/${_recipe_commit}/gettext/gettext-0.22.5-gettext-runtime-gnulib-lib-localename-h.patch"
+  "gettext-0.22.5-gettext-runtime-gnulib-lib-localename-unsafe-c.patch::https://raw.githubusercontent.com/crutkas/MSYS2-packages/${_recipe_commit}/gettext/gettext-0.22.5-gettext-runtime-gnulib-lib-localename-unsafe-c.patch"
+  "gettext-0.22.5-gettext-runtime-intl-gnulib-lib-localcharset-c.patch::https://raw.githubusercontent.com/crutkas/MSYS2-packages/${_recipe_commit}/gettext/gettext-0.22.5-gettext-runtime-intl-gnulib-lib-localcharset-c.patch"
+  "gettext-0.22.5-gettext-runtime-intl-gnulib-lib-localename-h.patch::https://raw.githubusercontent.com/crutkas/MSYS2-packages/${_recipe_commit}/gettext/gettext-0.22.5-gettext-runtime-intl-gnulib-lib-localename-h.patch"
+  "gettext-0.22.5-gettext-runtime-intl-gnulib-lib-localename-unsafe-c.patch::https://raw.githubusercontent.com/crutkas/MSYS2-packages/${_recipe_commit}/gettext/gettext-0.22.5-gettext-runtime-intl-gnulib-lib-localename-unsafe-c.patch"
+  "gettext-0.22.5-gettext-tools-gnulib-lib-localcharset-c.patch::https://raw.githubusercontent.com/crutkas/MSYS2-packages/${_recipe_commit}/gettext/gettext-0.22.5-gettext-tools-gnulib-lib-localcharset-c.patch"
+  "gettext-0.22.5-gettext-tools-gnulib-lib-localename-h.patch::https://raw.githubusercontent.com/crutkas/MSYS2-packages/${_recipe_commit}/gettext/gettext-0.22.5-gettext-tools-gnulib-lib-localename-h.patch"
+  "gettext-0.22.5-gettext-tools-gnulib-lib-localename-unsafe-c.patch::https://raw.githubusercontent.com/crutkas/MSYS2-packages/${_recipe_commit}/gettext/gettext-0.22.5-gettext-tools-gnulib-lib-localename-unsafe-c.patch"
+  "gettext-0.22-disable-libtextstyle.patch::https://raw.githubusercontent.com/crutkas/MSYS2-packages/${_recipe_commit}/gettext/gettext-0.22-disable-libtextstyle.patch"
+  "gettext-0.19.8.1-msys2.patch::https://raw.githubusercontent.com/crutkas/MSYS2-packages/${_recipe_commit}/gettext/gettext-0.19.8.1-msys2.patch"
+  "gettext-0.19.7-archive.patch::https://raw.githubusercontent.com/crutkas/MSYS2-packages/${_recipe_commit}/gettext/gettext-0.19.7-archive.patch"
+)
+sha256sums=(
+  'ec1705b1e969b83a9f073144ec806151db88127f5e40fe5a94cb6c8fa48996a0'
+  '5829b36cdf582df81ca2ec0919b9a671f5cab7bb09adb23c96ada32e9b20168f'
+  '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9'
+  'a83c2e89aa799232847d120ce3da856fbee2fda87245233d336c5de044465321'
+  '2a8ea083abf7278b3b6157e6f3eed4e6a90b803308396e30b1302085b840c8e9'
+  '62c0cf906df4c0196e2e3e4f79b91486f6a95d29bf9de8aed8c92b5075058497'
+  '71f26d49ddabf400ee14ea574495a5d3b3055957d81fecfb4cb5cb99dab3cd47'
+  'd5b14b03ca609764f1c646efa9e85dedafe69f967f37b8db194fcddc199f2d97'
+  'b65bbf78a55a3b8a048a89f8351b3daeff79058d8c45318f8642f07b7cb74f5a'
+  'e1e5a2e50d23d9e16b4f33dfeeab33f193d7f7678a560db9a84fcad81dd33369'
+  'd05a8da45d4aa90e5c412554d198b84845d34c60aa5ae1fa1167b5a551828f3f'
+  '9774ca475c280ba6641807063b79420a7a350a363154b7e20fb6307096f031ed'
+  '5060b449ac30fe3699e284bd633644d8a82faaa2b4e6516fb38b69b616972ca9'
+  'd15bd9341df9653603b6cb7de962ce47eff3a557368508c7f57240acca7057e1'
+  'b43e41f10e123ce449b0fc7224dfde18da122cb95897198f54175fe30f41f05e'
+  '082edeacdea36bad6f8901e276ee38876667ed79366d6745264cf905f1031042'
+  '5a5ee0d8a72eb056489c1881c8e2b183e128e96a6dc5cc9619286626223c226e'
+  'a28a27192f336f0b0908bdbf840d3b19d7b587c4ac52cad635cb43e95eb3c78d'
+  '1f6d2a340676543f1565416307ecf00d0c4ce68b2b3519f4ba9499d37c045a91'
+  '5e0851e372d78aac8ec20be40b13b2c010e45c1703d676711d793ae86ca82fd5'
+)
+
+_private_pacman() {
+  "${PACMAN}" "$@"
+}
+
+_assert_private_root() {
+  local actual expected variable value
+
+  test "${GETTEXT_FINAL_BUILD_ADMITTED:-}" = 1
+  test -n "${PRIVATE_MSYS_ROOT_WINDOWS:-}"
+  actual="$(cygpath -am / | tr '[:upper:]' '[:lower:]')"
+  expected="$(cygpath -am "${PRIVATE_MSYS_ROOT_WINDOWS}" | tr '[:upper:]' '[:lower:]')"
+  test "${actual}" = "${expected}"
+  test "${actual}" != c:/msys64
+  case "${actual}" in
+    c:/msys64/*)
+      return 1
+      ;;
+  esac
+
+  for variable in PACMAN PACMAN_DBPATH PACMAN_CACHEDIR PACMAN_LOGFILE \
+    PACMAN_CONFIG PACMAN_HOOKDIR PACMAN_GPGDIR
+  do
+    value="${!variable:-}"
+    test -n "${value}"
+    case "$(cygpath -am "${value}" | tr '[:upper:]' '[:lower:]')" in
+      "${actual}"/*)
+        ;;
+      *)
+        printf 'ERROR: %s escapes private root: %s\n' "${variable}" "${value}" >&2
+        return 1
+        ;;
+    esac
+  done
+  test "${PACMAN}" = /opt/private-bin/pacman
+  test -x "${PACMAN}"
+}
+
+_assert_final_toolchain() {
+  local actual compiler expected_admission resolved tool
+
+  _assert_private_root
+  test "${MSYSTEM:-}" = MSYS
+  test "${CARCH:-}" = x86_64
+  test "$(uname -m)" = x86_64
+  expected_admission="$(
+    python "${startdir}/validate_contract.py" --print-libiconv-admission
+  )"
+  if [[ -z "${expected_admission}" ||
+        "${LIBICONV_ADMISSION_SHA256:-}" != "${expected_admission}" ]]; then
+    printf 'ERROR: libiconv admission identity is absent or mismatched\n' >&2
+    return 1
+  fi
+  test "$(_private_pacman -Q mingw-w64-cross-cygwinarm64-binutils)" = \
+    "mingw-w64-cross-cygwinarm64-binutils ${_binutils_version}"
+  test "$(_private_pacman -Q mingw-w64-cross-msysarm64-gcc)" = \
+    "mingw-w64-cross-msysarm64-gcc ${_gcc_version}"
+  test "$(_private_pacman -Q mingw-w64-cross-msysarm64-gcc-libs)" = \
+    "mingw-w64-cross-msysarm64-gcc-libs ${_gcc_version}"
+  test "$(_private_pacman -Q mingw-w64-cross-msysarm64-runtime-devel)" = \
+    "mingw-w64-cross-msysarm64-runtime-devel ${_runtime_version}"
+  test "$(_private_pacman -Q mingw-w64-cross-msysarm64-sysroot)" = \
+    "mingw-w64-cross-msysarm64-sysroot ${_runtime_version}"
+  test "$(_private_pacman -Q mingw-w64-cross-msysarm64-w32api-runtime)" = \
+    "mingw-w64-cross-msysarm64-w32api-runtime ${_w32api_version}"
+  test "$(_private_pacman -Q mingw-w64-cross-msysarm64-libiconv)" = \
+    "mingw-w64-cross-msysarm64-libiconv ${_libiconv_version}"
+  test "$(_private_pacman -Q mingw-w64-cross-msysarm64-libiconv-devel)" = \
+    "mingw-w64-cross-msysarm64-libiconv-devel ${_libiconv_version}"
+
+  actual="$(sha256sum /opt/bin/aarch64-pc-cygwin-ld.exe | cut -d ' ' -f 1)"
+  test "${actual}" = "${_linker_sha256}"
+  actual="$(sha256sum "${srcdir}/check-aarch64-pseudo-relocs.ps1" |
+    cut -d ' ' -f 1)"
+  test "${actual}" = "${_scanner_sha256}"
+
+  compiler="$(command -v "${_target}-gcc")"
+  test "${compiler}" = "/opt/bin/${_target}-gcc"
+  test "$(_private_pacman -Qoq "${compiler}.exe")" = \
+    mingw-w64-cross-msysarm64-gcc
+  test "$("${compiler}" -dumpmachine)" = "${_target}"
+  test "$("${compiler}" -dumpfullversion)" = 15.0.1
+  test "$("${compiler}" -print-sysroot)" = "${_target_root}"
+  test "$(command -v "${_target}-g++")" = "/opt/bin/${_target}-g++"
+  test "$("${_target}-g++" -dumpmachine)" = "${_target}"
+  for tool in ar as dlltool ld nm objdump ranlib strip; do
+    resolved="$("${compiler}" -B/opt/bin/ "-print-prog-name=${tool}")"
+    case "${resolved}" in
+      /opt/bin/aarch64-pc-cygwin-${tool}|\
+      /opt/bin/aarch64-pc-cygwin-${tool}.exe)
+        ;;
+      *)
+        printf 'ERROR: compiler selected non-admitted %s: %s\n' \
+          "${tool}" "${resolved}" >&2
+        return 1
+        ;;
+    esac
+    test "$(_private_pacman -Qoq "${resolved%.exe}.exe")" = \
+      mingw-w64-cross-cygwinarm64-binutils
+  done
+}
+
+_assert_target_paths() {
+  local flags search variable value
+
+  search="$("${_target}-gcc" -B/opt/bin/ --sysroot="${_target_root}" \
+    -print-search-dirs)"
+  search="${search//${_target_root}/TARGET_ROOT}"
+  ! grep -Eiq \
+    '(^|[;:])(C:[\\/]msys64|/usr/(include|lib)|/mingw|/ucrt|x86_64)' \
+    <<< "${search}"
+
+  flags="${CPPFLAGS} ${CFLAGS} ${LDFLAGS}"
+  flags="${flags//${_target_root}/TARGET_ROOT}"
+  ! grep -Eiq \
+    'C:[\\/]msys64|(^|[[:space:]])-I/usr|(^|[[:space:]])-L/usr|/mingw|/ucrt|x86_64' \
+    <<< "${flags}"
+
+  for variable in CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH LIBRARY_PATH \
+    PKG_CONFIG_PATH
+  do
+    value="${!variable:-}"
+    test -z "${value}"
+  done
+  test "${PKG_CONFIG_LIBDIR}" = "${_dependency_root}/lib/pkgconfig"
+}
+
+prepare() {
+  cd "${srcdir}/${_realname}-${pkgver}"
+
+  patch -Nbp1 -i "${srcdir}/gettext-tools-tests-locale-ll-es.patch"
+  patch -Nbp1 -i "${srcdir}/gettext-0.21.1-autopoint-V.patch"
+  patch -Nbp1 -i "${srcdir}/gettext-0.21.1-cygwin-ftm.patch"
+  patch -Nbp1 -i "${srcdir}/gettext-0.22-no-woe32dll-gettext-tools-configure-ac.patch"
+  patch -Nbp1 -i "${srcdir}/gettext-0.22-no-woe32dll-m4-woe32-dll-m4.patch"
+  patch -Nbp1 -i "${srcdir}/gettext-0.22.5-gettext-runtime-gnulib-lib-localcharset-c.patch"
+  patch -Nbp1 -i "${srcdir}/gettext-0.22.5-gettext-runtime-gnulib-lib-localename-h.patch"
+  patch -Nbp1 -i "${srcdir}/gettext-0.22.5-gettext-runtime-gnulib-lib-localename-unsafe-c.patch"
+  patch -Nbp1 -i "${srcdir}/gettext-0.22.5-gettext-runtime-intl-gnulib-lib-localcharset-c.patch"
+  patch -Nbp1 -i "${srcdir}/gettext-0.22.5-gettext-runtime-intl-gnulib-lib-localename-h.patch"
+  patch -Nbp1 -i "${srcdir}/gettext-0.22.5-gettext-runtime-intl-gnulib-lib-localename-unsafe-c.patch"
+  patch -Nbp1 -i "${srcdir}/gettext-0.22.5-gettext-tools-gnulib-lib-localcharset-c.patch"
+  patch -Nbp1 -i "${srcdir}/gettext-0.22.5-gettext-tools-gnulib-lib-localename-h.patch"
+  patch -Nbp1 -i "${srcdir}/gettext-0.22.5-gettext-tools-gnulib-lib-localename-unsafe-c.patch"
+  patch -Nbp1 -i "${srcdir}/gettext-0.22-disable-libtextstyle.patch"
+  patch -Nbp1 -i "${srcdir}/gettext-0.19.8.1-msys2.patch"
+
+  pushd gettext-tools/misc >/dev/null
+  mkdir archive
+  tar -xf archive.dir.tar -C archive
+  pushd archive >/dev/null
+  patch -Nbp1 -i "${srcdir}/gettext-0.19.7-archive.patch"
+  tar -cf ../archive.dir.tar *
+  popd >/dev/null
+  rm -rf archive
+  popd >/dev/null
+
+  libtoolize --copy --force
+  ./autogen.sh --skip-gnulib
+}
+
+build() {
+  local source_dir="${srcdir}/${_realname}-${pkgver}"
+  local build_dir="${srcdir}/build-${_target}"
+  local dest_dir="${srcdir}/dest"
+  local prefix_map="-ffile-prefix-map=${srcdir}=. -fdebug-prefix-map=${srcdir}=. -fmacro-prefix-map=${srcdir}=."
+
+  _assert_final_toolchain
+  rm -rf "${build_dir}" "${dest_dir}"
+  mkdir -p "${build_dir}" "${dest_dir}"
+  export PATH="/opt/bin:/usr/bin:/bin"
+  export CC="${_target}-gcc"
+  export CXX="${_target}-g++"
+  export AR="/opt/bin/${_target}-ar"
+  export AS="/opt/bin/${_target}-as"
+  export DLLTOOL="/opt/bin/${_target}-dlltool"
+  export LD="/opt/bin/${_target}-ld"
+  export NM="/opt/bin/${_target}-nm"
+  export OBJDUMP="/opt/bin/${_target}-objdump"
+  export RANLIB="/opt/bin/${_target}-ranlib"
+  export STRIP="/opt/bin/${_target}-strip"
+  export RC="/opt/bin/${_target}-windres -I ${_target_root}/include/w32api"
+  export WINDRES="${RC}"
+  export CPATH=
+  export C_INCLUDE_PATH=
+  export CPLUS_INCLUDE_PATH=
+  export LIBRARY_PATH=
+  export PKG_CONFIG_PATH=
+  export PKG_CONFIG_LIBDIR="${_dependency_root}/lib/pkgconfig"
+  export CPPFLAGS="-isystem ${_target_root}/include -isystem ${_target_root}/include/w32api -isystem ${_dependency_root}/include"
+  export CFLAGS="-O2 -pipe ${prefix_map} -B/opt/bin/ --sysroot=${_target_root}"
+  export LDFLAGS="-B/opt/bin/ --sysroot=${_target_root} -specs=${_target_root}/lib/cygwin-compile-only.specs -L${_dependency_root}/lib -static-libgcc -static-libstdc++"
+  export LIBS="-liconv"
+  export lt_cv_deplibs_check_method=pass_all
+  export gl_cv_have_weak=no
+
+  _assert_target_paths
+  (
+    cd "${build_dir}"
+    CC_FOR_BUILD=gcc \
+    CFLAGS_FOR_BUILD='-O2 -pipe' \
+      "${source_dir}/configure" \
+      --build="${CHOST}" \
+      --host="${_configure_host}" \
+      --prefix=/usr \
+      --libexecdir=/usr/lib \
+      --with-libiconv-prefix="${_dependency_root}" \
+      --with-included-libcroco \
+      --with-included-libunistring \
+      --with-included-libxml \
+      --with-included-glib \
+      --with-included-gettext \
+      --without-emacs \
+      --enable-shared \
+      --enable-static \
+      --disable-java \
+      --disable-native-java \
+      --disable-csharp \
+      --disable-openmp
+  )
+  make -C "${build_dir}" -j"$(nproc)"
+  make -C "${build_dir}" DESTDIR="${dest_dir}" install
+  rm -f "${dest_dir}/usr/lib/charset.alias"
+  find "${dest_dir}/usr/lib" -type f -name '*.la' -print0 |
+    while IFS= read -r -d '' file; do
+      sed -i \
+        -e "s|^libdir='/usr/lib'$|libdir='${_dependency_root}/lib'|" \
+        -e "s|-L/usr/lib|-L${_dependency_root}/lib|g" \
+        -e "s|/usr/lib/libiconv\\.la|${_dependency_root}/lib/libiconv.la|g" \
+        "${file}"
+    done
+}
+
+check() {
+  local pkgroot="${srcdir}/dest/usr"
+  local report="${srcdir}/gettext-report"
+  local work="${srcdir}/gettext-check"
+  local ar="/opt/bin/${_target}-ar"
+  local nm="/opt/bin/${_target}-nm"
+  local objdump="/opt/bin/${_target}-objdump"
+  local archive file import_name imports map_info member object_info pe_info
+  local -a archives objects pe_files
+
+  _assert_final_toolchain
+  rm -rf "${report}" "${work}"
+  mkdir -p "${report}" "${work}/locale/C.UTF-8/LC_MESSAGES"
+
+  test -f "${pkgroot}/bin/msys-intl-8.dll"
+  test -f "${pkgroot}/bin/msys-gettextlib-0-22-5.dll"
+  test -f "${pkgroot}/bin/msys-gettextsrc-0-22-5.dll"
+  test -f "${pkgroot}/include/libintl.h"
+  test -f "${pkgroot}/lib/libintl.a"
+  test -f "${pkgroot}/lib/libintl.dll.a"
+  test -f "${pkgroot}/lib/libintl.la"
+  test -x "${pkgroot}/bin/gettext.exe"
+  test -x "${pkgroot}/bin/msgfmt.exe"
+  test -x "${pkgroot}/bin/autopoint"
+  test -x "${pkgroot}/bin/gettextize"
+  test -f "${pkgroot}/bin/gettext.sh"
+
+  mapfile -d '' -t pe_files < <(
+    find "${pkgroot}" -type f \( -name '*.dll' -o -name '*.exe' \) -print0 |
+      LC_ALL=C sort -z
+  )
+  test "${#pe_files[@]}" -gt 10
+  : > "${report}/pe-audit.txt"
+  : > "${report}/imports.txt"
+  for file in "${pe_files[@]}"; do
+    pe_info="$("${objdump}" -f "${file}")"
+    printf '%s\n%s\n' "${file#${pkgroot}/}" "${pe_info}" \
+      >> "${report}/pe-audit.txt"
+    grep -Fq 'architecture: aarch64' <<< "${pe_info}"
+    grep -Eq 'file format pei?-aarch64-little' <<< "${pe_info}"
+    imports="$("${objdump}" -p "${file}" |
+      sed -n 's/^[[:space:]]*DLL Name: //p')"
+    printf '%s\n%s\n' "${file#${pkgroot}/}" "${imports}" \
+      >> "${report}/imports.txt"
+    grep -Fqi 'msys-2.0.dll' <<< "${imports}"
+    ! grep -Eiq \
+      'cygwin1|libgcc_s_|msys-gcc_s|msys-stdc\+\+|libwinpthread|msvcrt|ucrtbase|x86_64|i[3-6]86' \
+      <<< "${imports}"
+    while IFS= read -r import_name; do
+      import_name="${import_name,,}"
+      case "${import_name}" in
+        msys-2.0.dll)
+          ;;
+        msys-*.dll)
+          if [[ ! -f "${pkgroot}/bin/${import_name}" &&
+                ! -f "${_dependency_root}/bin/${import_name}" ]]; then
+            printf 'ERROR: unresolved target import %s in %s\n' \
+              "${import_name}" "${file}" >&2
+            return 1
+          fi
+          ;;
+      esac
+    done <<< "${imports}"
+  done
+  grep -Fqi 'msys-gettextlib-0-22-5.dll' "${report}/imports.txt"
+  grep -Fqi 'msys-gettextsrc-0-22-5.dll' "${report}/imports.txt"
+  imports="$("${objdump}" -p "${pkgroot}/bin/gettext.exe" |
+    sed -n 's/^[[:space:]]*DLL Name: //p')"
+  grep -Fqi 'msys-intl-8.dll' <<< "${imports}"
+
+  mapfile -d '' -t archives < <(
+    find "${pkgroot}/lib" -type f \( -name '*.a' -o -name '*.dll.a' \) \
+      -print0 | LC_ALL=C sort -z
+  )
+  test "${#archives[@]}" -ge 6
+  : > "${report}/archive-audit.txt"
+  : > "${report}/archive-armaps.txt"
+  for archive in "${archives[@]}"; do
+    map_info="$("${nm}" --print-armap "${archive}")"
+    printf '%s\n%s\n' "${archive#${pkgroot}/}" "${map_info}" \
+      >> "${report}/archive-armaps.txt"
+    grep -Fq 'Archive index:' <<< "${map_info}"
+    while IFS= read -r member; do
+      case "${member}" in
+        ''|'/'*|'__.SYMDEF'*)
+          continue
+          ;;
+      esac
+      "${ar}" p "${archive}" "${member}" > "${work}/member.o"
+      object_info="$("${objdump}" -f "${work}/member.o")"
+      printf '%s(%s)\n%s\n' "${archive#${pkgroot}/}" "${member}" \
+        "${object_info}" >> "${report}/archive-audit.txt"
+      grep -Fq 'architecture: aarch64' <<< "${object_info}"
+      grep -Fq 'file format pe-aarch64-little' <<< "${object_info}"
+    done < <("${ar}" t "${archive}")
+  done
+
+  mapfile -d '' -t objects < <(
+    find "${pkgroot}" -type f -name '*.o' -print0 | LC_ALL=C sort -z
+  )
+  for file in "${objects[@]}"; do
+    object_info="$("${objdump}" -f "${file}")"
+    grep -Fq 'architecture: aarch64' <<< "${object_info}"
+    grep -Fq 'file format pe-aarch64-little' <<< "${object_info}"
+  done
+
+  cat > "${work}/catalog.po" <<'EOF'
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "hello"
+msgstr "caf\303\251"
+EOF
+  /usr/bin/msgfmt -o "${work}/locale/C.UTF-8/LC_MESSAGES/arm64-gettext-smoke.mo" \
+    "${work}/catalog.po"
+  cat > "${work}/consumer.c" <<'EOF'
+#include <libintl.h>
+#include <locale.h>
+#include <pthread.h>
+#include <stddef.h>
+#include <string.h>
+#include <windows.h>
+
+static void *translate(void *unused)
+{
+  const unsigned char expected[] = { 'c', 'a', 'f', 0xc3, 0xa9, 0 };
+  const char *translated = gettext("hello");
+  (void) unused;
+  return strcmp(translated, (const char *) expected) == 0 ? NULL : (void *) 1;
+}
+
+int main(void)
+{
+  const unsigned char expected[] = { 'c', 'a', 'f', 0xc3, 0xa9, 0 };
+  pthread_t threads[4];
+  void *result;
+  size_t index;
+
+  if (setlocale(LC_ALL, "C.UTF-8") == NULL)
+    return 1;
+  if (bindtextdomain("arm64-gettext-smoke", "./locale") == NULL)
+    return 2;
+  if (bind_textdomain_codeset("arm64-gettext-smoke", "UTF-8") == NULL)
+    return 3;
+  if (textdomain("arm64-gettext-smoke") == NULL)
+    return 4;
+  if (strcmp(gettext("hello"), (const char *) expected) != 0)
+    return 5;
+  for (index = 0; index < 4; ++index)
+    if (pthread_create(&threads[index], NULL, translate, NULL) != 0)
+      return 6;
+  for (index = 0; index < 4; ++index) {
+    if (pthread_join(threads[index], &result) != 0 || result != NULL)
+      return 7;
+  }
+#ifdef DYNAMIC_SMOKE
+  if (GetModuleHandleW(L"msys-intl-8.dll") == NULL)
+    return 8;
+#endif
+  return 0;
+}
+EOF
+
+  "${_target}-gcc" -B/opt/bin/ --sysroot="${_target_root}" \
+    -specs="${_target_root}/lib/cygwin-compile-only.specs" \
+    -DDYNAMIC_SMOKE -I"${pkgroot}/include" "${work}/consumer.c" \
+    -L"${pkgroot}/lib" -lintl -L"${_dependency_root}/lib" -liconv -lpthread \
+    -o "${work}/dynamic-consumer.exe"
+  "${_target}-gcc" -B/opt/bin/ --sysroot="${_target_root}" \
+    -specs="${_target_root}/lib/cygwin-compile-only.specs" \
+    -I"${pkgroot}/include" "${work}/consumer.c" \
+    "${pkgroot}/lib/libintl.a" \
+    "${_dependency_root}/lib/libiconv.a" \
+    "${_dependency_root}/lib/libcharset.a" \
+    -lpthread -o "${work}/static-consumer.exe"
+  for file in "${work}/dynamic-consumer.exe" "${work}/static-consumer.exe"; do
+    "${objdump}" -f "${file}" | grep -F 'file format pei-aarch64-little'
+    imports="$("${objdump}" -p "${file}" |
+      sed -n 's/^[[:space:]]*DLL Name: //p')"
+    grep -Fqi 'msys-2.0.dll' <<< "${imports}"
+    ! grep -Eiq 'cygwin1|libgcc_s_|libwinpthread|x86_64|i[3-6]86' \
+      <<< "${imports}"
+  done
+  imports="$("${objdump}" -p "${work}/dynamic-consumer.exe" |
+    sed -n 's/^[[:space:]]*DLL Name: //p')"
+  grep -Fqi 'msys-intl-8.dll' <<< "${imports}"
+  imports="$("${objdump}" -p "${work}/static-consumer.exe" |
+    sed -n 's/^[[:space:]]*DLL Name: //p')"
+  ! grep -Fqi 'msys-intl-8.dll' <<< "${imports}"
+
+  find "${pkgroot}" -type f -name '*.la' -print0 |
+    while IFS= read -r -d '' file; do
+      ! grep -aEq "${srcdir}|C:[\\\\/]msys64|x86_64|mingw|cygwin1" "${file}"
+      grep -Fq "libdir='${_dependency_root}/lib'" "${file}"
+      ! grep -Fq '/usr/lib' "${file}"
+    done
+  ! grep -aRIEq "${srcdir}|C:[\\\\/]msys64|/mingw|/ucrt|cygwin1\\.dll" \
+    "${pkgroot}"
+
+  {
+    printf 'package\t%s\n' "${pkgbase}"
+    printf 'version\t%s-%s\n' "${pkgver}" "${pkgrel}"
+    printf 'target\t%s\n' "${_target}"
+    printf 'personality\tMSYS\n'
+    printf 'abi\tLP64/AAPCS64/SEH\n'
+    printf 'linker-sha256\t%s\n' "${_linker_sha256}"
+    printf 'scanner-sha256\t%s\n' "${_scanner_sha256}"
+    printf 'pe-count\t%s\n' "${#pe_files[@]}"
+    printf 'archive-count\t%s\n' "${#archives[@]}"
+    printf 'consumer-count\t2\n'
+    printf 'native-execution\tdeferred-to-windows-11-arm\n'
+  } > "${report}/provenance.tsv"
+  (
+    cd "${pkgroot}"
+    find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+  ) > "${report}/payload.sha256"
+}
+
+package_mingw-w64-cross-msysarm64-libintl() {
+  local source_root="${srcdir}/dest/usr"
+  local target_prefix="${pkgdir}${_dependency_root}"
+  local license_dir="${pkgdir}/usr/share/licenses/${pkgname}"
+
+  pkgdesc="GNU libintl runtime for aarch64-pc-msys"
+  license=('spdx:LGPL-2.1-or-later')
+  depends=(
+    "mingw-w64-cross-msysarm64-runtime=${_runtime_version}"
+    "mingw-w64-cross-msysarm64-libiconv=${_libiconv_version}"
+  )
+  provides=("aarch64-pc-msys-libintl=${pkgver}")
+  conflicts=('aarch64-pc-msys-libintl')
+
+  install -Dm755 "${source_root}/bin/msys-intl-8.dll" \
+    "${target_prefix}/bin/msys-intl-8.dll"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING.LIB" \
+    "${license_dir}/COPYING.LIB"
+}
+
+package_mingw-w64-cross-msysarm64-libintl-devel() {
+  local source_root="${srcdir}/dest/usr"
+  local target_prefix="${pkgdir}${_dependency_root}"
+  local license_dir="${pkgdir}/usr/share/licenses/${pkgname}"
+
+  pkgdesc="GNU libintl headers, static library, and import library for aarch64-pc-msys"
+  license=('spdx:LGPL-2.1-or-later')
+  depends=(
+    "mingw-w64-cross-msysarm64-libintl=${pkgver}-${pkgrel}"
+    "mingw-w64-cross-msysarm64-libiconv-devel=${_libiconv_version}"
+    "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}"
+  )
+  provides=("aarch64-pc-msys-libintl-devel=${pkgver}")
+  conflicts=('aarch64-pc-msys-libintl-devel')
+  options=('staticlibs' '!strip' '!buildflags' '!emptydirs')
+
+  install -Dm644 "${source_root}/include/libintl.h" \
+    "${target_prefix}/include/libintl.h"
+  for file in libintl.a libintl.dll.a libintl.la; do
+    install -Dm644 "${source_root}/lib/${file}" "${target_prefix}/lib/${file}"
+  done
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING.LIB" \
+    "${license_dir}/COPYING.LIB"
+}
+
+package_mingw-w64-cross-msysarm64-gettext-libs() {
+  local source_root="${srcdir}/dest/usr"
+  local target_prefix="${pkgdir}${_dependency_root}"
+  local license_dir="${pkgdir}/usr/share/licenses/${pkgname}"
+
+  pkgdesc="GNU gettextpo and asprintf runtimes for aarch64-pc-msys"
+  depends=(
+    "mingw-w64-cross-msysarm64-runtime=${_runtime_version}"
+    "mingw-w64-cross-msysarm64-libintl=${pkgver}-${pkgrel}"
+    "mingw-w64-cross-msysarm64-libiconv=${_libiconv_version}"
+  )
+  provides=("aarch64-pc-msys-gettext-libs=${pkgver}")
+  conflicts=('aarch64-pc-msys-gettext-libs')
+
+  install -d "${target_prefix}/bin"
+  install -m755 \
+    "${source_root}/bin/msys-gettextpo-0.dll" \
+    "${source_root}/bin/msys-asprintf-0.dll" \
+    "${source_root}/bin/msys-gettextlib-0-22-5.dll" \
+    "${source_root}/bin/msys-gettextsrc-0-22-5.dll" \
+    "${target_prefix}/bin/"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING" \
+    "${license_dir}/COPYING"
+}
+
+package_mingw-w64-cross-msysarm64-gettext-devel() {
+  local source_root="${srcdir}/dest/usr"
+  local target_prefix="${pkgdir}${_dependency_root}"
+  local license_dir="${pkgdir}/usr/share/licenses/${pkgname}"
+
+  pkgdesc="GNU gettext development files for aarch64-pc-msys"
+  depends=(
+    "mingw-w64-cross-msysarm64-gettext-libs=${pkgver}-${pkgrel}"
+    "mingw-w64-cross-msysarm64-libintl-devel=${pkgver}-${pkgrel}"
+  )
+  provides=("aarch64-pc-msys-gettext-devel=${pkgver}")
+  conflicts=('aarch64-pc-msys-gettext-devel')
+  options=('staticlibs' '!strip' '!buildflags' '!emptydirs')
+
+  install -d "${target_prefix}"
+  cp -a "${source_root}/include" "${target_prefix}/"
+  rm -f "${target_prefix}/include/libintl.h"
+  cp -a "${source_root}/lib" "${target_prefix}/"
+  rm -rf "${target_prefix}/lib/gettext"
+  rm -f "${target_prefix}/lib/libintl.a" \
+    "${target_prefix}/lib/libintl.dll.a" \
+    "${target_prefix}/lib/libintl.la"
+  install -d "${target_prefix}/share"
+  for directory in aclocal gettext; do
+    if [[ -d "${source_root}/share/${directory}" ]]; then
+      cp -a "${source_root}/share/${directory}" "${target_prefix}/share/"
+    fi
+  done
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING" \
+    "${license_dir}/COPYING"
+}
+
+package_mingw-w64-cross-msysarm64-gettext() {
+  local source_root="${srcdir}/dest/usr"
+  local target_prefix="${pkgdir}${_dependency_root}"
+  local license_dir="${pkgdir}/usr/share/licenses/${pkgname}"
+
+  pkgdesc="GNU gettext target tools, catalogs, and runtime data for aarch64-pc-msys"
+  depends=(
+    "mingw-w64-cross-msysarm64-runtime=${_runtime_version}"
+    "mingw-w64-cross-msysarm64-libintl=${pkgver}-${pkgrel}"
+    "mingw-w64-cross-msysarm64-gettext-libs=${pkgver}-${pkgrel}"
+  )
+  provides=("aarch64-pc-msys-gettext=${pkgver}")
+  conflicts=('aarch64-pc-msys-gettext')
+
+  install -d "${target_prefix}/bin"
+  find "${source_root}/bin" -mindepth 1 -maxdepth 1 ! -name '*.dll' -print0 |
+    while IFS= read -r -d '' file; do
+      cp -a "${file}" "${target_prefix}/bin/"
+    done
+  if [[ -d "${source_root}/lib/gettext" ]]; then
+    install -d "${target_prefix}/lib"
+    cp -a "${source_root}/lib/gettext" "${target_prefix}/lib/"
+  fi
+  if [[ -d "${source_root}/share" ]]; then
+    cp -a "${source_root}/share" "${target_prefix}/"
+    rm -rf "${target_prefix}/share/aclocal" "${target_prefix}/share/gettext"
+  fi
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING" \
+    "${license_dir}/COPYING"
+}

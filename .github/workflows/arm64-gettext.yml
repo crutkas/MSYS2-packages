@@ -1,0 +1,824 @@
+name: arm64-gettext
+
+on:
+  push:
+    branches:
+      - crutkas-arm64-gettext-libintl
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: arm64-gettext-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    if: >-
+      ${{
+        github.repository == 'crutkas/MSYS2-packages' &&
+        ((github.event_name == 'pull_request' &&
+          github.head_ref == 'crutkas-arm64-gettext-libintl' &&
+          github.event.pull_request.head.repo.full_name == github.repository) ||
+         (github.event_name != 'pull_request' &&
+          github.ref_name == 'crutkas-arm64-gettext-libintl'))
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      final_build_admitted: ${{ steps.admission.outputs.final_build_admitted }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Guard fork branch
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REPOSITORY -ne 'crutkas/MSYS2-packages') {
+            throw "This workflow is fork-only: $env:GITHUB_REPOSITORY"
+          }
+          if ('${{ github.event_name }}' -eq 'pull_request') {
+            if ('${{ github.head_ref }}' -ne 'crutkas-arm64-gettext-libintl') {
+              throw 'Unexpected pull request head'
+            }
+            if ('${{ github.event.pull_request.head.repo.full_name }}' -ne
+                $env:GITHUB_REPOSITORY) {
+              throw 'Pull request head must be in the trusted fork repository'
+            }
+            if ('${{ github.base_ref }}' -ne 'master') {
+              throw 'Unexpected pull request base'
+            }
+          } elseif ('${{ github.ref_name }}' -ne 'crutkas-arm64-gettext-libintl') {
+            throw 'Unexpected branch'
+          }
+
+      - name: Validate package and negative contracts
+        working-directory: mingw-w64-cross-msysarm64-gettext
+        run: |
+          python3 -m unittest -v test_validate_contract.py
+          python3 validate_contract.py
+          bash -n PKGBUILD
+          bash -n validate-package-lifecycle.sh
+          pwsh -NoProfile -Command '$errors = $null; [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path native-smoke.ps1), [ref]$null, [ref]$errors); if ($errors.Count) { $errors | Out-String | Write-Error }'
+
+      - name: Verify immutable gettext source and signature
+        env:
+          GNUPGHOME: ${{ runner.temp }}/gettext-gnupg
+        run: |
+          set -euo pipefail
+          mkdir -m 700 "${GNUPGHOME}"
+          curl --fail --location --retry 3 \
+            --output "${RUNNER_TEMP}/gettext-0.22.5.tar.gz" \
+            https://ftpmirror.gnu.org/gettext/gettext-0.22.5.tar.gz
+          curl --fail --location --retry 3 \
+            --output "${RUNNER_TEMP}/gettext-0.22.5.tar.gz.sig" \
+            https://ftpmirror.gnu.org/gettext/gettext-0.22.5.tar.gz.sig
+          test "$(stat -c '%s' "${RUNNER_TEMP}/gettext-0.22.5.tar.gz")" = 26861674
+          test "$(sha256sum "${RUNNER_TEMP}/gettext-0.22.5.tar.gz" | cut -d ' ' -f 1)" = \
+            ec1705b1e969b83a9f073144ec806151db88127f5e40fe5a94cb6c8fa48996a0
+          test "$(stat -c '%s' "${RUNNER_TEMP}/gettext-0.22.5.tar.gz.sig")" = 833
+          test "$(sha256sum "${RUNNER_TEMP}/gettext-0.22.5.tar.gz.sig" | cut -d ' ' -f 1)" = \
+            5829b36cdf582df81ca2ec0919b9a671f5cab7bb09adb23c96ada32e9b20168f
+          curl --fail --location --retry 3 \
+            --output "${RUNNER_TEMP}/gettext-signing-key.asc" \
+            'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x9001B85AF9E1B83DF1BDA942F5BE8B267C6A406D'
+          gpg --batch --show-keys --with-colons \
+            "${RUNNER_TEMP}/gettext-signing-key.asc" \
+            | grep -F \
+              'fpr:::::::::9001B85AF9E1B83DF1BDA942F5BE8B267C6A406D:'
+          gpg --batch --import "${RUNNER_TEMP}/gettext-signing-key.asc"
+          gpg --batch --status-fd=1 \
+            --verify "${RUNNER_TEMP}/gettext-0.22.5.tar.gz.sig" \
+              "${RUNNER_TEMP}/gettext-0.22.5.tar.gz" \
+            | grep -F \
+              '[GNUPG:] VALIDSIG 9001B85AF9E1B83DF1BDA942F5BE8B267C6A406D '
+
+      - name: Verify canonical fixed-linker scanner
+        run: |
+          set -euo pipefail
+          scanner="${RUNNER_TEMP}/check-aarch64-pseudo-relocs.ps1"
+          curl --fail --location --retry 3 \
+            --output "${scanner}" \
+            https://raw.githubusercontent.com/crutkas/MSYS2-packages/3356eec1411983cc252b04afac32bca5f3b8d824/.ci/check-aarch64-pseudo-relocs.ps1
+          test "$(stat -c '%s' "${scanner}")" = 10569
+          test "$(sha256sum "${scanner}" | cut -d ' ' -f 1)" = \
+            888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9
+
+      - name: Resolve fail-closed admission
+        id: admission
+        working-directory: mingw-w64-cross-msysarm64-gettext
+        run: |
+          value="$(python3 -c 'import json; print(str(json.load(open("dependency-lock.json"))["final_build_admitted"]).lower())')"
+          printf 'final_build_admitted=%s\n' "${value}" >> "${GITHUB_OUTPUT}"
+          if [[ "${value}" = false ]]; then
+            echo 'Final build remains blocked; no provisional libiconv bytes will be consumed.'
+          fi
+
+  final-build:
+    needs: contract
+    if: >-
+      ${{
+        needs.contract.outputs.final_build_admitted == 'true' &&
+        github.repository == 'crutkas/MSYS2-packages'
+      }}
+    runs-on: windows-2025
+    timeout-minutes: 120
+    env:
+      SOURCE_DATE_EPOCH: 1787858185
+      GETTEXT_FINAL_BUILD_ADMITTED: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: source
+          persist-credentials: false
+
+      - name: Materialize immutable private MSYS2 base
+        id: private
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lock = Get-Content 'source\mingw-w64-cross-msysarm64-gettext\dependency-lock.json' -Raw |
+            ConvertFrom-Json
+          if (-not $lock.private_host_base.admitted) {
+            throw 'Private host base is not admitted'
+          }
+          $archive = Join-Path $env:RUNNER_TEMP $lock.private_host_base.name
+          $signature = "$archive.sig"
+          Invoke-WebRequest -Uri $lock.private_host_base.url -OutFile $archive
+          Invoke-WebRequest -Uri $lock.private_host_base.signature_url -OutFile $signature
+          if ((Get-Item $archive).Length -ne $lock.private_host_base.size) {
+            throw 'Private base size mismatch'
+          }
+          $archiveHash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($archiveHash -ne $lock.private_host_base.sha256) {
+            throw "Private base hash mismatch: $archiveHash"
+          }
+          $signatureHash = (Get-FileHash $signature -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($signatureHash -ne $lock.private_host_base.signature_sha256) {
+            throw "Private base signature hash mismatch: $signatureHash"
+          }
+          if ((Get-Item $signature).Length -ne $lock.private_host_base.signature_size) {
+            throw 'Private base signature size mismatch'
+          }
+
+          $gnupg = Join-Path $env:RUNNER_TEMP 'base-gnupg'
+          New-Item -ItemType Directory -Path $gnupg | Out-Null
+          $gpg = 'C:\Program Files\Git\usr\bin\gpg.exe'
+          $keyPath = Join-Path $env:RUNNER_TEMP 'base-signing-key.asc'
+          Invoke-WebRequest `
+            -Uri "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x$($lock.private_host_base.signing_key)" `
+            -OutFile $keyPath
+          $keyInfo = & $gpg --homedir $gnupg --batch --show-keys --with-colons $keyPath
+          if (($keyInfo -join "`n") -notmatch
+              "fpr:::::::::$($lock.private_host_base.signing_key):") {
+            throw 'Private-base public key fingerprint mismatch'
+          }
+          & $gpg --homedir $gnupg --batch --import $keyPath
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to retrieve pinned private-base signing key'
+          }
+          $status = & $gpg --homedir $gnupg --batch --status-fd=1 `
+            --verify $signature $archive 2>&1
+          if ($LASTEXITCODE -ne 0 -or
+              ($status -join "`n") -notmatch
+                "\[GNUPG:\] VALIDSIG $($lock.private_host_base.signing_key) ") {
+            throw "Private base signature validation failed: $($status -join "`n")"
+          }
+
+          $extract = Join-Path $env:RUNNER_TEMP "private-msys2-$([guid]::NewGuid())"
+          New-Item -ItemType Directory -Path $extract | Out-Null
+          tar.exe -xf $archive -C $extract
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Private base extraction failed'
+          }
+          $bashCandidates = @(
+            Get-ChildItem $extract -Recurse -File -Filter bash.exe |
+              Where-Object { $_.DirectoryName -match '[\\/]usr[\\/]bin$' }
+          )
+          if ($bashCandidates.Count -ne 1) {
+            throw "Expected one private bash, got $($bashCandidates.Count)"
+          }
+          $root = Split-Path (Split-Path $bashCandidates[0].FullName)
+          if ($root.TrimEnd('\').ToLowerInvariant() -eq 'c:\msys64') {
+            throw 'Shared MSYS root selected'
+          }
+          $pacman = Join-Path $root 'usr\bin\pacman.exe'
+          if (-not (Test-Path $pacman -PathType Leaf)) {
+            throw 'Private pacman executable is absent'
+          }
+          "root=$root" >> $env:GITHUB_OUTPUT
+          "bash=$($bashCandidates[0].FullName)" >> $env:GITHUB_OUTPUT
+          "pacman=$pacman" >> $env:GITHUB_OUTPUT
+
+      - name: Configure full private pacman state
+        id: pacman
+        shell: pwsh
+        run: |
+          $root = '${{ steps.private.outputs.root }}'
+          $paths = @{
+            db = Join-Path $root 'var\lib\pacman'
+            cache = Join-Path $root 'var\cache\pacman\pkg'
+            log = Join-Path $root 'var\log\gettext-pacman.log'
+            config = Join-Path $root 'etc\gettext-pacman.conf'
+            hooks = Join-Path $root 'etc\pacman.d\gettext-hooks'
+            gpg = Join-Path $root 'etc\pacman.d\gettext-gnupg'
+            wrapper = Join-Path $root 'opt\private-bin\pacman'
+          }
+          foreach ($directory in @(
+              $paths.db,
+              $paths.cache,
+              (Split-Path $paths.log),
+              $paths.hooks,
+              $paths.gpg,
+              (Split-Path $paths.wrapper)
+            )) {
+            New-Item -ItemType Directory -Force -Path $directory | Out-Null
+          }
+          @'
+          [options]
+          Architecture = auto
+          SigLevel = Never
+          LocalFileSigLevel = Never
+          '@ | Set-Content $paths.config -Encoding ascii
+          $wrapper = @'
+          #!/usr/bin/bash
+          exec /usr/bin/pacman \
+            --root / \
+            --dbpath /var/lib/pacman \
+            --cachedir /var/cache/pacman/pkg \
+            --logfile /var/log/gettext-pacman.log \
+            --config /etc/gettext-pacman.conf \
+            --hookdir /etc/pacman.d/gettext-hooks \
+            --gpgdir /etc/pacman.d/gettext-gnupg \
+            "$@"
+          '@
+          [System.IO.File]::WriteAllText(
+            $paths.wrapper,
+            $wrapper.Replace("`r`n", "`n"),
+            [System.Text.UTF8Encoding]::new($false)
+          )
+          & '${{ steps.private.outputs.bash }}' -lc 'chmod 755 /opt/private-bin/pacman'
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to activate the private pacman wrapper'
+          }
+          foreach ($entry in $paths.GetEnumerator()) {
+            "$($entry.Key)=$($entry.Value)" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Seal shared host sentinels
+        id: sentinel
+        shell: pwsh
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP 'host-sentinels'
+          New-Item -ItemType Directory -Path $evidence | Out-Null
+          function Write-TreeHash([string] $Path, [string] $Output) {
+            $rows = if (Test-Path $Path) {
+              Get-ChildItem $Path -Recurse -File |
+                Sort-Object FullName |
+                ForEach-Object {
+                  "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $($_.FullName)"
+                }
+            } else { @() }
+            $rows | Set-Content $Output
+          }
+          Write-TreeHash 'C:\msys64\var\lib\pacman\local' (Join-Path $evidence 'shared-before-db.sha256')
+          Write-TreeHash 'C:\msys64\var\log' (Join-Path $evidence 'shared-before-log.sha256')
+          "evidence=$evidence" >> $env:GITHUB_OUTPUT
+
+      - name: Download exact admitted package inputs
+        id: inputs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lock = Get-Content 'source\mingw-w64-cross-msysarm64-gettext\dependency-lock.json' -Raw |
+            ConvertFrom-Json
+          $hostLock = Get-Content 'source\mingw-w64-cross-msysarm64-gettext\host-build-lock.json' -Raw |
+            ConvertFrom-Json
+          $inputRoot = Join-Path $env:RUNNER_TEMP 'admitted-inputs'
+          $hostRoot = Join-Path $inputRoot 'host'
+          $toolchainRoot = Join-Path $inputRoot 'toolchain'
+          $runtimeRoot = Join-Path $inputRoot 'runtime'
+          $libiconvRoot = Join-Path $inputRoot 'libiconv'
+          New-Item -ItemType Directory -Force `
+            -Path $hostRoot, $toolchainRoot, $runtimeRoot, $libiconvRoot |
+            Out-Null
+
+          function Receive-Asset($Asset, [string] $Destination) {
+            if (-not $Asset.size -or $Asset.sha256 -notmatch '^[0-9a-f]{64}$') {
+              throw "Incomplete admitted asset: $($Asset.name)"
+            }
+            $url = "https://github.com/crutkas/MSYS2-packages/releases/download/$($Asset.tag)/$($Asset.name)"
+            $path = Join-Path $Destination $Asset.name
+            Invoke-WebRequest -Uri $url -OutFile $path
+            if ((Get-Item $path).Length -ne $Asset.size) {
+              throw "Size mismatch for $($Asset.name)"
+            }
+            $actual = (Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $Asset.sha256) {
+              throw "SHA-256 mismatch for $($Asset.name): $actual"
+            }
+          }
+
+          function Receive-UrlAsset($Asset, [string] $Destination) {
+            if ($Asset.size -isnot [long] -and $Asset.size -isnot [int]) {
+              throw "Invalid immutable asset size: $($Asset.filename)"
+            }
+            if ($Asset.size -le 0 -or $Asset.sha256 -notmatch '^[0-9a-f]{64}$') {
+              throw "Incomplete immutable asset: $($Asset.filename)"
+            }
+            $path = Join-Path $Destination $Asset.filename
+            Invoke-WebRequest -Uri $Asset.url -OutFile $path
+            if ((Get-Item $path).Length -ne $Asset.size) {
+              throw "Size mismatch for $($Asset.filename)"
+            }
+            $actual = (Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $Asset.sha256) {
+              throw "SHA-256 mismatch for $($Asset.filename): $actual"
+            }
+          }
+
+          foreach ($asset in $hostLock.assets) {
+            Receive-UrlAsset $asset $hostRoot
+          }
+          foreach ($asset in $lock.admitted_assets) {
+            $destination = if ($asset.tag -eq 'msysarm64-runtime-pr10-a527-20260824') {
+              $runtimeRoot
+            } else {
+              $toolchainRoot
+            }
+            Receive-Asset $asset $destination
+          }
+          foreach ($asset in $lock.target_dependency_assets) {
+            if ($asset.admitted -isnot [bool] -or -not $asset.admitted) {
+              throw "Refusing provisional dependency bytes for $($asset.package)"
+            }
+            Receive-Asset ([pscustomobject]@{
+                tag = $asset.release_tag
+                name = $asset.asset_name
+                size = $asset.size
+                sha256 = $asset.sha256
+              }) $libiconvRoot
+          }
+          $admissionHash = & python `
+            'source\mingw-w64-cross-msysarm64-gettext\validate_contract.py' `
+            --print-libiconv-admission
+          if ($LASTEXITCODE -ne 0 -or $admissionHash -notmatch '^[0-9a-f]{64}$') {
+            throw 'Unable to derive the admitted libiconv identity'
+          }
+          "root=$inputRoot" >> $env:GITHUB_OUTPUT
+          "host=$hostRoot" >> $env:GITHUB_OUTPUT
+          "toolchain=$toolchainRoot" >> $env:GITHUB_OUTPUT
+          "runtime=$runtimeRoot" >> $env:GITHUB_OUTPUT
+          "libiconv=$libiconvRoot" >> $env:GITHUB_OUTPUT
+          "libiconv_admission_sha256=$admissionHash" >> $env:GITHUB_OUTPUT
+
+      - name: Install complete immutable x64 host build closure
+        shell: pwsh
+        run: |
+          $pacman = '${{ steps.private.outputs.pacman }}'
+          $args = @(
+            '--root', '${{ steps.private.outputs.root }}',
+            '--dbpath', '${{ steps.pacman.outputs.db }}',
+            '--cachedir', '${{ steps.pacman.outputs.cache }}',
+            '--logfile', '${{ steps.pacman.outputs.log }}',
+            '--config', '${{ steps.pacman.outputs.config }}',
+            '--hookdir', '${{ steps.pacman.outputs.hooks }}',
+            '--gpgdir', '${{ steps.pacman.outputs.gpg }}',
+            '--noconfirm', '-U'
+          )
+          $packages = Get-ChildItem '${{ steps.inputs.outputs.host }}' `
+            -File -Filter '*.pkg.tar.zst' |
+            Sort-Object Name |
+            Select-Object -ExpandProperty FullName
+          $env:MSYS = 'winsymlinks:sys'
+          & $pacman @args @packages
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Private x64 host build closure transaction failed'
+          }
+
+      - name: Import exact gettext signer into private build keyring
+        shell: pwsh
+        run: |
+          $fingerprint = '9001B85AF9E1B83DF1BDA942F5BE8B267C6A406D'
+          $keyPath = Join-Path $env:RUNNER_TEMP 'gettext-final-signing-key.asc'
+          Invoke-WebRequest `
+            -Uri "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x$fingerprint" `
+            -OutFile $keyPath
+          $bash = '${{ steps.private.outputs.bash }}'
+          $env:GETTEXT_SIGNING_KEY_WINDOWS = $keyPath
+          $env:GETTEXT_SOURCE_GNUPGHOME = '/etc/gettext-source-gnupg'
+          $script = @'
+          set -euo pipefail
+          key="$(cygpath -u "${GETTEXT_SIGNING_KEY_WINDOWS}")"
+          install -d -m 700 "${GETTEXT_SOURCE_GNUPGHOME}"
+          gpg --homedir "${GETTEXT_SOURCE_GNUPGHOME}" --batch \
+            --show-keys --with-colons "${key}" |
+            grep -F 'fpr:::::::::9001B85AF9E1B83DF1BDA942F5BE8B267C6A406D:'
+          gpg --homedir "${GETTEXT_SOURCE_GNUPGHOME}" --batch --import "${key}"
+          gpg --homedir "${GETTEXT_SOURCE_GNUPGHOME}" --batch \
+            --list-keys --with-colons |
+            grep -F 'fpr:::::::::9001B85AF9E1B83DF1BDA942F5BE8B267C6A406D:'
+          '@
+          & $bash -lc $script
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Private gettext signer keyring initialization failed'
+          }
+
+      - name: Verify libiconv split metadata and owned paths independently
+        shell: pwsh
+        run: |
+          $lock = Get-Content 'source\mingw-w64-cross-msysarm64-gettext\dependency-lock.json' -Raw |
+            ConvertFrom-Json
+          $bsdtar = Join-Path '${{ steps.private.outputs.root }}' 'usr\bin\bsdtar.exe'
+          $records = @($lock.target_dependency_assets)
+          foreach ($record in $records) {
+            $archive = Join-Path '${{ steps.inputs.outputs.libiconv }}' $record.asset_name
+            $listing = @(& $bsdtar -tf $archive)
+            if ($LASTEXITCODE -ne 0) {
+              throw "Unable to list $($record.asset_name)"
+            }
+            $pkginfo = @(& $bsdtar -xOf $archive .PKGINFO)
+            if ($LASTEXITCODE -ne 0) {
+              throw "Unable to read metadata from $($record.asset_name)"
+            }
+            $actualPackageNames = @(
+              $pkginfo |
+                Where-Object { $_ -match '^pkgname = ' } |
+                ForEach-Object { $_ -replace '^pkgname = ', '' }
+            )
+            $actualPackageVersions = @(
+              $pkginfo |
+                Where-Object { $_ -match '^pkgver = ' } |
+                ForEach-Object { $_ -replace '^pkgver = ', '' }
+            )
+            if ($actualPackageNames.Count -ne 1 -or
+                $actualPackageNames[0] -ne $record.package -or
+                $actualPackageVersions.Count -ne 1 -or
+                $actualPackageVersions[0] -ne $record.required_version) {
+              throw "Package identity mismatch in $($record.asset_name)"
+            }
+            $actualProvides = @(
+              $pkginfo |
+                Where-Object { $_ -match '^provides = ' } |
+                ForEach-Object { $_ -replace '^provides = ', '' } |
+                Sort-Object -Unique
+            )
+            $expectedProvides = @($record.provides | Sort-Object -Unique)
+            if (Compare-Object $expectedProvides $actualProvides) {
+              throw "Exact provides mismatch in $($record.asset_name)"
+            }
+            $actualTargetPaths = @(
+              $listing |
+                ForEach-Object { $_ -replace '^\./', '' } |
+                Where-Object {
+                  $_ -like 'opt/aarch64-pc-msys/usr/*' -and
+                  -not $_.EndsWith('/')
+                } |
+                ForEach-Object { "/$_" } |
+                Sort-Object -Unique
+            )
+            $expectedTargetPaths = @($record.owned_paths | Sort-Object -Unique)
+            $pathDifference = Compare-Object $expectedTargetPaths $actualTargetPaths
+            if ($pathDifference) {
+              $details = $pathDifference | Out-String
+              throw "Exact target ownership mismatch in $($record.asset_name):`n$details"
+            }
+          }
+
+      - name: Install exact target toolchain and dependency graph
+        shell: pwsh
+        run: |
+          $pacman = '${{ steps.private.outputs.pacman }}'
+          $args = @(
+            '--root', '${{ steps.private.outputs.root }}',
+            '--dbpath', '${{ steps.pacman.outputs.db }}',
+            '--cachedir', '${{ steps.pacman.outputs.cache }}',
+            '--logfile', '${{ steps.pacman.outputs.log }}',
+            '--config', '${{ steps.pacman.outputs.config }}',
+            '--hookdir', '${{ steps.pacman.outputs.hooks }}',
+            '--gpgdir', '${{ steps.pacman.outputs.gpg }}',
+            '--noconfirm', '-U'
+          )
+          $packages = @(
+            Get-ChildItem '${{ steps.inputs.outputs.toolchain }}' -File -Filter '*.pkg.tar.zst'
+            Get-ChildItem '${{ steps.inputs.outputs.runtime }}' -File -Filter '*.pkg.tar.zst'
+            Get-ChildItem '${{ steps.inputs.outputs.libiconv }}' -File -Filter '*.pkg.tar.zst'
+          ) | Sort-Object Name | Select-Object -ExpandProperty FullName
+          $env:MSYS = 'winsymlinks:sys'
+          & $pacman @args @packages
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Private target toolchain transaction failed'
+          }
+
+      - name: Build twice for reproducibility
+        id: build
+        shell: pwsh
+        env:
+          PRIVATE_MSYS_ROOT_WINDOWS: ${{ steps.private.outputs.root }}
+          LIBICONV_ADMISSION_SHA256: ${{ steps.inputs.outputs.libiconv_admission_sha256 }}
+          GETTEXT_SOURCE_GNUPGHOME: /etc/gettext-source-gnupg
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bash = '${{ steps.private.outputs.bash }}'
+          $sourcePackage = (Resolve-Path 'source\mingw-w64-cross-msysarm64-gettext').Path
+          $buildRoot = Join-Path '${{ steps.private.outputs.root }}' 'var\tmp\gettext-builds'
+          $artifactRoot = Join-Path $env:RUNNER_TEMP 'gettext-artifacts'
+          New-Item -ItemType Directory -Force -Path $buildRoot, $artifactRoot | Out-Null
+
+          foreach ($pass in @('one', 'two')) {
+            $work = Join-Path $buildRoot $pass
+            Copy-Item $sourcePackage $work -Recurse
+            $env:GETTEXT_BUILD_WINDOWS = $work
+            $env:PACMAN = '/opt/private-bin/pacman'
+            $env:PACMAN_DBPATH = '/var/lib/pacman'
+            $env:PACMAN_CACHEDIR = '/var/cache/pacman/pkg'
+            $env:PACMAN_LOGFILE = '/var/log/gettext-pacman.log'
+            $env:PACMAN_CONFIG = '/etc/gettext-pacman.conf'
+            $env:PACMAN_HOOKDIR = '/etc/pacman.d/gettext-hooks'
+            $env:PACMAN_GPGDIR = '/etc/pacman.d/gettext-gnupg'
+            $env:MSYSTEM = 'MSYS'
+            $script = @'
+          set -euo pipefail
+          export PATH=/usr/bin:/bin:/opt/bin
+          export CARCH=x86_64
+          export GETTEXT_FINAL_BUILD_ADMITTED=1
+          export GNUPGHOME="${GETTEXT_SOURCE_GNUPGHOME}"
+          build_dir="$(cygpath -u "${GETTEXT_BUILD_WINDOWS}")"
+          cd "${build_dir}"
+          makepkg --cleanbuild --noconfirm
+          '@
+            & $bash -lc $script
+            if ($LASTEXITCODE -ne 0) {
+              throw "gettext build pass $pass failed"
+            }
+            $destination = Join-Path $artifactRoot $pass
+            New-Item -ItemType Directory -Path $destination | Out-Null
+            Copy-Item (Join-Path $work '*.pkg.tar.zst') $destination
+          }
+          "root=$artifactRoot" >> $env:GITHUB_OUTPUT
+          "build_one=$(Join-Path $buildRoot 'one')" >> $env:GITHUB_OUTPUT
+
+      - name: Audit reproducibility provenance and path-leak gates
+        shell: pwsh
+        run: |
+          $root = '${{ steps.build.outputs.root }}'
+          $one = Get-ChildItem (Join-Path $root 'one') -File | Sort-Object Name
+          $two = Get-ChildItem (Join-Path $root 'two') -File | Sort-Object Name
+          if ($one.Count -ne 5 -or $two.Count -ne 5) {
+            throw "Expected two sets of five packages: $($one.Count), $($two.Count)"
+          }
+          for ($index = 0; $index -lt $one.Count; $index++) {
+            if ($one[$index].Name -ne $two[$index].Name) {
+              throw 'Reproducibility package names differ'
+            }
+            $oneHash = (Get-FileHash $one[$index].FullName -Algorithm SHA256).Hash
+            $twoHash = (Get-FileHash $two[$index].FullName -Algorithm SHA256).Hash
+            if ($oneHash -ne $twoHash) {
+              throw "Reproducibility mismatch for $($one[$index].Name)"
+            }
+          }
+          $build = '${{ steps.build.outputs.build_one }}'
+          $leaks = Get-ChildItem (Join-Path $build 'src\dest') -Recurse -File |
+            Select-String -SimpleMatch -Pattern @(
+              $build,
+              'C:\msys64',
+              '/mingw64',
+              '/ucrt64',
+              'cygwin1.dll'
+            )
+          if ($leaks) {
+            throw "path-leak gate failed: $($leaks | Out-String)"
+          }
+
+      - name: Run AA64 scanner over every unstripped PE
+        shell: pwsh
+        run: |
+          $build = '${{ steps.build.outputs.build_one }}'
+          $scanner = Join-Path $build 'src\check-aarch64-pseudo-relocs.ps1'
+          $actual = (Get-FileHash $scanner -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9') {
+            throw "Scanner hash mismatch: $actual"
+          }
+          $toolRoot = Join-Path '${{ steps.private.outputs.root }}' 'opt\bin'
+          $nm = Join-Path $toolRoot 'aarch64-pc-cygwin-nm.exe'
+          $objdump = Join-Path $toolRoot 'aarch64-pc-cygwin-objdump.exe'
+          $images = @(
+            Get-ChildItem (Join-Path $build 'src\dest\usr'), (Join-Path $build 'src\gettext-check') `
+              -Recurse -File |
+              Where-Object { $_.Extension -in @('.dll', '.exe') } |
+              Sort-Object FullName
+          )
+          if ($images.Count -lt 12) {
+            throw "Unexpected PE count: $($images.Count)"
+          }
+          $report = Join-Path $build 'src\gettext-report\pseudo-reloc-audit.txt'
+          foreach ($image in $images) {
+            $json = "$report.$($image.Name).json"
+            & $scanner -PePath $image.FullName -OutputPath $json -Nm $nm -Objdump $objdump
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path $json)) {
+              throw "Pseudo-reloc scan failed: $($image.FullName)"
+            }
+          }
+          "scanner_sha256=$actual`nimage_count=$($images.Count)" |
+            Set-Content $report
+
+      - name: Audit full private package lifecycle
+        shell: pwsh
+        env:
+          PRIVATE_MSYS_ROOT_WINDOWS: ${{ steps.private.outputs.root }}
+        run: |
+          $bash = '${{ steps.private.outputs.bash }}'
+          $env:LIFECYCLE_SCRIPT_WINDOWS = (Resolve-Path 'source\mingw-w64-cross-msysarm64-gettext\validate-package-lifecycle.sh').Path
+          $env:RUNTIME_INPUT_WINDOWS = '${{ steps.inputs.outputs.runtime }}'
+          $env:LIBINTL_INPUT_WINDOWS = '${{ steps.inputs.outputs.libiconv }}'
+          $env:PACKAGE_INPUT_WINDOWS = (Join-Path '${{ steps.build.outputs.root }}' 'one')
+          $env:EVIDENCE_WINDOWS = Join-Path $env:RUNNER_TEMP 'gettext-lifecycle-evidence'
+          $env:SHARED_ROOT_WINDOWS = 'C:\msys64'
+          $script = @'
+          set -euo pipefail
+          validator="$(cygpath -u "${LIFECYCLE_SCRIPT_WINDOWS}")"
+          runtime="$(cygpath -u "${RUNTIME_INPUT_WINDOWS}")"
+          libiconv="$(cygpath -u "${LIBINTL_INPUT_WINDOWS}")"
+          packages="$(cygpath -u "${PACKAGE_INPUT_WINDOWS}")"
+          evidence="$(cygpath -u "${EVIDENCE_WINDOWS}")"
+          shared="$(cygpath -u "${SHARED_ROOT_WINDOWS}")"
+          chmod +x "${validator}"
+          "${validator}" \
+            /usr/bin/pacman \
+            "/var/tmp/gettext-lifecycle-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            "${runtime}" \
+            "${libiconv}" \
+            "${packages}" \
+            "${evidence}" \
+            "${shared}"
+          '@
+          & $bash -lc $script
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Private package lifecycle failed'
+          }
+
+      - name: Verify shared sentinels are unchanged
+        shell: pwsh
+        run: |
+          $evidence = '${{ steps.sentinel.outputs.evidence }}'
+          function Write-TreeHash([string] $Path, [string] $Output) {
+            $rows = if (Test-Path $Path) {
+              Get-ChildItem $Path -Recurse -File |
+                Sort-Object FullName |
+                ForEach-Object {
+                  "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $($_.FullName)"
+                }
+            } else { @() }
+            $rows | Set-Content $Output
+          }
+          Write-TreeHash 'C:\msys64\var\lib\pacman\local' (Join-Path $evidence 'shared-after-db.sha256')
+          Write-TreeHash 'C:\msys64\var\log' (Join-Path $evidence 'shared-after-log.sha256')
+          foreach ($name in @('db', 'log')) {
+            $before = Get-Content (Join-Path $evidence "shared-before-$name.sha256") -Raw
+            $after = Get-Content (Join-Path $evidence "shared-after-$name.sha256") -Raw
+            if ($before -cne $after) {
+              throw "Shared MSYS2 $name sentinel changed"
+            }
+          }
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: MSYS-arm64-gettext-packages
+          path: ${{ steps.build.outputs.root }}/one/*.pkg.tar.zst
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: MSYS-arm64-gettext-smoke
+          path: |
+            ${{ steps.build.outputs.build_one }}/src/gettext-check/*-consumer.exe
+            ${{ steps.build.outputs.build_one }}/src/gettext-check/locale/**
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: MSYS-arm64-gettext-evidence
+          path: |
+            ${{ steps.build.outputs.build_one }}/src/gettext-report/**
+            ${{ runner.temp }}/gettext-lifecycle-evidence/**
+            ${{ steps.sentinel.outputs.evidence }}/**
+          if-no-files-found: error
+
+  native-smoke:
+    needs: [contract, final-build]
+    if: >-
+      ${{
+        needs.contract.outputs.final_build_admitted == 'true' &&
+        needs.final-build.result == 'success' &&
+        github.repository == 'crutkas/MSYS2-packages'
+      }}
+    runs-on: windows-11-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: MSYS-arm64-gettext-packages
+          path: packages
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: MSYS-arm64-gettext-smoke
+          path: smoke
+
+      - name: Download exact native runtime and libiconv inputs
+        shell: pwsh
+        run: |
+          $lock = Get-Content 'mingw-w64-cross-msysarm64-gettext\dependency-lock.json' -Raw |
+            ConvertFrom-Json
+          foreach ($asset in @(
+              $lock.admitted_assets |
+                Where-Object { $_.name -match 'runtime-3|libgcc|gcc-libs' }
+              $lock.target_dependency_assets
+            )) {
+            if ($asset.PSObject.Properties.Name -contains 'release_tag') {
+              if ($asset.admitted -isnot [bool] -or -not $asset.admitted) {
+                throw "Native dependency is not admitted: $($asset.package)"
+              }
+              $tag = $asset.release_tag
+              $name = $asset.asset_name
+            } else {
+              $tag = $asset.tag
+              $name = $asset.name
+            }
+            $path = Join-Path 'packages' $name
+            Invoke-WebRequest `
+              -Uri "https://github.com/crutkas/MSYS2-packages/releases/download/$tag/$name" `
+              -OutFile $path
+            if ((Get-Item $path).Length -ne $asset.size) {
+              throw "Native input size mismatch: $name"
+            }
+            $actual = (Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($actual -ne $asset.sha256) {
+              throw "Native input hash mismatch: $name"
+            }
+          }
+
+      - name: Extract target package graph without pacman
+        shell: pwsh
+        run: |
+          $lock = Get-Content 'mingw-w64-cross-msysarm64-gettext\dependency-lock.json' -Raw |
+            ConvertFrom-Json
+          $fullRoot = Join-Path $env:RUNNER_TEMP 'gettext-native-full-root'
+          $runtimeRoot = Join-Path $env:RUNNER_TEMP 'gettext-native-runtime-root'
+          New-Item -ItemType Directory -Path $fullRoot, $runtimeRoot | Out-Null
+          Get-ChildItem packages -File -Filter '*.pkg.tar.zst' |
+            Sort-Object Name |
+            ForEach-Object {
+              tar.exe -xf $_.FullName -C $fullRoot
+              if ($LASTEXITCODE -ne 0) {
+                throw "Unable to extract $($_.Name)"
+              }
+            }
+          $runtimeSupport = $lock.admitted_assets |
+            Where-Object {
+              $_.name -eq 'mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst'
+            } |
+            Select-Object -ExpandProperty name -First 1
+          $libiconvRuntime = $lock.target_dependency_assets |
+            Where-Object package -eq 'mingw-w64-cross-msysarm64-libiconv' |
+            Select-Object -ExpandProperty asset_name -First 1
+          $runtimeArchives = @(
+            (Join-Path 'packages' $runtimeSupport)
+            (Join-Path 'packages' $libiconvRuntime)
+            (Join-Path 'packages' 'mingw-w64-cross-msysarm64-libintl-0.22.5-1-x86_64.pkg.tar.zst')
+          )
+          foreach ($archive in $runtimeArchives) {
+            if (-not (Test-Path $archive -PathType Leaf)) {
+              throw "Runtime-only archive is absent: $archive"
+            }
+            tar.exe -xf $archive -C $runtimeRoot
+            if ($LASTEXITCODE -ne 0) {
+              throw "Unable to extract runtime-only archive $archive"
+            }
+          }
+          "NATIVE_FULL_TARGET_ROOT=$fullRoot\opt\aarch64-pc-msys\usr" >> $env:GITHUB_ENV
+          "NATIVE_RUNTIME_TARGET_ROOT=$runtimeRoot\opt\aarch64-pc-msys\usr" >> $env:GITHUB_ENV
+
+      - name: Run native locale domain thread and process-module smoke
+        shell: pwsh
+        run: |
+          & 'mingw-w64-cross-msysarm64-gettext\native-smoke.ps1' `
+            -RuntimeTargetRoot $env:NATIVE_RUNTIME_TARGET_ROOT `
+            -FullTargetRoot $env:NATIVE_FULL_TARGET_ROOT `
+            -SmokeRoot 'smoke' `
+            -ReportPath 'native-smoke.txt'
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: MSYS-arm64-gettext-native-smoke
+          path: native-smoke.txt
+          if-no-files-found: error
