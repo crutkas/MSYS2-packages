@@ -77,8 +77,14 @@ jobs:
           test "$(stat -c '%s' "${RUNNER_TEMP}/gettext-0.22.5.tar.gz.sig")" = 833
           test "$(sha256sum "${RUNNER_TEMP}/gettext-0.22.5.tar.gz.sig" | cut -d ' ' -f 1)" = \
             5829b36cdf582df81ca2ec0919b9a671f5cab7bb09adb23c96ada32e9b20168f
-          gpg --batch --keyserver hkps://keys.openpgp.org \
-            --recv-keys 9001B85AF9E1B83DF1BDA942F5BE8B267C6A406D
+          curl --fail --location --retry 3 \
+            --output "${RUNNER_TEMP}/gettext-signing-key.asc" \
+            'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x9001B85AF9E1B83DF1BDA942F5BE8B267C6A406D'
+          gpg --batch --show-keys --with-colons \
+            "${RUNNER_TEMP}/gettext-signing-key.asc" \
+            | grep -F \
+              'fpr:::::::::9001B85AF9E1B83DF1BDA942F5BE8B267C6A406D:'
+          gpg --batch --import "${RUNNER_TEMP}/gettext-signing-key.asc"
           gpg --batch --status-fd=1 \
             --verify "${RUNNER_TEMP}/gettext-0.22.5.tar.gz.sig" \
               "${RUNNER_TEMP}/gettext-0.22.5.tar.gz" \
@@ -156,8 +162,16 @@ jobs:
           $gnupg = Join-Path $env:RUNNER_TEMP 'base-gnupg'
           New-Item -ItemType Directory -Path $gnupg | Out-Null
           $gpg = 'C:\Program Files\Git\usr\bin\gpg.exe'
-          & $gpg --homedir $gnupg --batch --keyserver hkps://keys.openpgp.org `
-            --recv-keys $lock.private_host_base.signing_key
+          $keyPath = Join-Path $env:RUNNER_TEMP 'base-signing-key.asc'
+          Invoke-WebRequest `
+            -Uri "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x$($lock.private_host_base.signing_key)" `
+            -OutFile $keyPath
+          $keyInfo = & $gpg --homedir $gnupg --batch --show-keys --with-colons $keyPath
+          if (($keyInfo -join "`n") -notmatch
+              "fpr:::::::::$($lock.private_host_base.signing_key):") {
+            throw 'Private-base public key fingerprint mismatch'
+          }
+          & $gpg --homedir $gnupg --batch --import $keyPath
           if ($LASTEXITCODE -ne 0) {
             throw 'Unable to retrieve pinned private-base signing key'
           }
