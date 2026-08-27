@@ -68,9 +68,6 @@ build() {
   local perl_ld=g++
   local perl_gcc_version=
   if [[ ${CARCH} == aarch64 ]]; then
-    perl -0pi -e 's{\.\/try\b(?!\.exe)}{./try.exe}g' Configure
-    perl -0pi -e 's{ -o try(?=[ \t])}{ -o try.exe}g' Configure
-    perl -0pi -e 's{&& \./try\.exe; then}{; then}g' Configure
     local perl_arm_optflags='-O2 -pipe -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fno-strict-aliasing'
     export CFLAGS="${perl_arm_optflags}"
     export CXXFLAGS="${perl_arm_optflags}"
@@ -116,7 +113,26 @@ build() {
     perl_config_ld="${probe_dir}/g++"
     cat > "${perl_config_cc}" <<EOF
 #!/bin/sh
-exec "${perl_cc}" "\$@"
+out=
+prev=
+for arg in "\$@"; do
+  if [ "\$prev" = "-o" ]; then
+    out="\$arg"
+    break
+  fi
+  prev="\$arg"
+done
+"${perl_cc}" "\$@"
+status=\$?
+if [ \$status -eq 0 ] && [ -n "\$out" ]; then
+  case "\$out" in
+    try|try.exe|try.exe.exe)
+      cp -f "\$out" try 2>/dev/null || true
+      cp -f "\$out" try.exe 2>/dev/null || true
+      ;;
+  esac
+fi
+exit \$status
 EOF
     cat > "${perl_config_ld}" <<EOF
 #!/bin/sh
