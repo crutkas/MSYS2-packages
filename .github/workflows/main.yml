@@ -225,7 +225,9 @@ jobs:
           MSYS: winsymlinks:sys
         run: |
           $input_dir = Join-Path $env:RUNNER_TEMP 'msysarm64-gcc-inputs'
+          # The published support package was built against the newer stage1 bootstrap.
           & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -U `
+            --assume-installed mingw-w64-cross-cygwinarm64-gcc-stage1=15.0.1dev-2 `
             "$input_dir\mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst" `
             "$input_dir\mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst"
 
