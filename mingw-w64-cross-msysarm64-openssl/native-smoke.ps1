@@ -129,8 +129,12 @@ foreach ($dll in @($legacy, $crypto)) {
     }
 }
 $legacySymbols = @(& $nm -an $legacy 2>&1)
-$legacySymbolText = $legacySymbols -join [Environment]::NewLine
-if ($LASTEXITCODE -ne 0 -or $legacySymbolText -notmatch '\sOSSL_provider_init$') {
+$legacySymbols | Set-Content -Encoding utf8 `
+    (Join-Path $structureReports 'legacy.dll.symbols.txt')
+if ($LASTEXITCODE -ne 0 -or
+    @($legacySymbols | Where-Object {
+        $_ -match '\sOSSL_provider_init\s*$'
+    }).Count -ne 1) {
     throw 'legacy.dll does not export OSSL_provider_init.'
 }
 
