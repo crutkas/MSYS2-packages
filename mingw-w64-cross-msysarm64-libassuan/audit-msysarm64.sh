@@ -244,14 +244,25 @@ read -r -a pkgconf_dynamic_args <<< "${pkgconf_flags}"
 read -r -a pkgconf_static_args <<< "${pkgconf_static_flags}"
 read -r -a config_cflags_args <<< "${config_cflags}"
 read -r -a config_libs_args <<< "${config_libs}"
+consumer_source_root=$(cd "$(dirname "${context_source}")" && pwd)
+consumer_debug_root="/usr/src/debug/mingw-w64-cross-msysarm64-libassuan-consumers"
+consumer_flags=(
+  -O2
+  -g0
+  "-ffile-prefix-map=${consumer_source_root}=${consumer_debug_root}"
+  "-fdebug-prefix-map=${consumer_source_root}=${consumer_debug_root}"
+  "-fmacro-prefix-map=${consumer_source_root}=${consumer_debug_root}"
+)
 "${cc}" -o "${report}/smoke/context-dynamic.exe" \
-  "${context_source}" "${pkgconf_dynamic_args[@]}"
+  "${consumer_flags[@]}" "${context_source}" "${pkgconf_dynamic_args[@]}"
 "${cc}" -o "${report}/smoke/pipe-dynamic.exe" \
-  "${pipe_source}" "${pkgconf_dynamic_args[@]}"
+  "${consumer_flags[@]}" "${pipe_source}" "${pkgconf_dynamic_args[@]}"
 "${cc}" -Wl,-Bstatic -o "${report}/smoke/context-static.exe" \
-  "${context_source}" "${pkgconf_static_args[@]}" -Wl,-Bdynamic
+  "${consumer_flags[@]}" "${context_source}" "${pkgconf_static_args[@]}" \
+  -Wl,-Bdynamic
 "${cc}" -o "${report}/smoke/context-config.exe" \
-  "${context_source}" "${config_cflags_args[@]}" "${config_libs_args[@]}"
+  "${consumer_flags[@]}" "${context_source}" "${config_cflags_args[@]}" \
+  "${config_libs_args[@]}"
 
 for smoke in "${report}/smoke/"*.exe; do
   audit_pe "${smoke}"
