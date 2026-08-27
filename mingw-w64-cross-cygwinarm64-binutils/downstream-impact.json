@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "policy": "Every provisional AArch64 target object, archive, DLL, or executable linked with binutils 2.44.50-1 must be rebuilt with the admitted fixed producer. Immutable a527 runtime/support and the published full GCC release remain validation inputs and are not republished by this lane.",
+  "rebuild_required": [
+    {"branch": "crutkas-native-arm64-ncurses", "pull_request": 11},
+    {"branch": "crutkas-native-arm64-npth", "pull_request": 12},
+    {"branch": "crutkas-native-arm64-readline", "pull_request": 14},
+    {"branch": "crutkas-arm64-msys-perl", "pull_request": 15},
+    {"branch": "crutkas-arm64-libgpg-error", "pull_request": 16},
+    {"branch": "crutkas-native-arm64-bash", "pull_request": 17},
+    {"branch": "crutkas-arm64-msys-libxcrypt", "pull_request": null},
+    {"branch": "crutkas-arm64-msys-zlib", "pull_request": null},
+    {"branch": "crutkas-arm64-msys-libiconv", "pull_request": null},
+    {"branch": "crutkas-arm64-msys-libuuid", "pull_request": null},
+    {"branch": "crutkas-arm64-msys-expat", "pull_request": null},
+    {"branch": "crutkas-arm64-msys-openssl", "pull_request": null},
+    {"branch": "crutkas-arm64-msys-sqlite", "pull_request": null}
+  ],
+  "rebuild_if_artifacts_exist": [
+    "crutkas-apr-arm64-prereqs",
+    "crutkas-arm64-subversion-prereqs",
+    "crutkas-native-arm64-subversion"
+  ],
+  "block_until_candidate_admitted": [
+    "crutkas-arm64-msys-libgcrypt",
+    "crutkas-arm64-msys-libassuan",
+    "crutkas-arm64-msys-libksba",
+    "crutkas-arm64-msys-pinentry"
+  ],
+  "rerun_validation_only": [
+    {
+      "branch": "crutkas-native-arm-gcc-smoke",
+      "pull_request": 18,
+      "reason": "This branch consumes packages and records native evidence; it does not produce a downstream package."
+    }
+  ],
+  "immutable_exceptions": [
+    "mingw-w64-cross-msysarm64-gcc 15.0.1dev-1",
+    "mingw-w64-cross-msysarm64-gcc-libs 15.0.1dev-1",
+    "mingw-w64-cross-msysarm64-runtime 3.6.10.r0.ga527ace21-1",
+    "mingw-w64-cross-msysarm64-runtime-devel 3.6.10.r0.ga527ace21-1",
+    "mingw-w64-cross-msysarm64-headers 3.6.10.r0.ga527ace21-1",
+    "mingw-w64-cross-msysarm64-sysroot 3.6.10.r0.ga527ace21-1",
+    "mingw-w64-cross-msysarm64-libstdc++-headers 15.0.1dev-1",
+    "mingw-w64-cross-msysarm64-w32api-runtime 14.0.0.r0.g9b3dd0125-1"
+  ]
+}

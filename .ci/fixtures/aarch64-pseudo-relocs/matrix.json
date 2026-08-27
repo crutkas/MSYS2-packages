@@ -1,0 +1,37 @@
+[
+  {
+    "binary": "basic-c.exe",
+    "sha256": "cd55d4f983143cd78e4c2e5bbc6ab2a629e4f54bdb3f643c5a81168cdb5e05d2",
+    "exit_code": 0,
+    "result": "pass",
+    "flags": []
+  },
+  {
+    "binary": "cxx-runtime.exe",
+    "sha256": "0f31da67d83c3ca90e67cac78a950df17777c0ae6f21718e4467a74499fdfa6e",
+    "exit_code": 1,
+    "result": "fail",
+    "flags": [64, 21, 12, 21, 12]
+  },
+  {
+    "binary": "lto-bridge.exe",
+    "sha256": "ee62d8ff9a1a74422ca511cc0db3f88bfd72c0d6ebc70c191be6735101a59925",
+    "exit_code": 0,
+    "result": "pass",
+    "flags": []
+  },
+  {
+    "binary": "process-runtime.exe",
+    "sha256": "f1b08a783b0089b74dc402006f4fa4a11a6e99e9ea75c24b8f54f39fa64ef488",
+    "exit_code": 0,
+    "result": "pass",
+    "flags": []
+  },
+  {
+    "binary": "thread-runtime.exe",
+    "sha256": "3ce7347b32cd9696e007b42b507f3f7b1eae72ffaf78c85a7d60b4ed0ca25b8e",
+    "exit_code": 1,
+    "result": "fail",
+    "flags": [21, 12, 64, 64]
+  }
+]

@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "evidence_seal_sha256": "bc2403d4054eb1880f69e5f241610cc6bbbdffd262f217136beffa04aa6b7de1",
+  "result": "expected-failure",
+  "publication": "forbidden",
+  "package": "mingw-w64-cross-cygwinarm64-binutils 2.44.50-1",
+  "probe": "pseudo-reloc-cxx.exe",
+  "table_format": "v2",
+  "table_bytes": 72,
+  "flags": [64, 21, 12, 21, 12],
+  "policy_violations": [12, 21],
+  "tool_identities": [
+    {
+      "path": "C:\\msys64\\opt\\bin\\aarch64-pc-cygwin-ld.exe",
+      "size": 1888164,
+      "sha256": "06f7e3afa44495a230eab18c6fa5aa3a0111376f48467d872e5d50682b4f0b94"
+    },
+    {
+      "path": "C:\\msys64\\opt\\bin\\aarch64-pc-cygwin-objdump.exe",
+      "size": 2889747,
+      "sha256": "d003bbb9960d1fd0fd9f8a3f80c30ca09ff616450f609c683fa49045a56f476c"
+    },
+    {
+      "path": "C:\\msys64\\opt\\bin\\aarch64-pc-msys-g++.exe",
+      "size": 3291575,
+      "sha256": "27f793e70ddc3c18b9118e8ddf8383593af1dcf259d8092bc2476948174fc957"
+    }
+  ]
+}

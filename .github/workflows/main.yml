@@ -10,7 +10,12 @@ on:
 
 jobs:
   build:
-    if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/master'}}
+    if: >-
+      ${{
+        (github.event_name != 'push' || github.ref != 'refs/heads/master') &&
+        github.ref_name != 'crutkas-aarch64-binutils-lane' &&
+        github.head_ref != 'crutkas-aarch64-binutils-lane'
+      }}
     strategy:
       fail-fast: false
       matrix:

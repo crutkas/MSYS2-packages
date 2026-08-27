@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "baseline_evidence": {
+    "seal_sha256": "c49097b3f015907c3be2d50dc54f85bd9e2a5c70f5266f58e71e8bcbf21d8d90",
+    "released_package_alias_count": 0,
+    "unowned_live_alias_count": 14,
+    "unowned_live_aliases": [
+      "addr2line",
+      "ar",
+      "as",
+      "dlltool",
+      "ld",
+      "nm",
+      "objcopy",
+      "objdump",
+      "ranlib",
+      "readelf",
+      "size",
+      "strings",
+      "strip",
+      "windres"
+    ]
+  },
+  "candidate_contract": {
+    "package": "mingw-w64-cross-cygwinarm64-binutils",
+    "alias_count": 20,
+    "real_host_executable_count": 31,
+    "link_type": "relative MSYS system symlink",
+    "alias_prefix": "/opt/bin/aarch64-pc-msys-",
+    "target_prefix": "aarch64-pc-cygwin-",
+    "tools": [
+      "addr2line",
+      "ar",
+      "as",
+      "c++filt",
+      "dlltool",
+      "dllwrap",
+      "elfedit",
+      "gprof",
+      "ld",
+      "ld.bfd",
+      "nm",
+      "objcopy",
+      "objdump",
+      "ranlib",
+      "readelf",
+      "size",
+      "strings",
+      "strip",
+      "windmc",
+      "windres"
+    ],
+    "newly_exposed_siblings": [
+      "c++filt",
+      "dllwrap",
+      "elfedit",
+      "gprof",
+      "ld.bfd",
+      "windmc"
+    ],
+    "new_sibling_reason": "The source package ships all six as public target-prefixed executables; omitting any would preserve ambient-host behavior for that sibling.",
+    "gcc_owned_non_overlapping_bridges": [
+      "/opt/aarch64-pc-msys/bin/ar.exe",
+      "/opt/aarch64-pc-msys/bin/nm.exe",
+      "/opt/aarch64-pc-msys/bin/ranlib.exe"
+    ],
+    "split_package_required": false,
+    "split_package_reason": "The final GCC runtime dependency already names this package, and the aliases are alternate public names for the same payload rather than an independently versioned component."
+  },
+  "lifecycle_proof_required": [
+    "All 20 aliases are absent on a clean root before candidate installation.",
+    "All 20 aliases are relative links to package-owned Cygwin-prefixed siblings.",
+    "pacman -Qo reports the candidate package for every alias.",
+    "Removing the package removes all 20 aliases.",
+    "Installing baseline leaves all 20 aliases absent.",
+    "Reinstalling the candidate restores and owns all 20 aliases.",
+    "No path overlaps GCC-owned /opt/aarch64-pc-msys/bin bridges."
+  ]
+}
