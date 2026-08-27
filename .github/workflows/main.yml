@@ -174,36 +174,57 @@ jobs:
             }
           }
 
-      - name: Install fork-local AArch64 MSYS inputs
+      - name: Install fork-local AArch64 MSYS toolchain
         if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-arm64-msys-perl' || github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-arm64-msys-perl' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
         shell: pwsh
         run: |
           $input_dir = Join-Path $env:RUNNER_TEMP 'msysarm64-inputs'
           $msys2Root = '${{ steps.msys2.outputs.msys2-location }}'
           $pacman = Join-Path $msys2Root 'usr\bin\pacman.exe'
-          & $pacman --noconfirm -U `
-            "$input_dir\mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst" `
-            "$input_dir\mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst" `
-            "$input_dir\mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst" `
-            "$input_dir\mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst" `
-            "$input_dir\mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst" `
-            "$input_dir\mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-2-x86_64.pkg.tar.zst" `
-            "$input_dir\mingw-w64-cross-cygwinarm64-gcc-libs-stage1-15.0.1dev-2-x86_64.pkg.tar.zst" `
-            "$input_dir\mingw-w64-cross-cygwinarm64-binutils-2.44.50-1-x86_64.pkg.tar.zst" `
-            "$input_dir\mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst" `
-            "$input_dir\mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst"
+          $hostDeps = @('gmp', 'isl', 'libiconv', 'libintl', 'libzstd', 'mpc', 'mpfr', 'zlib')
+          Write-Host "pacman -T host deps: $($hostDeps -join ' ')"
+          $hostMissing = @(& $pacman -T @hostDeps 2>&1)
+          $hostExit = $LASTEXITCODE
+          $hostMissing | ForEach-Object { Write-Host $_ }
+          Write-Host "pacman -T host deps exit: $hostExit"
+          if ($hostMissing -match 'cannot resolve|skip the above package|skipping package') {
+            throw 'unexpected pacman dependency resolution output for host deps'
+          }
+          if ($hostMissing.Count -gt 0) {
+            & $pacman --noconfirm --needed -S @hostMissing
+            $hostInstallExit = $LASTEXITCODE
+            if ($hostInstallExit -ne 0) {
+              throw "pacman -S host deps failed with exit code $hostInstallExit"
+            }
+          }
 
-      - name: Install fork-local AArch64 MSYS GCC
-        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-arm64-msys-perl' || github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-arm64-msys-perl' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
-        shell: pwsh
-        run: |
-          $input_dir = Join-Path $env:RUNNER_TEMP 'msysarm64-inputs'
-          $msys2Root = '${{ steps.msys2.outputs.msys2-location }}'
-          $pacman = Join-Path $msys2Root 'usr\bin\pacman.exe'
-          & $pacman --noconfirm -U `
-            "$input_dir\mingw-w64-cross-cygwinarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst" `
-            "$input_dir\mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst" `
+          $env:MSYS = 'winsymlinks:sys'
+          $toolchain = @(
+            "$input_dir\mingw-w64-cross-cygwinarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst"
+            "$input_dir\mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-2-x86_64.pkg.tar.zst"
+            "$input_dir\mingw-w64-cross-cygwinarm64-gcc-libs-stage1-15.0.1dev-2-x86_64.pkg.tar.zst"
+            "$input_dir\mingw-w64-cross-cygwinarm64-binutils-2.44.50-1-x86_64.pkg.tar.zst"
+            "$input_dir\mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst"
+            "$input_dir\mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst"
+            "$input_dir\mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst"
+            "$input_dir\mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst"
+            "$input_dir\mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst"
+            "$input_dir\mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst"
+            "$input_dir\mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst"
+            "$input_dir\mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst"
             "$input_dir\mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst"
+          )
+          Write-Host "pacman -U toolchain: $($toolchain -join ' ')"
+          $toolchainOutput = @(& $pacman --noconfirm -U @toolchain 2>&1)
+          $toolchainExit = $LASTEXITCODE
+          $toolchainOutput | ForEach-Object { Write-Host $_ }
+          Write-Host "pacman -U toolchain exit: $toolchainExit"
+          if ($toolchainOutput -match 'cannot resolve|skip the above package|skipping package') {
+            throw 'unexpected pacman dependency resolution output for toolchain'
+          }
+          if ($toolchainExit -ne 0) {
+            throw "pacman -U toolchain failed with exit code $toolchainExit"
+          }
 
       - name: Verify fork-local AArch64 MSYS packages
         if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-arm64-msys-perl' || github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-arm64-msys-perl' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
@@ -211,7 +232,7 @@ jobs:
         run: |
           $msys2Root = '${{ steps.msys2.outputs.msys2-location }}'
           $bash = Join-Path $msys2Root 'usr\bin\bash.exe'
-          $script = 'set -e; pacman -T mingw-w64-cross-cygwinarm64-libstdc++-headers=15.0.1dev-1 mingw-w64-cross-cygwinarm64-gcc-stage1=15.0.1dev-1; pacman -Q mingw-w64-cross-msysarm64-headers mingw-w64-cross-msysarm64-runtime mingw-w64-cross-msysarm64-runtime-devel mingw-w64-cross-msysarm64-sysroot mingw-w64-cross-msysarm64-windows-default-manifest mingw-w64-cross-cygwinarm64-libstdc++-headers mingw-w64-cross-cygwinarm64-gcc-stage1 mingw-w64-cross-cygwinarm64-gcc-libs-stage1 mingw-w64-cross-cygwinarm64-binutils mingw-w64-cross-msysarm64-libstdc++-headers mingw-w64-cross-msysarm64-w32api-runtime mingw-w64-cross-msysarm64-gcc mingw-w64-cross-msysarm64-gcc-libs; pacman -Dk'
+          $script = 'set -e; pacman -T mingw-w64-cross-cygwinarm64-libstdc++-headers=15.0.1dev-1 mingw-w64-cross-cygwinarm64-gcc-stage1=15.0.1dev-1 mingw-w64-cross-msysarm64-libstdc++-headers=15.0.1dev-1 mingw-w64-cross-msysarm64-gcc=15.0.1dev-1; pacman -Q mingw-w64-cross-msysarm64-headers mingw-w64-cross-msysarm64-runtime mingw-w64-cross-msysarm64-runtime-devel mingw-w64-cross-msysarm64-sysroot mingw-w64-cross-msysarm64-windows-default-manifest mingw-w64-cross-cygwinarm64-libstdc++-headers mingw-w64-cross-cygwinarm64-gcc-stage1 mingw-w64-cross-cygwinarm64-gcc-libs-stage1 mingw-w64-cross-cygwinarm64-binutils mingw-w64-cross-msysarm64-libstdc++-headers mingw-w64-cross-msysarm64-w32api-runtime mingw-w64-cross-msysarm64-gcc mingw-w64-cross-msysarm64-gcc-libs; pacman -Dk'
           & $bash --login -lc $script
 
       - name: Move Checkout
