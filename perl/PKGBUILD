@@ -108,6 +108,18 @@ build() {
     local probe_dir
     probe_dir=$(mktemp -d)
     trap '[[ -n ${probe_dir:-} ]] && rm -rf -- "${probe_dir}"' RETURN
+    local perl_config_cc perl_config_ld
+    perl_config_cc="${probe_dir}/gcc"
+    perl_config_ld="${probe_dir}/g++"
+    cat > "${perl_config_cc}" <<EOF
+#!/bin/sh
+exec "${perl_cc}" "\$@"
+EOF
+    cat > "${perl_config_ld}" <<EOF
+#!/bin/sh
+exec "${perl_ld}" "\$@"
+EOF
+    chmod +x "${perl_config_cc}" "${perl_config_ld}"
 
     "${perl_cc}" -dM -E -xc - <<< '' > "${probe_dir}/probe.predefines.txt"
     if ! grep -Fx '#define __aarch64__ 1' "${probe_dir}/probe.predefines.txt" >/dev/null; then
@@ -207,7 +219,7 @@ EOF
     -Darchname=${ARCH}-cygwin-threads \
     -Dmyarchname=${ARCH}-cygwin \
     -Dlibperl=msys-perl"$(echo "${pkgver%.[0-9]*}" | tr . _)".dll \
-    -Dcc="${perl_cc}" -Dld="${perl_ld}" \
+    -Dcc="${perl_config_cc}" -Dld="${perl_config_ld}" \
     -Dgccversion="${perl_gcc_version}" \
     -Dgccosandvers="${perl_gcc_version}" \
     -Accflags="$CFLAGS -fwrapv" \

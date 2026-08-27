@@ -75,6 +75,10 @@ validate_package_payload() {
     local pkgname="${1}"
     local pkgfile="${2}"
     local -a installed_files pe_files header_files lib_files
+    local scanner_ps1="${DIR}/check-aarch64-pseudo-relocs.ps1"
+    local scanner_sha scanner_powershell scanner_ps1_win scanner_objdump_win scanner_nm_win
+    local aarch64_objdump=/opt/bin/aarch64-pc-cygwin-objdump.exe
+    local aarch64_nm=/opt/bin/aarch64-pc-cygwin-nm.exe
 
     mapfile -t installed_files < <(pacman "${pacman_local_arch_args[@]}" -Qql "${pkgname}")
 
@@ -98,11 +102,61 @@ validate_package_payload() {
         failure "perl package has no PE payload in ${pkgfile}"
     fi
 
+    if [[ -n "${lib_files[*]}" ]]; then
+        for lib_file in "${lib_files[@]}"; do
+            local lib_scan_output
+            lib_scan_output=$(mktemp)
+            if ! "${aarch64_objdump}" -f "${lib_file}" > "${lib_scan_output}" 2>&1; then
+                cat "${lib_scan_output}"
+                rm -f -- "${lib_scan_output}"
+                failure "aarch64 objdump failed for ${lib_file}"
+            fi
+            cat "${lib_scan_output}"
+            if ! grep -Eq 'architecture: aarch64' "${lib_scan_output}"; then
+                rm -f -- "${lib_scan_output}"
+                failure "non-aarch64 archive payload in ${lib_file}"
+            fi
+            if grep -Eiq 'x86-64|i386|i686|x86_64' "${lib_scan_output}"; then
+                rm -f -- "${lib_scan_output}"
+                failure "x86 archive payload in ${lib_file}"
+            fi
+            rm -f -- "${lib_scan_output}"
+        done
+    fi
+
     if [[ "${#pe_files[@]}" -eq 0 ]]; then
         return 0
     fi
 
     python "$DIR/validate-package-payload.py" "${pkgname}" "${pkgfile}" "${pe_files[@]}"
+
+    scanner_sha=$(sha256sum "${scanner_ps1}" | awk '{print tolower($1)}')
+    if [[ "${scanner_sha}" != '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9' ]]; then
+        failure "unexpected pseudo-reloc scanner sha256: ${scanner_sha}"
+    fi
+
+    scanner_powershell="powershell.exe"
+    if ! command -v "${scanner_powershell}" >/dev/null 2>&1; then
+        scanner_powershell="pwsh.exe"
+    fi
+    scanner_ps1_win=$(cygpath -w "${scanner_ps1}")
+    scanner_objdump_win=$(cygpath -w "${aarch64_objdump}")
+    scanner_nm_win=$(cygpath -w "${aarch64_nm}")
+
+    for pe_file in "${pe_files[@]}"; do
+        local pe_scan_output pe_scan_output_win pe_file_win
+        pe_scan_output="${pkgname}/pseudo-reloc-$(basename "${pe_file}").json"
+        pe_scan_output_win=$(cygpath -w "${pe_scan_output}")
+        pe_file_win=$(cygpath -w "${pe_file}")
+        mkdir -p "$(dirname "${pe_scan_output}")"
+        "${scanner_powershell}" -NoProfile -ExecutionPolicy Bypass \
+            -File "${scanner_ps1_win}" \
+            -PePath "${pe_file_win}" \
+            -OutputPath "${pe_scan_output_win}" \
+            -Objdump "${scanner_objdump_win}" \
+            -Nm "${scanner_nm_win}"
+        cat "${pe_scan_output}"
+    done
 }
 
 # Status functions
