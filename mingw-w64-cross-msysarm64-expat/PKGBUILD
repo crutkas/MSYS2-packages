@@ -1,0 +1,366 @@
+# Maintainer: Chris Reddington <crutkas@microsoft.com>
+
+_realname=expat
+_target=aarch64-pc-msys
+# Libtool has no MSYS host case; the final compiler controls the emitted ABI.
+_libtool_host=aarch64-pc-cygwin
+_binutils_release_tag=cygwinarm64-binutils-pr21-3356eec-20260827
+_binutils_version=2.44.50
+_binutils_pkgrel=2
+_binutils_package_sha256=3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b
+_binutils_pkginfo_sha256=c49d9b366e4c5e5a564511cce75042a51629d2ef5887aa5a9256c5974eea3826
+_binutils_linker_sha256=075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f
+_binutils_source_commit=3f05fc4d3e0eeab265f2157e3257a7067b6e7223
+_binutils_source_tree=ecca625d45883e13128283a8c1750dac7997f729
+_binutils_source_archive_sha256=d11c2b4453318a6168287fe74655c54aa15bf12f415f9ffe3f0ea32e30a3411e
+_binutils_producer_commit=3356eec1411983cc252b04afac32bca5f3b8d824
+_scanner_sha256=888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9
+_runtime_release_tag=msysarm64-runtime-pr10-a527-20260824
+_runtime_version=3.6.10.r0.ga527ace21
+_runtime_pkgrel=1
+_w32api_version=14.0.0.r0.g9b3dd0125
+_w32api_pkgrel=1
+_gcc_release_tag=msysarm64-gcc-pr13-20260826
+_gcc_support_release_tag=msysarm64-gcc-pr13-support-20260826
+_gcc_version=15.0.1dev
+_gcc_pkgrel=1
+
+export SOURCE_DATE_EPOCH=1743105241
+
+pkgbase=mingw-w64-cross-msysarm64-expat
+pkgname=(
+  mingw-w64-cross-msysarm64-expat
+  mingw-w64-cross-msysarm64-libexpat
+  mingw-w64-cross-msysarm64-libexpat-devel
+)
+pkgver=2.7.1
+pkgrel=1
+pkgdesc="Expat XML parser for aarch64-pc-msys"
+arch=('x86_64')
+url="https://libexpat.github.io/"
+msys2_repository_url="https://github.com/libexpat/libexpat"
+msys2_references=(
+  "cpe: cpe:/a:libexpat_project:libexpat"
+)
+license=('spdx:MIT')
+groups=('mingw-w64-cross-toolchain' 'mingw-w64-cross')
+makedepends=(
+  'autotools'
+  'gcc'
+  'pkgconf'
+  "mingw-w64-cross-cygwinarm64-binutils=${_binutils_version}-${_binutils_pkgrel}"
+  "mingw-w64-cross-msysarm64-gcc=${_gcc_version}-${_gcc_pkgrel}"
+  "mingw-w64-cross-msysarm64-gcc-libs=${_gcc_version}-${_gcc_pkgrel}"
+  "mingw-w64-cross-msysarm64-runtime=${_runtime_version}-${_runtime_pkgrel}"
+  "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
+  "mingw-w64-cross-msysarm64-sysroot=${_runtime_version}-${_runtime_pkgrel}"
+  "mingw-w64-cross-msysarm64-w32api-runtime=${_w32api_version}-${_w32api_pkgrel}"
+)
+options=('!strip' '!buildflags' '!emptydirs')
+source=(
+  "${_realname}-${pkgver}.tar.xz::https://github.com/libexpat/libexpat/releases/download/R_${pkgver//./_}/${_realname}-${pkgver}.tar.xz"
+  "${_realname}-${pkgver}.tar.xz.asc::https://github.com/libexpat/libexpat/releases/download/R_${pkgver//./_}/${_realname}-${pkgver}.tar.xz.asc"
+  check-aarch64-pseudo-relocs.ps1
+  expat-2.7.1-msys-unistd.patch
+  README.md
+  validate-expat.sh
+  validate-expat-packages.sh
+)
+sha256sums=(
+  '354552544b8f99012e5062f7d570ec77f14b412a3ff5c7d8d0dae62c0d217c30'
+  'SKIP'
+  '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9'
+  '6118a6788be0a90f85ce15f05ad0a026bebe84ffe4495e99487c879a51ca6e11'
+  'c10488b41e099ed1721f0bfb8fd73f521abd2b265cdecf06f4a48143277411eb'
+  '519c4914fa0ed3735576274b4dcd604b9b03fc29e72bfec04a071697c1bfcdf2'
+  'a04c1e29484298ffe61a84136a4808109abe14a068fdfde56bd49025a01d355d'
+)
+validpgpkeys=('3176EF7DB2367F1FCA4F306B1F9B0E909AF37285') # Sebastian Pipping
+
+_target_build="build-${_target}"
+_host_build="build-${CHOST}-tests"
+_dest="dest-${_target}"
+_report="expat-report"
+_active_binutils_bindir=
+_compiler_wrapper_dir=
+
+_setup_fixed_binutils() {
+  local _tool _alias _expected _resolved
+  local -a _tools=(
+    addr2line ar as c++filt dlltool dllwrap elfedit gprof ld ld.bfd
+    nm objcopy objdump ranlib readelf size strings strip windmc windres
+  )
+
+  _active_binutils_bindir=${FIXED_BINUTILS_BINDIR:-/opt/bin}
+  _compiler_wrapper_dir="${srcdir}/fixed-binutils-wrappers"
+  test -x "${_active_binutils_bindir}/aarch64-pc-cygwin-ld.exe"
+  test "$(sha256sum "${_active_binutils_bindir}/aarch64-pc-cygwin-ld.exe" | cut -d' ' -f1)" = \
+    "${_binutils_linker_sha256}"
+
+  for _tool in "${_tools[@]}"; do
+    _alias="${_active_binutils_bindir}/aarch64-pc-msys-${_tool}.exe"
+    _expected="aarch64-pc-cygwin-${_tool}.exe"
+    test -L "${_alias}"
+    test "$(readlink "${_alias}")" = "${_expected}"
+    test -x "${_active_binutils_bindir}/${_expected}"
+  done
+
+  if [[ "${_active_binutils_bindir}" = /opt/bin ]]; then
+    test "$(pacman -Q mingw-w64-cross-cygwinarm64-binutils)" = \
+      "mingw-w64-cross-cygwinarm64-binutils ${_binutils_version}-${_binutils_pkgrel}"
+  fi
+
+  rm -rf "${_compiler_wrapper_dir}"
+  mkdir -p "${_compiler_wrapper_dir}"
+  cat > "${_compiler_wrapper_dir}/aarch64-pc-msys-gcc" <<EOF
+#!/usr/bin/env bash
+exec /opt/bin/aarch64-pc-msys-gcc.exe -B"${_active_binutils_bindir}/" "\$@"
+EOF
+  cat > "${_compiler_wrapper_dir}/aarch64-pc-msys-g++" <<EOF
+#!/usr/bin/env bash
+exec /opt/bin/aarch64-pc-msys-g++.exe -B"${_active_binutils_bindir}/" "\$@"
+EOF
+  chmod 755 \
+    "${_compiler_wrapper_dir}/aarch64-pc-msys-gcc" \
+    "${_compiler_wrapper_dir}/aarch64-pc-msys-g++"
+  export PATH="${_compiler_wrapper_dir}:${_active_binutils_bindir}:/opt/bin:/usr/bin:${PATH}"
+
+  _resolved="$(aarch64-pc-msys-gcc -print-prog-name=ld)"
+  test "$(sha256sum "${_resolved}" | cut -d' ' -f1)" = \
+    "${_binutils_linker_sha256}"
+  {
+    printf 'binutils-bindir\t%s\n' "${_active_binutils_bindir}"
+    printf 'compiler-linker\t%s\n' "${_resolved}"
+    printf 'linker-sha256\t%s\n' "${_binutils_linker_sha256}"
+  } > "${srcdir}/${_report}/binutils-toolchain.txt"
+}
+
+prepare() {
+  cd "${srcdir}/${_realname}-${pkgver}"
+
+  patch -Np1 -i "${srcdir}/expat-2.7.1-msys-unistd.patch"
+  ./buildconf.sh -f
+
+  printf '%s  %s\n' \
+    "${_scanner_sha256}" \
+    "${srcdir}/check-aarch64-pseudo-relocs.ps1" \
+    | sha256sum -c -
+}
+
+build() {
+  local _source="${srcdir}/${_realname}-${pkgver}"
+  local _build="${srcdir}/${_target_build}"
+  local _stage="${srcdir}/${_dest}"
+  local _prefix_map="-ffile-prefix-map=${srcdir}=. -fdebug-prefix-map=${srcdir}=. -fmacro-prefix-map=${srcdir}=."
+
+  rm -rf "${_build}" "${_stage}" "${srcdir}/${_report}"
+  mkdir -p "${_build}" "${_stage}" "${srcdir}/${_report}"
+
+  _setup_fixed_binutils
+  export MSYSTEM=MSYS
+  export lt_cv_deplibs_check_method=pass_all
+
+  test "$(aarch64-pc-msys-gcc -dumpmachine)" = "${_target}"
+  test "$(aarch64-pc-msys-gcc -dumpversion)" = '15.0.1'
+  printf '' | aarch64-pc-msys-gcc -dM -E - \
+    > "${srcdir}/${_report}/compiler-macros.txt"
+  grep -Eq '^#define __aarch64__ 1$' \
+    "${srcdir}/${_report}/compiler-macros.txt"
+  grep -Eq '^#define __MSYS__ 1$' \
+    "${srcdir}/${_report}/compiler-macros.txt"
+  grep -Eq '^#define _WIN64 1$' \
+    "${srcdir}/${_report}/compiler-macros.txt"
+
+  (
+    cd "${_build}"
+    CC='aarch64-pc-msys-gcc' \
+    CXX='aarch64-pc-msys-g++' \
+    AR='aarch64-pc-msys-ar' \
+    AS='aarch64-pc-msys-as' \
+    LD='aarch64-pc-msys-ld' \
+    NM='aarch64-pc-msys-nm' \
+    RANLIB='aarch64-pc-msys-ranlib' \
+    STRIP='aarch64-pc-msys-strip' \
+    DLLTOOL='aarch64-pc-msys-dlltool' \
+    WINDRES='aarch64-pc-msys-windres' \
+    CPPFLAGS='-D__MSYS__' \
+    CFLAGS="-O2 -pipe ${_prefix_map}" \
+    CXXFLAGS="-O2 -pipe ${_prefix_map}" \
+      "${_source}/configure" \
+        --build="${CHOST}" \
+        --host="${_libtool_host}" \
+        --prefix=/usr \
+        --enable-shared \
+        --enable-static \
+        --disable-dependency-tracking \
+        --without-docbook \
+        --without-examples \
+        --without-tests
+  )
+
+  make -C "${_build}" -j"$(nproc)"
+  make -C "${_build}" DESTDIR="${_stage}" install
+
+  local _cmake_import="${_stage}/usr/lib/cmake/expat-${pkgver}/expat-noconfig.cmake"
+  grep -F '${_IMPORT_PREFIX}/bin/cygexpat-1.dll' "${_cmake_import}"
+  sed -i 's|/bin/cygexpat-1\.dll|/bin/msys-expat-1.dll|g' "${_cmake_import}"
+  grep -F '${_IMPORT_PREFIX}/bin/msys-expat-1.dll' "${_cmake_import}"
+  if grep -Fq 'cygexpat' "${_cmake_import}"; then
+    echo 'CMake metadata still references the Cygwin DLL name' >&2
+    return 1
+  fi
+}
+
+check() {
+  local _source="${srcdir}/${_realname}-${pkgver}"
+  local _host="${srcdir}/${_host_build}"
+  local _stage="${srcdir}/${_dest}"
+  local _report_dir="${srcdir}/${_report}"
+
+  _setup_fixed_binutils
+  rm -rf "${_host}"
+  mkdir -p "${_host}"
+
+  (
+    cd "${_host}"
+    CC='/usr/bin/gcc' \
+    CXX='/usr/bin/g++' \
+    AR='/usr/bin/ar' \
+    NM='/usr/bin/nm' \
+    RANLIB='/usr/bin/ranlib' \
+    STRIP='/usr/bin/strip' \
+    CFLAGS='-O2 -pipe' \
+    CXXFLAGS='-O2 -pipe' \
+      "${_source}/configure" \
+        --build="${CHOST}" \
+        --host="${CHOST}" \
+        --prefix=/usr \
+        --enable-shared \
+        --enable-static \
+        --disable-dependency-tracking \
+        --without-docbook \
+        --without-examples \
+        --without-xmlwf
+  )
+  make -C "${_host}" -j"$(nproc)"
+  make -C "${_host}" check
+
+  cat > "${_report_dir}/source-identity.txt" <<EOF
+package-version	${pkgver}-${pkgrel}
+source-repository	${msys2_repository_url}
+source-release	R_${pkgver//./_}
+source-archive-sha256	354552544b8f99012e5062f7d570ec77f14b412a3ff5c7d8d0dae62c0d217c30
+binutils-release	${_binutils_release_tag}
+binutils-version	${_binutils_version}-${_binutils_pkgrel}
+binutils-package-sha256	${_binutils_package_sha256}
+binutils-pkginfo-sha256	${_binutils_pkginfo_sha256}
+binutils-linker-sha256	${_binutils_linker_sha256}
+binutils-source-commit	${_binutils_source_commit}
+binutils-source-tree	${_binutils_source_tree}
+binutils-source-archive-sha256	${_binutils_source_archive_sha256}
+binutils-producer-commit	${_binutils_producer_commit}
+binutils-scanner-sha256	${_scanner_sha256}
+runtime-release	${_runtime_release_tag}
+runtime-version	${_runtime_version}-${_runtime_pkgrel}
+sysroot-version	${_runtime_version}-${_runtime_pkgrel}
+w32api-version	${_w32api_version}-${_w32api_pkgrel}
+gcc-release	${_gcc_release_tag}
+gcc-support-release	${_gcc_support_release_tag}
+gcc-version	${_gcc_version}-${_gcc_pkgrel}
+target	${_target}
+EOF
+
+  EXPECTED_VERSION="${pkgver}" \
+  RUN_NATIVE=auto \
+  PSEUDO_RELOC_SCANNER="${srcdir}/check-aarch64-pseudo-relocs.ps1" \
+  SCANNER_OBJDUMP="${_active_binutils_bindir}/aarch64-pc-cygwin-objdump.exe" \
+  SCANNER_NM="${_active_binutils_bindir}/aarch64-pc-cygwin-nm.exe" \
+    bash "${srcdir}/validate-expat.sh" \
+      "${_stage}" \
+      "${_report_dir}"
+
+  (
+    cd "${_stage}"
+    find usr -type f -print0 \
+      | LC_ALL=C sort -z \
+      | xargs -0 sha256sum
+  ) > "${_report_dir}/target-manifest.sha256"
+}
+
+package_mingw-w64-cross-msysarm64-expat() {
+  local _stage="${srcdir}/${_dest}/usr"
+  local _pkgroot="${pkgdir}/opt/${_target}/usr"
+  local _license="${pkgdir}/usr/share/licenses/${pkgname}"
+
+  pkgdesc="Expat XML parser tools for aarch64-pc-msys"
+  depends=(
+    "mingw-w64-cross-msysarm64-libexpat=${pkgver}-${pkgrel}"
+    "mingw-w64-cross-msysarm64-runtime=${_runtime_version}-${_runtime_pkgrel}"
+  )
+  provides=("aarch64-pc-msys-expat=${pkgver}")
+  conflicts=('aarch64-pc-msys-expat')
+
+  install -Dm755 "${_stage}/bin/xmlwf.exe" "${_pkgroot}/bin/xmlwf.exe"
+  test -f "${_stage}/share/man/man1/xmlwf.1"
+  install -Dm644 "${_stage}/share/man/man1/xmlwf.1" \
+    "${_pkgroot}/share/man/man1/xmlwf.1"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING" \
+    "${_license}/COPYING"
+}
+
+package_mingw-w64-cross-msysarm64-libexpat() {
+  local _stage="${srcdir}/${_dest}/usr"
+  local _pkgroot="${pkgdir}/opt/${_target}/usr"
+  local _license="${pkgdir}/usr/share/licenses/${pkgname}"
+  local _dll
+
+  pkgdesc="Expat XML parser runtime for aarch64-pc-msys"
+  groups=('libraries' 'mingw-w64-cross-toolchain' 'mingw-w64-cross')
+  depends=(
+    "mingw-w64-cross-msysarm64-gcc-libs=${_gcc_version}-${_gcc_pkgrel}"
+    "mingw-w64-cross-msysarm64-runtime=${_runtime_version}-${_runtime_pkgrel}"
+  )
+  provides=("aarch64-pc-msys-libexpat=${pkgver}")
+  conflicts=('aarch64-pc-msys-libexpat')
+
+  install -d "${_pkgroot}/bin"
+  for _dll in "${_stage}/bin/"*.dll; do
+    test -f "${_dll}"
+    install -m755 "${_dll}" "${_pkgroot}/bin/"
+  done
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING" \
+    "${_license}/COPYING"
+}
+
+package_mingw-w64-cross-msysarm64-libexpat-devel() {
+  local _stage="${srcdir}/${_dest}/usr"
+  local _pkgroot="${pkgdir}/opt/${_target}/usr"
+  local _doc="${pkgdir}/opt/${_target}/share/doc/${pkgbase}"
+  local _license="${pkgdir}/usr/share/licenses/${pkgname}"
+
+  pkgdesc="Expat headers and libraries for aarch64-pc-msys"
+  groups=('development' 'mingw-w64-cross-toolchain' 'mingw-w64-cross')
+  depends=(
+    "mingw-w64-cross-msysarm64-libexpat=${pkgver}-${pkgrel}"
+    "mingw-w64-cross-msysarm64-runtime=${_runtime_version}-${_runtime_pkgrel}"
+    "mingw-w64-cross-msysarm64-sysroot=${_runtime_version}-${_runtime_pkgrel}"
+  )
+  provides=("aarch64-pc-msys-libexpat-devel=${pkgver}")
+  conflicts=('aarch64-pc-msys-libexpat-devel')
+  options=('staticlibs' '!strip')
+
+  install -d "${_pkgroot}"
+  cp -a "${_stage}/include" "${_pkgroot}/"
+  cp -a "${_stage}/lib" "${_pkgroot}/"
+
+  install -d "${_doc}"
+  cp -a "${srcdir}/${_report}/." "${_doc}/"
+  install -m644 "${srcdir}/README.md" "${_doc}/README.md"
+  install -m755 \
+    "${srcdir}/check-aarch64-pseudo-relocs.ps1" \
+    "${srcdir}/validate-expat.sh" \
+    "${srcdir}/validate-expat-packages.sh" \
+    "${_doc}/"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING" \
+    "${_license}/COPYING"
+}
