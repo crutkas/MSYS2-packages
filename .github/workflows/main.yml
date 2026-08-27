@@ -133,6 +133,10 @@ jobs:
             --pattern 'mingw-w64-cross-cygwinarm64-gcc-stage1-*.pkg.tar.zst' `
             --pattern 'mingw-w64-cross-cygwinarm64-gcc-libs-stage1-*.pkg.tar.zst' `
             --dir $destination
+          gh release download cygwinarm64-libstdcxx-headers-pr7-20260815 `
+            --repo crutkas/MSYS2-packages `
+            --pattern 'mingw-w64-cross-cygwinarm64-libstdc++-headers-*.pkg.tar.zst' `
+            --dir $destination
           gh release download cygwinarm64-gcc-static-runtime-20260815 `
             --repo crutkas/MSYS2-packages `
             --pattern 'mingw-w64-cross-cygwinarm64-binutils-*.pkg.tar.zst' `
@@ -156,6 +160,7 @@ jobs:
             'mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' = '33861708e7f981b4eef5b93ef135ab3a43d2757533f64df6f61a146d823c355f'
             'mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-2-x86_64.pkg.tar.zst' = '063579211851ed69370a6362f2795e39d9be0235a2bfe2f58da1bbd73a1d108e'
             'mingw-w64-cross-cygwinarm64-gcc-libs-stage1-15.0.1dev-2-x86_64.pkg.tar.zst' = '17a8fbc22227c541ff3179179d307045302f6b18fbc6207cf9d863a9e4dad98c'
+            'mingw-w64-cross-cygwinarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst' = '1e018d384e5e16b76524b69677819b660e6611480a85a7f7b8a412403bf15ea6'
             'mingw-w64-cross-cygwinarm64-binutils-2.44.50-1-x86_64.pkg.tar.zst' = '8908cb690952788153b60bc4fb659826bbd8a03a26c1073f76c0be7ed6f97518'
             'mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst' = '9715aab6894379bf5ab936a3a559f286fb4aedbb64f0774d7457182e00648e08'
             'mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst' = '7727936f4212e5af04e9739eca60f157c0875796c1e82fcfb79fd4398b111e24'
@@ -182,8 +187,6 @@ jobs:
             "$input_dir\mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst" `
             "$input_dir\mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst" `
             "$input_dir\mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst" `
-            "$input_dir\mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-2-x86_64.pkg.tar.zst" `
-            "$input_dir\mingw-w64-cross-cygwinarm64-gcc-libs-stage1-15.0.1dev-2-x86_64.pkg.tar.zst" `
             "$input_dir\mingw-w64-cross-cygwinarm64-binutils-2.44.50-1-x86_64.pkg.tar.zst" `
             "$input_dir\mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst" `
             "$input_dir\mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst"
@@ -196,6 +199,7 @@ jobs:
           $msys2Root = '${{ steps.msys2.outputs.msys2-location }}'
           $pacman = Join-Path $msys2Root 'usr\bin\pacman.exe'
           & $pacman --noconfirm -U `
+            "$input_dir\mingw-w64-cross-cygwinarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst" `
             "$input_dir\mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst" `
             "$input_dir\mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst"
 
@@ -205,7 +209,7 @@ jobs:
         run: |
           $msys2Root = '${{ steps.msys2.outputs.msys2-location }}'
           $bash = Join-Path $msys2Root 'usr\bin\bash.exe'
-          $script = 'set -e; pacman -Q mingw-w64-cross-msysarm64-headers mingw-w64-cross-msysarm64-runtime mingw-w64-cross-msysarm64-runtime-devel mingw-w64-cross-msysarm64-sysroot mingw-w64-cross-msysarm64-windows-default-manifest mingw-w64-cross-cygwinarm64-gcc-stage1 mingw-w64-cross-cygwinarm64-gcc-libs-stage1 mingw-w64-cross-cygwinarm64-binutils mingw-w64-cross-msysarm64-libstdc++-headers mingw-w64-cross-msysarm64-w32api-runtime mingw-w64-cross-msysarm64-gcc mingw-w64-cross-msysarm64-gcc-libs; pacman -Dk'
+          $script = 'set -e; pacman -T mingw-w64-cross-cygwinarm64-libstdc++-headers=15.0.1dev-1 mingw-w64-cross-cygwinarm64-gcc-stage1=15.0.1dev-1; pacman -Q mingw-w64-cross-msysarm64-headers mingw-w64-cross-msysarm64-runtime mingw-w64-cross-msysarm64-runtime-devel mingw-w64-cross-msysarm64-sysroot mingw-w64-cross-msysarm64-windows-default-manifest mingw-w64-cross-cygwinarm64-libstdc++-headers mingw-w64-cross-cygwinarm64-gcc-stage1 mingw-w64-cross-cygwinarm64-gcc-libs-stage1 mingw-w64-cross-cygwinarm64-binutils mingw-w64-cross-msysarm64-libstdc++-headers mingw-w64-cross-msysarm64-w32api-runtime mingw-w64-cross-msysarm64-gcc mingw-w64-cross-msysarm64-gcc-libs; pacman -Dk'
           & $bash --login -lc $script
 
       - name: Move Checkout
