@@ -31,7 +31,7 @@ makedepends=(
   'gcc'
   'gettext-devel'
   'libiconv-devel'
-  'mingw-w64-cross-cygwinarm64-binutils'
+  'mingw-w64-cross-cygwinarm64-binutils=2.44.50-2'
   "mingw-w64-cross-msysarm64-gcc=${_gcc_release_version}-${_gcc_release_pkgrel}"
   "mingw-w64-cross-msysarm64-gcc-libs=${_gcc_release_version}-${_gcc_release_pkgrel}"
   "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
@@ -84,14 +84,14 @@ build() {
   perl -0pi -e 's/cygwin\* \| mingw\* \| windows\* \| pw32\* \| cegcc\*/cygwin* | msys* | mingw* | windows* | pw32* | cegcc*/g; s/\n    cygwin\*\)\n      # Cygwin DLLs use '\''cyg'\'' prefix rather than '\''lib'\''/\n    cygwin* | msys*)\n      # Cygwin DLLs use '\''cyg'\'' prefix rather than '\''lib'\''/g' configure
 
   ./configure \
-    CC="aarch64-pc-msys-gcc" \
+    CC="aarch64-pc-msys-gcc -B/opt/bin/" \
     AR="aarch64-pc-cygwin-ar" \
     RANLIB="aarch64-pc-cygwin-ranlib" \
     LD="aarch64-pc-msys-ld" \
     NM="aarch64-pc-msys-nm" \
-    STRIP="aarch64-pc-msys-strip" \
-    DLLTOOL="aarch64-pc-msys-dlltool" \
-    WINDRES="aarch64-pc-msys-windres" \
+    STRIP="aarch64-pc-cygwin-strip" \
+    DLLTOOL="aarch64-pc-cygwin-dlltool" \
+    WINDRES="aarch64-pc-cygwin-windres" \
     CC_FOR_BUILD=gcc \
     --prefix=/usr \
     --build="${_build_triplet}" \
@@ -102,6 +102,8 @@ build() {
     --enable-shared \
     --enable-static
 
+  # The upstream target only copies this script after a fork-heavy host self-test.
+  cp src/gpg-error-config-old src/gpg-error-config
   make no_undefined=-no-undefined
   make DESTDIR="${srcdir}/dest" install
 }
@@ -166,6 +168,7 @@ package_mingw-w64-cross-msysarm64-libgpg-error-devel() {
   cp -a "${srcdir}/dest/usr/lib" "${pkgdir}/opt/${_target}/usr/"
   rm -f "${pkgdir}/opt/${_target}/usr/lib"/*.dll
   aarch64-pc-cygwin-ranlib "${pkgdir}/opt/${_target}/usr/lib/libgpg-error.a"
+  aarch64-pc-cygwin-ranlib "${pkgdir}/opt/${_target}/usr/lib/libgpg-error.dll.a"
   cp -a "${srcdir}/dest/usr/share/aclocal" "${pkgdir}/opt/${_target}/usr/share/"
   cp -a "${srcdir}/dest/usr/share/common-lisp" "${pkgdir}/opt/${_target}/usr/share/"
   install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING.LIB" \
