@@ -57,9 +57,9 @@ require_import() {
 }
 
 require_pe_directory() {
-  local report=$1 index=$2 label=$3
-  awk -v index="$index" -v label="$label" '
-    $1 == "Entry" && $2 == index {
+  local report=$1 dir_index=$2 label=$3
+  awk -v dir_index="$dir_index" -v label="$label" '
+    $1 == "Entry" && $2 == dir_index {
       found = 1
       if ($3 !~ /[1-9a-fA-F]/ || $4 !~ /[1-9a-fA-F]/) {
         printf "empty %s directory in %s\n", label, FILENAME > "/dev/stderr"
@@ -76,9 +76,9 @@ require_pe_directory() {
 }
 
 require_empty_pe_directory() {
-  local report=$1 index=$2 label=$3
-  awk -v index="$index" -v label="$label" '
-    $1 == "Entry" && $2 == index {
+  local report=$1 dir_index=$2 label=$3
+  awk -v dir_index="$dir_index" -v label="$label" '
+    $1 == "Entry" && $2 == dir_index {
       found = 1
       if ($3 ~ /[1-9a-fA-F]/ || $4 ~ /[1-9a-fA-F]/) {
         printf "unexpected %s directory in negative fixture %s\n", label, FILENAME > "/dev/stderr"
