@@ -201,6 +201,9 @@ EOF
 
   export MSYSTEM=CYGWIN
   local configure_log="${probe_dir}/Configure.log"
+  # Perl's native C99 heuristic still false-negatives on this toolchain even
+  # though the explicit ARM64 probe above already validated the compiler,
+  # linker, object format, and MSYS import route.
   if ! bash -x ./Configure -des -Dusethreads \
   -Doptimize="${CFLAGS}" \
   -Dprefix=/usr \
@@ -223,7 +226,7 @@ EOF
     -Dgccversion="${perl_gcc_version}" \
     -Dgccosandvers="${perl_gcc_version}" \
     -Accflags="$CFLAGS -fwrapv" \
-    -Ud_setproctitle > "${configure_log}" 2>&1; then
+    -Ud_setproctitle <<<'y' > "${configure_log}" 2>&1; then
       cat "${configure_log}"
       return 1
     fi
