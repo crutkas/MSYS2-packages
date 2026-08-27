@@ -55,7 +55,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw 'Source scanner tests failed.'
           }
-          & '.\.ci\test-check-aarch64-pseudo-relocs.ps1'
+          pwsh -NoLogo -NoProfile -File `
+            '.\.ci\test-check-aarch64-pseudo-relocs.ps1'
           if ($LASTEXITCODE -ne 0) {
             throw 'Hardened scanner tests failed.'
           }
