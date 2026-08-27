@@ -1,0 +1,531 @@
+name: msysarm64-sqlite
+
+on:
+  push:
+    branches:
+      - crutkas-arm64-msys-sqlite
+    tags:
+      - msysarm64-sqlite-*
+  pull_request:
+    branches:
+      - crutkas-aarch64-gcc-layer
+  workflow_dispatch:
+
+concurrency:
+  group: msysarm64-sqlite-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  SOURCE_DATE_EPOCH: 1752710400
+
+jobs:
+  build:
+    if: >-
+      ${{
+        github.repository == 'crutkas/MSYS2-packages' &&
+        (github.event_name != 'pull_request' ||
+         (github.head_ref == 'crutkas-arm64-msys-sqlite' &&
+          github.event.pull_request.head.repo.full_name ==
+            'crutkas/MSYS2-packages'))
+      }}
+    runs-on: windows-2025
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Configure Git line endings
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
+      - name: Prepare MSYS build host
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pacman = 'C:\msys64\usr\bin\pacman.exe'
+          & $pacman --noconfirm -Syuu
+          if ($LASTEXITCODE -ne 0) { throw 'first system update failed' }
+          & $pacman --noconfirm -Suu
+          if ($LASTEXITCODE -ne 0) { throw 'second system update failed' }
+          & $pacman --noconfirm --needed -S `
+            base-devel git python `
+            gmp isl libiconv libintl libzstd mpc mpfr zlib
+          if ($LASTEXITCODE -ne 0) { throw 'build-host dependency install failed' }
+
+      - name: Download and hash exact ARM64 toolchain inputs
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $inputDir = Join-Path $env:RUNNER_TEMP 'msysarm64-toolchain'
+          New-Item -ItemType Directory -Force -Path $inputDir | Out-Null
+
+          $assets = @(
+            @(
+              'mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst',
+              'https://github.com/crutkas/MSYS2-packages/releases/download/cygwinarm64-binutils-pr21-3356eec-20260827/mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst',
+              '3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b'
+            ),
+            @(
+              'mingw-w64-cross-cygwinarm64-gcc-libs-stage1-15.0.1dev-2-x86_64.pkg.tar.zst',
+              'https://github.com/crutkas/MSYS2-packages/releases/download/cygwinarm64-gcc-static-runtime-20260815/mingw-w64-cross-cygwinarm64-gcc-libs-stage1-15.0.1dev-2-x86_64.pkg.tar.zst',
+              '17a8fbc22227c541ff3179179d307045302f6b18fbc6207cf9d863a9e4dad98c'
+            ),
+            @(
+              'mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-2-x86_64.pkg.tar.zst',
+              'https://github.com/crutkas/MSYS2-packages/releases/download/cygwinarm64-gcc-static-runtime-20260815/mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-2-x86_64.pkg.tar.zst',
+              '063579211851ed69370a6362f2795e39d9be0235a2bfe2f58da1bbd73a1d108e'
+            ),
+            @(
+              'mingw-w64-cross-cygwinarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst',
+              'https://github.com/crutkas/MSYS2-packages/releases/download/cygwinarm64-libstdcxx-headers-pr7-20260815/mingw-w64-cross-cygwinarm64-libstdc%2B%2B-headers-15.0.1dev-1-x86_64.pkg.tar.zst',
+              '1e018d384e5e16b76524b69677819b660e6611480a85a7f7b8a412403bf15ea6'
+            ),
+            @(
+              'mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+              'https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-runtime-pr10-a527-20260824/mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+              '263f8f7e3614ac41337ce3a223f2bb26b6459aef6f34670525cdd4c03ec3ae21'
+            ),
+            @(
+              'mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+              'https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-runtime-pr10-a527-20260824/mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+              '33861708e7f981b4eef5b93ef135ab3a43d2757533f64df6f61a146d823c355f'
+            ),
+            @(
+              'mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+              'https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-runtime-pr10-a527-20260824/mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+              'e30609e09eab2fa07aba2e6196b05f34e5e9107abc4ab8832966684758c743ca'
+            ),
+            @(
+              'mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+              'https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-runtime-pr10-a527-20260824/mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+              '158c505f45025a466950faa7c85c9fd85e9d32384dd27b53586ffc75d71ca78e'
+            ),
+            @(
+              'mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+              'https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-runtime-pr10-a527-20260824/mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+              'c18b51e483991770b8e06cc2d8f7002d06784d3071ac213a8fee24bb831267d1'
+            ),
+            @(
+              'mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst',
+              'https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-gcc-pr13-support-20260826/mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst',
+              '7727936f4212e5af04e9739eca60f157c0875796c1e82fcfb79fd4398b111e24'
+            ),
+            @(
+              'mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst',
+              'https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-gcc-pr13-support-20260826/mingw-w64-cross-msysarm64-libstdc%2B%2B-headers-15.0.1dev-1-x86_64.pkg.tar.zst',
+              '9715aab6894379bf5ab936a3a559f286fb4aedbb64f0774d7457182e00648e08'
+            ),
+            @(
+              'mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst',
+              'https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-gcc-pr13-20260826/mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst',
+              '990f163cacf9ffce1b58445be91fedc57f135cc26a88d7dba109806446b41438'
+            ),
+            @(
+              'mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst',
+              'https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-gcc-pr13-20260826/mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst',
+              'a74887c76a933ec424933bf662729d94975b83138af783bd93f2e7acd95c3a22'
+            )
+          )
+
+          foreach ($asset in $assets) {
+            $path = Join-Path $inputDir $asset[0]
+            & curl.exe --fail --location --retry 5 --output $path $asset[1]
+            if ($LASTEXITCODE -ne 0) { throw "download failed: $($asset[0])" }
+            $actual = (Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant()
+            if ($actual -ne $asset[2]) { throw "SHA-256 mismatch: $($asset[0])" }
+          }
+
+          Get-ChildItem -File $inputDir |
+            Sort-Object Name |
+            ForEach-Object {
+              '{0}  {1}' -f
+                (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant(),
+                $_.Name
+            } |
+            Set-Content -Encoding ascii (Join-Path $inputDir 'input-assets.sha256')
+
+      - name: Install exact toolchain in one transaction
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:MSYS = 'winsymlinks:sys'
+          $inputDir = Join-Path $env:RUNNER_TEMP 'msysarm64-toolchain'
+          $packages = @(
+            'mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst',
+            'mingw-w64-cross-cygwinarm64-gcc-libs-stage1-15.0.1dev-2-x86_64.pkg.tar.zst',
+            'mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-2-x86_64.pkg.tar.zst',
+            'mingw-w64-cross-cygwinarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst',
+            'mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+            'mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+            'mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+            'mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+            'mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+            'mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst',
+            'mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst',
+            'mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst',
+            'mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst'
+          ) | ForEach-Object { Join-Path $inputDir $_ }
+          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -U $packages
+          if ($LASTEXITCODE -ne 0) { throw 'atomic toolchain install failed' }
+
+      - name: Verify exact toolchain and system symlinks
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bash = 'C:\msys64\usr\bin\bash.exe'
+          $script = @'
+          set -euo pipefail
+          export PATH=/opt/bin:/usr/bin:/mingw64/bin:$PATH
+          test "$(aarch64-pc-msys-gcc -dumpmachine)" = aarch64-pc-msys
+          test "$(aarch64-pc-msys-gcc -dumpfullversion)" = 15.0.1
+          expected_tools=(
+            addr2line ar as c++filt dlltool dllwrap elfedit gprof ld ld.bfd
+            nm objcopy objdump ranlib readelf size strings strip windmc windres
+          )
+          for tool in "${expected_tools[@]}"; do
+            alias="/opt/bin/aarch64-pc-msys-${tool}.exe"
+            test -L "${alias}"
+            test "$(pacman -Qoq "${alias}")" = \
+              mingw-w64-cross-cygwinarm64-binutils
+            test "$(readlink "${alias}")" = \
+              "aarch64-pc-cygwin-${tool}.exe"
+          done
+          linker=$(realpath /opt/bin/aarch64-pc-msys-ld.exe)
+          test "$(sha256sum "${linker}" | awk '{print $1}')" = \
+            075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f
+          aarch64-pc-cygwin-objdump -f \
+            /opt/aarch64-pc-msys/bin/msys-2.0.dll \
+            | grep -F 'file format pei-aarch64-little'
+          aarch64-pc-cygwin-objdump -f \
+            /opt/aarch64-pc-msys/bin/msys-2.0.dll \
+            | grep -F 'architecture: aarch64'
+          test -z "$(pacman -T -- \
+            mingw-w64-cross-cygwinarm64-binutils=2.44.50-2 \
+            mingw-w64-cross-msysarm64-runtime=3.6.10.r0.ga527ace21-1 \
+            mingw-w64-cross-msysarm64-runtime-devel=3.6.10.r0.ga527ace21-1 \
+            mingw-w64-cross-msysarm64-sysroot=3.6.10.r0.ga527ace21-1 \
+            mingw-w64-cross-msysarm64-w32api-runtime=14.0.0.r0.g9b3dd0125-1 \
+            mingw-w64-cross-msysarm64-libstdc++-headers=15.0.1dev-1 \
+            mingw-w64-cross-msysarm64-gcc-libs=15.0.1dev-1 \
+            mingw-w64-cross-msysarm64-gcc=15.0.1dev-1)"
+          '@
+          & $bash --noprofile --norc -lc $script
+          if ($LASTEXITCODE -ne 0) { throw 'toolchain preflight failed' }
+
+      - name: Build and validate SQLite packages
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:MSYS2_PATH_TYPE = 'inherit'
+          $env:PATH = 'C:\msys64\usr\bin;C:\msys64\mingw64\bin;' + $env:PATH
+          $bash = 'C:\msys64\usr\bin\bash.exe'
+          $repo = & 'C:\msys64\usr\bin\cygpath.exe' -u $env:GITHUB_WORKSPACE
+          $inputManifest = & 'C:\msys64\usr\bin\cygpath.exe' -u `
+            (Join-Path $env:RUNNER_TEMP 'msysarm64-toolchain\input-assets.sha256')
+          $toolchainDir = & 'C:\msys64\usr\bin\cygpath.exe' -u `
+            (Join-Path $env:RUNNER_TEMP 'msysarm64-toolchain')
+          $script = @"
+          set -euo pipefail
+          export PATH=/opt/bin:/usr/bin:/mingw64/bin:`$PATH
+          export SOURCE_DATE_EPOCH=$env:SOURCE_DATE_EPOCH
+          cd '$repo/mingw-w64-cross-msysarm64-sqlite'
+          makepkg --noconfirm --nodeps --cleanbuild
+          mapfile -t packages < <(makepkg --packagelist)
+          test "`${#packages[@]}" -eq 3
+          bash '$repo/.ci/canonicalize-packages.sh' "`${packages[@]}"
+          artifact_dir='$repo/artifacts/msysarm64-sqlite'
+          rm -rf "`$artifact_dir"
+          mkdir -p "`$artifact_dir/sqlite-report"
+          cp "`${packages[@]}" "`$artifact_dir/"
+          cp -a src/sqlite-report/. "`$artifact_dir/sqlite-report/"
+          cp src/native-smoke/*.exe "`$artifact_dir/"
+          cp '$inputManifest' \
+            "`$artifact_dir/input-assets.sha256"
+          bash '$repo/.ci/validate-msysarm64-sqlite-ci.sh' \
+            "`$artifact_dir" \
+            "`$artifact_dir/transaction-report" \
+            '$repo' \
+            '$toolchainDir'
+          (cd "`$artifact_dir" && sha256sum *.pkg.tar.zst > SHA256SUMS)
+          "@
+          & $bash --noprofile --norc -lc $script
+          if ($LASTEXITCODE -ne 0) { throw 'SQLite build or validation failed' }
+
+      - name: Independently audit DLL boundary with dumpbin
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere =
+            'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+          $dumpbin = & $vswhere -latest -products * `
+            -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe' |
+            Select-Object -First 1
+          if (-not $dumpbin) { throw 'dumpbin not found' }
+
+          $bin = Join-Path $env:GITHUB_WORKSPACE `
+            'mingw-w64-cross-msysarm64-sqlite\src\stage-aarch64-pc-msys\opt\aarch64-pc-msys\bin'
+          $report = Join-Path $env:GITHUB_WORKSPACE `
+            'artifacts\msysarm64-sqlite\dumpbin'
+          New-Item -ItemType Directory -Force -Path $report | Out-Null
+
+          $exports = & $dumpbin /nologo /exports `
+            (Join-Path $bin 'msys-sqlite3-0.dll')
+          if ($LASTEXITCODE -ne 0) { throw 'dumpbin export audit failed' }
+          $exports | Set-Content -Encoding ascii `
+            (Join-Path $report 'sqlite-dll-exports.txt')
+          $exportNames = @(
+            $exports |
+              Where-Object {
+                $_ -match '^\s+[0-9A-F]+\s+[0-9A-F]+\s+[0-9A-F]+\s+(\S+)$'
+              } |
+              ForEach-Object { $Matches[1] }
+          )
+          if ($exportNames.Count -ne 354) {
+            throw "unexpected SQLite export count: $($exportNames.Count)"
+          }
+          $privateExports = @(
+            $exportNames |
+              Where-Object {
+                $_ -notmatch '^sqlite3(_|changeset_|changegroup_|session_|rebaser_)'
+              }
+          )
+          if ($privateExports.Count -ne 0) {
+            throw "private DLL exports: $($privateExports -join ', ')"
+          }
+
+          $imports = & $dumpbin /nologo /imports (Join-Path $bin 'sqlite3.exe')
+          if ($LASTEXITCODE -ne 0) { throw 'dumpbin import audit failed' }
+          $imports | Set-Content -Encoding ascii `
+            (Join-Path $report 'sqlite-cli-imports.txt')
+          $sqliteImports = @(
+            $imports |
+              Where-Object {
+                $_ -match '^\s+[0-9A-F]+\s+sqlite3'
+              }
+          )
+          if ($sqliteImports.Count -ne 162) {
+            throw "unexpected CLI SQLite import count: $($sqliteImports.Count)"
+          }
+          foreach ($symbol in @(
+            'sqlite3_close',
+            'sqlite3_exec',
+            'sqlite3_open',
+            'sqlite3_prepare_v2'
+          )) {
+            if (-not ($sqliteImports -match "\s$([regex]::Escape($symbol))$")) {
+              throw "missing CLI import: $symbol"
+            }
+          }
+          $apiImports = & $dumpbin /nologo /imports `
+            (Join-Path $env:GITHUB_WORKSPACE `
+              'artifacts\msysarm64-sqlite\sqlite-api-dynamic-smoke.exe')
+          if ($LASTEXITCODE -ne 0) { throw 'dumpbin API smoke audit failed' }
+          $apiImports | Set-Content -Encoding ascii `
+            (Join-Path $report 'sqlite-api-smoke-imports.txt')
+          foreach ($symbol in @(
+            'sqlite3_exec',
+            'sqlite3_open',
+            'sqlite3_prepare_v2',
+            'sqlite3_version'
+          )) {
+            if (-not ($apiImports -match "\s$([regex]::Escape($symbol))$")) {
+              throw "missing API smoke import: $symbol"
+            }
+          }
+          $staticImports = & $dumpbin /nologo /imports `
+            (Join-Path $env:GITHUB_WORKSPACE `
+              'artifacts\msysarm64-sqlite\sqlite-api-static-smoke.exe')
+          if ($LASTEXITCODE -ne 0) { throw 'dumpbin static smoke audit failed' }
+          $staticImports | Set-Content -Encoding ascii `
+            (Join-Path $report 'sqlite-api-static-smoke-imports.txt')
+          if ($staticImports -match 'msys-sqlite3-0\.dll') {
+            throw 'static API smoke imports the SQLite DLL'
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: msysarm64-sqlite-packages
+          path: artifacts/msysarm64-sqlite
+          if-no-files-found: error
+
+  native-sql-smoke:
+    if: ${{ github.repository == 'crutkas/MSYS2-packages' }}
+    needs: build
+    runs-on: windows-11-vs2026-arm
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: msysarm64-sqlite-packages
+          path: artifacts
+
+      - name: Run SQLite transactions on native ARM64
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $architecture =
+            [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+          if ($architecture -ne
+              [System.Runtime.InteropServices.Architecture]::Arm64) {
+            throw "runner is not ARM64: $architecture"
+          }
+
+          $root = Join-Path $env:RUNNER_TEMP 'msysarm64-native'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          $runtimeName =
+            'mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst'
+          $runtimePath = Join-Path $env:RUNNER_TEMP $runtimeName
+          $runtimeUrl =
+            "https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-runtime-pr10-a527-20260824/$runtimeName"
+          & curl.exe --fail --location --retry 5 `
+            --output $runtimePath $runtimeUrl
+          if ($LASTEXITCODE -ne 0) { throw 'runtime download failed' }
+          $runtimeHash =
+            (Get-FileHash -Algorithm SHA256 $runtimePath).Hash.ToLowerInvariant()
+          if ($runtimeHash -ne
+              '158c505f45025a466950faa7c85c9fd85e9d32384dd27b53586ffc75d71ca78e') {
+            throw 'runtime SHA-256 mismatch'
+          }
+
+          $archives = @(
+            $runtimePath,
+            (Get-Item 'artifacts\mingw-w64-cross-msysarm64-libsqlite-3.53.4-1-x86_64.pkg.tar.zst').FullName,
+            (Get-Item 'artifacts\mingw-w64-cross-msysarm64-sqlite-3.53.4-1-x86_64.pkg.tar.zst').FullName
+          )
+          foreach ($archive in $archives) {
+            & tar.exe -xf $archive -C $root
+            if ($LASTEXITCODE -ne 0) { throw "archive extraction failed: $archive" }
+          }
+
+          $bin = Join-Path $root 'opt\aarch64-pc-msys\bin'
+          $sqlite = Join-Path $bin 'sqlite3.exe'
+          $dynamicSmoke =
+            (Get-Item 'artifacts\sqlite-api-dynamic-smoke.exe').FullName
+          $staticSmoke =
+            (Get-Item 'artifacts\sqlite-api-static-smoke.exe').FullName
+          $database = Join-Path $env:RUNNER_TEMP 'sqlite-native-smoke.db'
+          $env:PATH = "$bin;$env:PATH"
+          $sql = @'
+          PRAGMA journal_mode=WAL;
+          BEGIN IMMEDIATE;
+          CREATE TABLE values_to_sum(value INTEGER NOT NULL);
+          INSERT INTO values_to_sum VALUES (19), (23);
+          COMMIT;
+          SELECT 'committed:' || count(*) || ':' || sum(value) FROM values_to_sum;
+          BEGIN;
+          INSERT INTO values_to_sum VALUES (1000);
+          ROLLBACK;
+          SELECT 'rolled-back:' || count(*) || ':' || sum(value) FROM values_to_sum;
+          SELECT 'features:' ||
+            sqlite_compileoption_used('ENABLE_FTS5') || ':' ||
+            sqlite_compileoption_used('ENABLE_RTREE') || ':' ||
+            sqlite_compileoption_used('ENABLE_SESSION') || ':' ||
+            sqlite_compileoption_used('ENABLE_DBSTAT_VTAB');
+          PRAGMA integrity_check;
+          '@
+          $version = & $sqlite --version 2>&1
+          if ($LASTEXITCODE -ne 0) { throw "version smoke failed: $version" }
+          $apiOutput = & $dynamicSmoke 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw "dynamic API/data-export smoke failed: $apiOutput"
+          }
+          $staticOutput = & $staticSmoke 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw "static API/data-export smoke failed: $staticOutput"
+          }
+          $output = & $sqlite -batch -noheader $database $sql 2>&1
+          if ($LASTEXITCODE -ne 0) { throw "SQL smoke failed: $output" }
+          $lines = @($output)
+          foreach ($expected in @(
+            'wal',
+            'committed:2:42',
+            'rolled-back:2:42',
+            'features:1:1:1:1',
+            'ok'
+          )) {
+            if ($lines -notcontains $expected) {
+              throw "missing SQL result '$expected': $($lines -join ', ')"
+            }
+          }
+          @(
+            "runner-architecture`t$architecture",
+            "sqlite-version`t$version",
+            "dynamic-api-data-export-smoke`tpassed",
+            "static-api-data-export-smoke`tpassed",
+            $lines
+          ) | Set-Content -Encoding ascii native-sql-smoke.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: msysarm64-sqlite-native-smoke
+          path: native-sql-smoke.txt
+          if-no-files-found: error
+
+  release:
+    if: >-
+      ${{
+        github.repository == 'crutkas/MSYS2-packages' &&
+        github.event_name == 'push' &&
+        startsWith(github.ref, 'refs/tags/msysarm64-sqlite-')
+      }}
+    needs:
+      - build
+      - native-sql-smoke
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: msysarm64-sqlite-*
+          merge-multiple: true
+          path: release
+
+      - name: Create fork-only prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd release
+          sha256sum -- *.pkg.tar.zst > SHA256SUMS
+          tar -czf validation-reports.tar.gz \
+            dumpbin sqlite-report transaction-report
+          cat > release-notes.md <<EOF
+          Fork-only native \`aarch64-pc-msys\` SQLite 3.53.4-1.
+
+          Source: \`sqlite-amalgamation-3530400.zip\`
+          Source SHA-256: \`1e71ddf93849c6a6ecf58b827c0692073d2dd7ee40196158068f7b29f422e87d\`
+          Runtime/sysroot: \`3.6.10.r0.ga527ace21-1\`
+          GCC: \`15.0.1dev-1\`
+          Fixed binutils: \`2.44.50-2\`
+          Fixed-binutils package SHA-256: \`3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b\`
+          Fixed linker SHA-256: \`075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f\`
+          Commit: \`${GITHUB_SHA}\`
+          Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+
+          The x64-hosted cross build, complete AArch64 PE/object/import/archive
+          and pseudo-relocation audit, static/dynamic API checks, isolated
+          pacman install/remove/reinstall lifecycle, ownership checks, and
+          native Windows ARM64 transaction smoke all passed before this release.
+          EOF
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo crutkas/MSYS2-packages \
+            --verify-tag \
+            --prerelease \
+            --title "AArch64 MSYS SQLite 3.53.4-1" \
+            --notes-file release-notes.md \
+            -- *.pkg.tar.zst SHA256SUMS input-assets.sha256 \
+              native-sql-smoke.txt validation-reports.tar.gz

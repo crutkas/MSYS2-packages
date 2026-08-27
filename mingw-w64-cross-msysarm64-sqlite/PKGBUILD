@@ -1,0 +1,540 @@
+# Maintainer: Chris Reddington <crutkas@microsoft.com>
+
+_target=aarch64-pc-msys
+_prefix="/opt/${_target}"
+_sqlite_year=2026
+_srcver=3530400
+_binutils_version=2.44.50
+_binutils_pkgrel=2
+_binutils_release_tag=cygwinarm64-binutils-pr21-3356eec-20260827
+_binutils_package_head=3356eec1411983cc252b04afac32bca5f3b8d824
+_binutils_package_sha256=3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b
+_binutils_linker_sha256=075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f
+_binutils_source_commit=3f05fc4d3e0eeab265f2157e3257a7067b6e7223
+_binutils_source_tree=ecca625d45883e13128283a8c1750dac7997f729
+_binutils_source_archive_sha256=d11c2b4453318a6168287fe74655c54aa15bf12f415f9ffe3f0ea32e30a3411e
+_binutils_source_scanner_sha256=fb437d60202cd818642082fc2b86adf7ccc98cc5ce147c674efc1a46520621bd
+_binutils_package_scanner_sha256=888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9
+_runtime_version=3.6.10.r0.ga527ace21
+_runtime_pkgrel=1
+_sysroot_version=3.6.10.r0.ga527ace21
+_sysroot_pkgrel=1
+_gcc_version=15.0.1dev
+_gcc_pkgrel=1
+_w32api_version=14.0.0.r0.g9b3dd0125
+_w32api_pkgrel=1
+
+export SOURCE_DATE_EPOCH=1752710400
+
+pkgbase=mingw-w64-cross-msysarm64-sqlite
+pkgname=(
+  mingw-w64-cross-msysarm64-libsqlite
+  mingw-w64-cross-msysarm64-libsqlite-devel
+  mingw-w64-cross-msysarm64-sqlite
+)
+pkgver=3.53.4
+pkgrel=1
+pkgdesc="Native ARM64 MSYS SQLite for aarch64-pc-msys"
+arch=('x86_64')
+url="https://www.sqlite.org/"
+license=('PublicDomain')
+groups=('mingw-w64-cross-toolchain' 'mingw-w64-cross')
+msys2_references=(
+  "anitya: 4877"
+  "cpe: cpe:/a:sqlite:sqlite"
+)
+makedepends=(
+  "mingw-w64-cross-cygwinarm64-binutils=${_binutils_version}-${_binutils_pkgrel}"
+  "mingw-w64-cross-msysarm64-gcc=${_gcc_version}-${_gcc_pkgrel}"
+  "mingw-w64-cross-msysarm64-gcc-libs=${_gcc_version}-${_gcc_pkgrel}"
+  "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
+  "mingw-w64-cross-msysarm64-sysroot=${_sysroot_version}-${_sysroot_pkgrel}"
+  "mingw-w64-cross-msysarm64-w32api-runtime=${_w32api_version}-${_w32api_pkgrel}"
+  'python'
+)
+options=('!strip' 'staticlibs' '!buildflags' '!emptydirs')
+source=(
+  "sqlite-amalgamation-${_srcver}.zip::https://www.sqlite.org/${_sqlite_year}/sqlite-amalgamation-${_srcver}.zip"
+  LICENSE
+  README.md
+  sqlite-smoke.c
+  validate-sqlite.sh
+  0001-shell-require-Win32-for-precise-file-time.patch
+  "check-aarch64-pseudo-relocs.ps1::https://raw.githubusercontent.com/crutkas/MSYS2-packages/${_binutils_package_head}/.ci/check-aarch64-pseudo-relocs.ps1"
+)
+sha256sums=(
+  '1e71ddf93849c6a6ecf58b827c0692073d2dd7ee40196158068f7b29f422e87d'
+  '0b76663a90e034f3d7f2af5bfada4cedec5ebc275361899eccc5c18e6f01ff1f'
+  '5541be0a10902a6f9ded3d7ef599ecadd0ecbecda670e0b3131fc55c67f5c2e7'
+  'a98a5030567f02f6ae1d63bbbf376a2300984ba07e9cbc8453859759db8ca4ce'
+  'fc9d446bbf31763ae99287739cf5dfbc3c0ffed2cdebe8d794cb87982190d28a'
+  '3ad4b5b808158c3cef7499b6e8a4d5fce79af727a7f50529faf097702507902b'
+  '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9'
+)
+
+_sqlite_features=(
+  -DSQLITE_ENABLE_DBSTAT_VTAB=1
+  -DSQLITE_ENABLE_DBPAGE_VTAB=1
+  -DSQLITE_ENABLE_STAT4=1
+  -DSQLITE_ENABLE_UNLOCK_NOTIFY=1
+  -DSQLITE_OMIT_LOOKASIDE
+  -DSQLITE_SECURE_DELETE=1
+  -DSQLITE_ENABLE_SESSION=1
+  -DSQLITE_ENABLE_PREUPDATE_HOOK=1
+  -DSQLITE_SOUNDEX=1
+  -DSQLITE_TEMP_STORE=1
+  -DSQLITE_USE_FCNTL_TRACE=1
+  -DUSE_SYSTEM_SQLITE=1
+  -DSQLITE_ENABLE_FTS3=1
+  -DSQLITE_ENABLE_FTS3_PARENTHESIS=1
+  -DSQLITE_ENABLE_FTS4=1
+  -DSQLITE_ENABLE_FTS5=1
+  -DSQLITE_ENABLE_RTREE=1
+  -DSQLITE_ENABLE_GEOPOLY=1
+  -DSQLITE_ENABLE_COLUMN_METADATA=1
+  -DSQLITE_USE_ALLOCA=1
+  -DSQLITE_ENABLE_EXPLAIN_COMMENTS=1
+  -DSQLITE_ENABLE_STMTVTAB=1
+  -DSQLITE_ENABLE_MATH_FUNCTIONS=1
+  -DSQLITE_THREADSAFE=1
+)
+
+prepare() {
+  cd "${srcdir}/sqlite-amalgamation-${_srcver}"
+  patch -Np1 -i \
+    "${srcdir}/0001-shell-require-Win32-for-precise-file-time.patch"
+}
+
+build() {
+  local source_dir="${srcdir}/sqlite-amalgamation-${_srcver}"
+  local build_dir="${srcdir}/build-${_target}"
+  local stage_dir="${srcdir}/stage-${_target}"
+  local report_dir="${srcdir}/sqlite-report"
+  local target_root="${stage_dir}${_prefix}"
+  local dll_name=msys-sqlite3-0.dll
+  local binutils_bindir="${MSYSARM64_BINUTILS_BINDIR:-/opt/bin}"
+  local -a target_flags=(
+    "-B${binutils_bindir}/"
+    "--sysroot=${_prefix}"
+    "-specs=${_prefix}/lib/cygwin-compile-only.specs"
+    -static-libgcc
+  )
+  local -a compile_flags=(
+    -O2
+    -pipe
+    -fno-strict-aliasing
+    "-ffile-prefix-map=${srcdir}=."
+    "-fdebug-prefix-map=${srcdir}=."
+    "-fmacro-prefix-map=${srcdir}=."
+    -D_WIN64
+  )
+
+  export PATH="${binutils_bindir}:/opt/bin:${PATH}"
+
+  rm -rf \
+    "${build_dir}" \
+    "${stage_dir}" \
+    "${report_dir}" \
+    "${srcdir}/native-smoke"
+  mkdir -p \
+    "${build_dir}" \
+    "${target_root}/bin" \
+    "${target_root}/include" \
+    "${target_root}/lib/pkgconfig" \
+    "${report_dir}"
+
+  test "$("${_target}-gcc" -dumpmachine)" = "${_target}"
+  test "$("${_target}-gcc" -dumpfullversion)" = '15.0.1'
+  local selected_linker
+  selected_linker="$(
+    "${_target}-gcc" "-B${binutils_bindir}/" -print-prog-name=ld
+  )"
+  selected_linker="$(realpath "${selected_linker}")"
+  test -x "${selected_linker}"
+  test "$(sha256sum "${selected_linker}" | awk '{print $1}')" = \
+    "${_binutils_linker_sha256}"
+
+  "${_target}-gcc" \
+    "${target_flags[@]}" \
+    "${compile_flags[@]}" \
+    "${_sqlite_features[@]}" \
+    -c "${source_dir}/sqlite3.c" \
+    -o "${build_dir}/sqlite3.o"
+
+  "${_target}-nm" -g --defined-only "${build_dir}/sqlite3.o" \
+    | awk '
+        $2 ~ /^[BDRT]$/ &&
+        $3 ~ /^sqlite3(_|changeset_|changegroup_|session_|rebaser_)/ {
+          print $2 "\t" $3
+        }
+      ' \
+    | LC_ALL=C sort -k2 \
+    > "${build_dir}/sqlite3-public-symbols.tsv"
+  cut -f2 "${build_dir}/sqlite3-public-symbols.tsv" \
+    > "${build_dir}/sqlite3-public-symbols.txt"
+  "${_target}-nm" -g --defined-only "${build_dir}/sqlite3.o" \
+    | awk '
+        $2 ~ /^[BDRT]$/ &&
+        $3 !~ /^sqlite3(_|changeset_|changegroup_|session_|rebaser_)/ {
+          print
+        }
+      ' \
+    > "${build_dir}/sqlite3-private-globals.txt"
+  test ! -s "${build_dir}/sqlite3-private-globals.txt"
+  test "$(wc -l < "${build_dir}/sqlite3-public-symbols.tsv")" -eq 354
+  {
+    printf 'LIBRARY %s\n' "${dll_name}"
+    printf 'EXPORTS\n'
+    awk '
+        $1 ~ /^[BDR]$/ {
+          print $2 " DATA"
+          next
+        }
+        $1 == "T" {
+          print $2
+        }
+      ' "${build_dir}/sqlite3-public-symbols.tsv"
+  } > "${build_dir}/sqlite3.def"
+
+  "${_target}-gcc" \
+    "${target_flags[@]}" \
+    -shared \
+    -Wl,--exclude-all-symbols \
+    "-Wl,--out-implib,${build_dir}/libsqlite3.dll.a" \
+    -Wl,--enable-auto-image-base \
+    -o "${build_dir}/${dll_name}" \
+    "${build_dir}/sqlite3.def" \
+    "${build_dir}/sqlite3.o" \
+    -lm
+
+  "${_target}-ar" crD \
+    "${build_dir}/libsqlite3.a" \
+    "${build_dir}/sqlite3.o"
+  "${_target}-ranlib" -D "${build_dir}/libsqlite3.a"
+
+  "${_target}-gcc" \
+    "${target_flags[@]}" \
+    "${compile_flags[@]}" \
+    "${_sqlite_features[@]}" \
+    -c "${source_dir}/shell.c" \
+    -o "${build_dir}/shell.o"
+  "${_target}-gcc" \
+    "${target_flags[@]}" \
+    "${build_dir}/shell.o" \
+    "${build_dir}/libsqlite3.dll.a" \
+    -lm \
+    -o "${build_dir}/sqlite3.exe"
+
+  install -Dm755 \
+    "${build_dir}/${dll_name}" \
+    "${target_root}/bin/${dll_name}"
+  install -Dm755 \
+    "${build_dir}/sqlite3.exe" \
+    "${target_root}/bin/sqlite3.exe"
+  install -Dm644 \
+    "${build_dir}/libsqlite3.a" \
+    "${target_root}/lib/libsqlite3.a"
+  install -Dm644 \
+    "${build_dir}/libsqlite3.dll.a" \
+    "${target_root}/lib/libsqlite3.dll.a"
+  install -Dm644 \
+    "${build_dir}/sqlite3.def" \
+    "${target_root}/lib/sqlite3.def"
+  install -Dm644 \
+    "${source_dir}/sqlite3.h" \
+    "${target_root}/include/sqlite3.h"
+  install -Dm644 \
+    "${source_dir}/sqlite3ext.h" \
+    "${target_root}/include/sqlite3ext.h"
+
+  cat > "${target_root}/lib/pkgconfig/sqlite3.pc" <<EOF
+prefix=${_prefix}
+exec_prefix=\${prefix}
+libdir=\${exec_prefix}/lib
+includedir=\${prefix}/include
+
+Name: SQLite
+Description: SQL database engine
+Version: ${pkgver}
+Libs: -L\${libdir} -lsqlite3
+Libs.private: -lm
+Cflags: -I\${includedir}
+EOF
+
+  {
+    printf 'package-version\t%s-%s\n' "${pkgver}" "${pkgrel}"
+    printf 'source-url\thttps://www.sqlite.org/%s/sqlite-amalgamation-%s.zip\n' \
+      "${_sqlite_year}" "${_srcver}"
+    printf 'source-sha256\t%s\n' \
+      '1e71ddf93849c6a6ecf58b827c0692073d2dd7ee40196158068f7b29f422e87d'
+    printf 'target\t%s\n' "${_target}"
+    printf 'compiler\t%s\n' "$("${_target}-gcc" -dumpfullversion)"
+    printf 'binutils-version\t%s-%s\n' \
+      "${_binutils_version}" "${_binutils_pkgrel}"
+    printf 'binutils-release\t%s\n' "${_binutils_release_tag}"
+    printf 'binutils-package-head\t%s\n' "${_binutils_package_head}"
+    printf 'binutils-package-sha256\t%s\n' "${_binutils_package_sha256}"
+    printf 'binutils-linker\t%s\n' "${selected_linker}"
+    printf 'binutils-linker-sha256\t%s\n' "${_binutils_linker_sha256}"
+    printf 'binutils-source-commit\t%s\n' "${_binutils_source_commit}"
+    printf 'binutils-source-tree\t%s\n' "${_binutils_source_tree}"
+    printf 'binutils-source-archive-sha256\t%s\n' \
+      "${_binutils_source_archive_sha256}"
+    printf 'binutils-source-scanner-sha256\t%s\n' \
+      "${_binutils_source_scanner_sha256}"
+    printf 'binutils-package-scanner-sha256\t%s\n' \
+      "${_binutils_package_scanner_sha256}"
+    printf 'runtime-version\t%s-%s\n' \
+      "${_runtime_version}" "${_runtime_pkgrel}"
+    printf 'sysroot-version\t%s-%s\n' \
+      "${_sysroot_version}" "${_sysroot_pkgrel}"
+    printf 'gcc-package-version\t%s-%s\n' \
+      "${_gcc_version}" "${_gcc_pkgrel}"
+    printf 'w32api-version\t%s-%s\n' \
+      "${_w32api_version}" "${_w32api_pkgrel}"
+    printf 'dll-exports\t354\n'
+    printf 'dll-data-exports\t3\n'
+    printf 'update-delete-limit\tdisabled-prebuilt-parser\n'
+    printf 'readline\tdisabled-no-native-input\n'
+    printf 'zlib\tdisabled-no-native-input\n'
+    printf 'host-fallback\tforbidden\n'
+    printf '%s\n' "${_sqlite_features[@]}" \
+      | LC_ALL=C sort \
+      | sed 's/^/feature\t/'
+  } > "${report_dir}/source-identity.txt"
+}
+
+check() {
+  local build_dir="${srcdir}/build-${_target}"
+  local stage_dir="${srcdir}/stage-${_target}"
+  local report_dir="${srcdir}/sqlite-report"
+  local target_root="${stage_dir}${_prefix}"
+  local dynamic_smoke="${report_dir}/sqlite-api-dynamic-smoke.exe"
+  local static_smoke="${report_dir}/sqlite-api-static-smoke.exe"
+  local smoke_object="${report_dir}/sqlite-api-smoke.o"
+  local scanner="${srcdir}/check-aarch64-pseudo-relocs.ps1"
+  local scanner_dir="${report_dir}/pseudo-relocs"
+  local binutils_bindir="${MSYSARM64_BINUTILS_BINDIR:-/opt/bin}"
+  local -a target_flags=(
+    "-B${binutils_bindir}/"
+    "--sysroot=${_prefix}"
+    "-specs=${_prefix}/lib/cygwin-compile-only.specs"
+    -static-libgcc
+  )
+
+  export PATH="${binutils_bindir}:/opt/bin:${PATH}"
+  mkdir -p "${scanner_dir}"
+  test "$(sha256sum "${scanner}" | awk '{print $1}')" = \
+    "${_binutils_package_scanner_sha256}"
+
+  "${_target}-gcc" \
+    "${target_flags[@]}" \
+    -O2 \
+    -D_WIN64 \
+    "-I${target_root}/include" \
+    -c "${srcdir}/sqlite-smoke.c" \
+    -o "${smoke_object}"
+  "${_target}-gcc" \
+    "${target_flags[@]}" \
+    "${smoke_object}" \
+    "${target_root}/lib/libsqlite3.dll.a" \
+    -o "${dynamic_smoke}"
+  "${_target}-gcc" \
+    "${target_flags[@]}" \
+    "${smoke_object}" \
+    "${target_root}/lib/libsqlite3.a" \
+    -lm \
+    -o "${static_smoke}"
+
+  bash "${srcdir}/validate-sqlite.sh" \
+    "${stage_dir}" \
+    "${report_dir}/payload" \
+    "${dynamic_smoke}"
+
+  for object in \
+    "${build_dir}/sqlite3.o" \
+    "${build_dir}/shell.o" \
+    "${smoke_object}"
+  do
+    object_name=$(basename "${object}")
+    "${_target}-objdump" -f "${object}" \
+      > "${report_dir}/${object_name}.file.txt"
+    grep -F 'file format pe-aarch64-little' \
+      "${report_dir}/${object_name}.file.txt"
+    grep -F 'architecture: aarch64' \
+      "${report_dir}/${object_name}.file.txt"
+  done
+
+  "${_target}-nm" -s "${target_root}/lib/libsqlite3.a" \
+    > "${report_dir}/libsqlite3.armap.txt"
+  grep -Fx 'sqlite3_open in sqlite3.o' \
+    "${report_dir}/libsqlite3.armap.txt"
+  "${_target}-nm" -s "${target_root}/lib/libsqlite3.dll.a" \
+    > "${report_dir}/libsqlite3-dll.armap.txt"
+  grep -Eq '^__imp_sqlite3_open in .+\.o$' \
+    "${report_dir}/libsqlite3-dll.armap.txt"
+
+  "${_target}-objdump" -f "${static_smoke}" \
+    > "${report_dir}/sqlite-api-static-smoke.file.txt"
+  grep -F 'file format pei-aarch64-little' \
+    "${report_dir}/sqlite-api-static-smoke.file.txt"
+  grep -F 'architecture: aarch64' \
+    "${report_dir}/sqlite-api-static-smoke.file.txt"
+  "${_target}-objdump" -p "${static_smoke}" \
+    > "${report_dir}/sqlite-api-static-smoke.headers.txt"
+  sed -n 's/^[[:space:]]*DLL Name: //p' \
+    "${report_dir}/sqlite-api-static-smoke.headers.txt" \
+    > "${report_dir}/sqlite-api-static-smoke.imports.txt"
+  grep -Fxi 'KERNEL32.dll' \
+    "${report_dir}/sqlite-api-static-smoke.imports.txt"
+  grep -Fxi 'msys-2.0.dll' \
+    "${report_dir}/sqlite-api-static-smoke.imports.txt"
+  if grep -Eiq 'msys-sqlite3-0\.dll|cygwin|mingw|x86' \
+      "${report_dir}/sqlite-api-static-smoke.imports.txt"; then
+    echo 'static SQLite smoke contains a foreign or dynamic SQLite import' >&2
+    return 1
+  fi
+
+  local objdump_path nm_path pe pe_name output
+  objdump_path="$(realpath "$(command -v "${_target}-objdump")")"
+  nm_path="$(realpath "$(command -v "${_target}-nm")")"
+  : > "${scanner_dir}/summary.tsv"
+  for pe in \
+    "${target_root}/bin/msys-sqlite3-0.dll" \
+    "${target_root}/bin/sqlite3.exe" \
+    "${dynamic_smoke}" \
+    "${static_smoke}"
+  do
+    pe_name=$(basename "${pe}")
+    output="${scanner_dir}/${pe_name}.json"
+    pwsh -NoLogo -NoProfile -File "$(cygpath -w "${scanner}")" \
+      -PePath "$(cygpath -w "${pe}")" \
+      -OutputPath "$(cygpath -w "${output}")" \
+      -Objdump "$(cygpath -w "${objdump_path}")" \
+      -Nm "$(cygpath -w "${nm_path}")"
+    python -c '
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8-sig"))
+assert data["result"] == "pass"
+assert data["policy_violations"] == []
+assert all(flag in (8, 16, 32, 64) for flag in data["flags"])
+assert not ({12, 21} & set(data["flags"]))
+data["input_path"] = pathlib.PureWindowsPath(data["input_path"]).name
+path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+print("{}\t{}\t{}\t{}".format(
+    path.stem,
+    data["table_format"],
+    data["record_count"],
+    ",".join(str(flag) for flag in data["flags"]),
+))
+' "${output}" >> "${scanner_dir}/summary.tsv"
+  done
+  test "$(wc -l < "${scanner_dir}/summary.tsv")" -eq 4
+
+  install -Dm644 \
+    "${srcdir}/sqlite-smoke.c" \
+    "${srcdir}/native-smoke/sqlite-smoke.c"
+  install -Dm755 \
+    "${dynamic_smoke}" \
+    "${srcdir}/native-smoke/sqlite-api-dynamic-smoke.exe"
+  install -Dm755 \
+    "${static_smoke}" \
+    "${srcdir}/native-smoke/sqlite-api-static-smoke.exe"
+  rm -f "${dynamic_smoke}" "${static_smoke}" "${smoke_object}"
+  find "${report_dir}" -type f -exec \
+    sed -i "s#${srcdir}/##g" {} +
+
+  grep -Fx $'target\taarch64-pc-msys' \
+    "${report_dir}/source-identity.txt"
+  grep -Fx $'host-fallback\tforbidden' \
+    "${report_dir}/source-identity.txt"
+  grep -Fx $'readline\tdisabled-no-native-input' \
+    "${report_dir}/source-identity.txt"
+  grep -Fx $'zlib\tdisabled-no-native-input' \
+    "${report_dir}/source-identity.txt"
+}
+
+_install_license() {
+  install -Dm644 \
+    "${srcdir}/LICENSE" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}
+
+package_mingw-w64-cross-msysarm64-libsqlite() {
+  local target_root="${srcdir}/stage-${_target}${_prefix}"
+  local pkgroot="${pkgdir}${_prefix}"
+
+  pkgdesc="Native ARM64 MSYS SQLite shared library"
+  depends=(
+    "mingw-w64-cross-msysarm64-runtime=${_runtime_version}-${_runtime_pkgrel}"
+  )
+  provides=("aarch64-pc-msys-libsqlite=${pkgver}")
+  conflicts=('aarch64-pc-msys-libsqlite')
+  options=('!strip' '!buildflags' '!emptydirs')
+
+  install -Dm755 \
+    "${target_root}/bin/msys-sqlite3-0.dll" \
+    "${pkgroot}/bin/msys-sqlite3-0.dll"
+  _install_license
+}
+
+package_mingw-w64-cross-msysarm64-libsqlite-devel() {
+  local target_root="${srcdir}/stage-${_target}${_prefix}"
+  local pkgroot="${pkgdir}${_prefix}"
+  local docroot="${pkgroot}/share/doc/${pkgbase}"
+
+  pkgdesc="Native ARM64 MSYS SQLite headers and libraries"
+  depends=(
+    "mingw-w64-cross-msysarm64-libsqlite=${pkgver}-${pkgrel}"
+    "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
+    "mingw-w64-cross-msysarm64-sysroot=${_sysroot_version}-${_sysroot_pkgrel}"
+  )
+  provides=(
+    "aarch64-pc-msys-libsqlite-devel=${pkgver}"
+    "aarch64-pc-msys-sqlite-devel=${pkgver}"
+  )
+  conflicts=(
+    'aarch64-pc-msys-libsqlite-devel'
+    'aarch64-pc-msys-sqlite-devel'
+  )
+  options=('staticlibs' '!strip' '!buildflags' '!emptydirs')
+
+  mkdir -p "${pkgroot}"
+  cp -a "${target_root}/include" "${pkgroot}/"
+  cp -a "${target_root}/lib" "${pkgroot}/"
+  install -Dm644 "${srcdir}/README.md" "${docroot}/README.md"
+  install -Dm644 \
+    "${srcdir}/sqlite-smoke.c" \
+    "${docroot}/sqlite-smoke.c"
+  install -Dm755 \
+    "${srcdir}/validate-sqlite.sh" \
+    "${docroot}/validate-sqlite.sh"
+  install -Dm644 \
+    "${srcdir}/check-aarch64-pseudo-relocs.ps1" \
+    "${docroot}/check-aarch64-pseudo-relocs.ps1"
+  cp -a "${srcdir}/sqlite-report/." "${docroot}/"
+  _install_license
+}
+
+package_mingw-w64-cross-msysarm64-sqlite() {
+  local target_root="${srcdir}/stage-${_target}${_prefix}"
+  local pkgroot="${pkgdir}${_prefix}"
+
+  pkgdesc="Native ARM64 MSYS SQLite command-line shell"
+  depends=(
+    "mingw-w64-cross-msysarm64-libsqlite=${pkgver}-${pkgrel}"
+    "mingw-w64-cross-msysarm64-runtime=${_runtime_version}-${_runtime_pkgrel}"
+  )
+  provides=("aarch64-pc-msys-sqlite=${pkgver}")
+  conflicts=('aarch64-pc-msys-sqlite')
+  options=('!strip' '!buildflags' '!emptydirs')
+
+  install -Dm755 \
+    "${target_root}/bin/sqlite3.exe" \
+    "${pkgroot}/bin/sqlite3.exe"
+  _install_license
+}
