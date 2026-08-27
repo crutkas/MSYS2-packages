@@ -189,10 +189,11 @@ jobs:
           $msys2Root = '${{ steps.msys2.outputs.msys2-location }}'
           $bash = Join-Path $msys2Root 'usr\bin\bash.exe'
           $pacman = Join-Path $msys2Root 'usr\bin\pacman.exe'
-          $checkoutRoot = & (Join-Path $msys2Root 'usr\bin\cygpath.exe') -u "${{ github.workspace }}"
+          $repoRoot = Join-Path $env:GITHUB_WORKSPACE 'temp'
+          $checkoutRoot = & (Join-Path $msys2Root 'usr\bin\cygpath.exe') -u $repoRoot
           $script = "set -e; export MSYS=winsymlinks:sys; cd '$checkoutRoot/mingw-w64-cross-msysarm64-libstdcxx-headers' && makepkg --noconfirm --noprogressbar --syncdeps --rmdeps --cleanbuild"
           & $bash --login -lc $script
-          $pkg = Get-ChildItem -Path "${{ github.workspace }}\mingw-w64-cross-msysarm64-libstdcxx-headers" -Filter 'mingw-w64-cross-msysarm64-libstdc++-headers-*.pkg.tar.*' | Select-Object -First 1
+          $pkg = Get-ChildItem -Path (Join-Path $repoRoot 'mingw-w64-cross-msysarm64-libstdcxx-headers') -Filter 'mingw-w64-cross-msysarm64-libstdc++-headers-*.pkg.tar.*' | Select-Object -First 1
           if (-not $pkg) { throw 'libstdc++ headers package was not produced' }
           & $pacman --noconfirm -U $pkg.FullName
 
