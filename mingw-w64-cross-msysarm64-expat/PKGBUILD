@@ -209,6 +209,14 @@ build() {
     echo 'CMake metadata still references the Cygwin DLL name' >&2
     return 1
   fi
+
+  local _archive
+  for _archive in \
+    "${_stage}/usr/lib/libexpat.a" \
+    "${_stage}/usr/lib/libexpat.dll.a"
+  do
+    aarch64-pc-msys-ar sD "${_archive}"
+  done
 }
 
 check() {
