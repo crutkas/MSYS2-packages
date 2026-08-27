@@ -2,7 +2,7 @@
 * text eol=lf
 
 # Keep the ncurses patch payload byte-stable on Windows checkouts.
-mingw-w64-cross-msysarm64-ncurses/*.patch -text
+mingw-w64-cross-msysarm64-ncurses/*.patch binary
 
 # Windows batch files need to have CRLF line endings on checkout
 *.cmd text eol=crlf
