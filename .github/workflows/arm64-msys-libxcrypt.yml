@@ -448,14 +448,19 @@ jobs:
           audit_dir=artifacts/libxcrypt-audit
           transaction_root="$PWD/.ci-libxcrypt-transaction-root"
           pacman_config="$audit_dir/isolated-pacman.conf"
+          pacman_log="$transaction_root/var/log/pacman.log"
+          pacman_hooks="$transaction_root/etc/pacman.d/hooks"
           target_root="${transaction_root}/opt/aarch64-pc-msys/usr"
           logical_target_root=/opt/aarch64-pc-msys/usr
           shared_db=/var/lib/pacman/local
+          shared_log=/var/log/pacman.log
           mkdir -p "$audit_dir"
           rm -rf "$transaction_root"
           mkdir -p \
+            "$pacman_hooks" \
             "$transaction_root/var/cache/pacman/pkg" \
-            "$transaction_root/var/lib/pacman"
+            "$transaction_root/var/lib/pacman" \
+            "$transaction_root/var/log"
           cat > "$pacman_config" <<'EOF'
           [options]
           Architecture = auto
@@ -470,6 +475,8 @@ jobs:
             --cachedir "$transaction_root/var/cache/pacman/pkg"
             --config "$pacman_config"
             --gpgdir /etc/pacman.d/gnupg
+            --hookdir "$pacman_hooks"
+            --logfile "$pacman_log"
           )
 
           snapshot_shared_db() {
@@ -480,6 +487,15 @@ jobs:
                 LC_ALL=C sort -z |
                 xargs -0 sha256sum
             ) > "$output"
+          }
+
+          snapshot_shared_log() {
+            local output=$1
+            if [[ -f "$shared_log" ]]; then
+              sha256sum "$shared_log" > "$output"
+            else
+              printf 'absent\t%s\n' "$shared_log" > "$output"
+            fi
           }
 
           snapshot_root() {
@@ -544,6 +560,7 @@ jobs:
           done
 
           snapshot_shared_db "$audit_dir/shared-db-before.sha256"
+          snapshot_shared_log "$audit_dir/shared-log-before.sha256"
           snapshot_root "$audit_dir/isolated-root-before.txt"
 
           MSYS=winsymlinks:sys "${pacman_root[@]}" --noconfirm -U \
@@ -643,9 +660,15 @@ jobs:
             "$audit_dir/owned-payload-after-reinstall.txt"
 
           snapshot_shared_db "$audit_dir/shared-db-after.sha256"
+          snapshot_shared_log "$audit_dir/shared-log-after.sha256"
           cmp \
             "$audit_dir/shared-db-before.sha256" \
             "$audit_dir/shared-db-after.sha256"
+          cmp \
+            "$audit_dir/shared-log-before.sha256" \
+            "$audit_dir/shared-log-after.sha256"
+          test -f "$pacman_log"
+          cp "$pacman_log" "$audit_dir/isolated-pacman.log"
           rm -rf "$transaction_root"
           '@
           & $bash --login -lc $script -- $buildRoot $inputRoot
