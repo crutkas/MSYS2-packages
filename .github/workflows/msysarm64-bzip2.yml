@@ -492,6 +492,7 @@ jobs:
             if ($LASTEXITCODE -eq 0) {
               throw 'missing input was not rejected'
             }
+            $global:LASTEXITCODE = 0
           }
           finally {
             Pop-Location
