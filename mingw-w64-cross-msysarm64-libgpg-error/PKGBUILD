@@ -1,0 +1,176 @@
+# Maintainer: Chris Reddington <crutkas@microsoft.com>
+
+_realname=libgpg-error
+_target=aarch64-pc-msys
+_runtime_release_tag=msysarm64-runtime-pr10-a527-20260824
+_runtime_version=3.6.10.r0.ga527ace21
+_runtime_pkgrel=1
+_sysroot_version=3.6.10.r0.ga527ace21
+_sysroot_pkgrel=1
+_gcc_release_version=15.0.1dev
+_gcc_release_pkgrel=1
+
+pkgbase=mingw-w64-cross-msysarm64-libgpg-error
+pkgname=(
+  mingw-w64-cross-msysarm64-libgpg-error
+  mingw-w64-cross-msysarm64-libgpg-error-devel
+)
+pkgver=1.56
+pkgrel=1
+pkgdesc="ARM64 MSYS support library for GnuPG"
+arch=('x86_64')
+url="https://gnupg.org"
+msys2_repository_url="https://git.gnupg.org/cgi-bin/gitweb.cgi?p=libgpg-error.git"
+msys2_references=(
+  "cpe: cpe:/a:gnupg:libgpg-error"
+)
+license=('spdx:LGPL-2.1-or-later')
+depends=("aarch64-pc-msys-runtime=${_runtime_version}")
+makedepends=(
+  'autotools'
+  'gcc'
+  'gettext-devel'
+  'libiconv-devel'
+  'mingw-w64-cross-cygwinarm64-binutils=2.44.50-2'
+  "mingw-w64-cross-msysarm64-gcc=${_gcc_release_version}-${_gcc_release_pkgrel}"
+  "mingw-w64-cross-msysarm64-gcc-libs=${_gcc_release_version}-${_gcc_release_pkgrel}"
+  "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
+  "mingw-w64-cross-msysarm64-sysroot=${_sysroot_version}-${_sysroot_pkgrel}"
+  'mingw-w64-cross-msysarm64-w32api-runtime=14.0.0.r0.g9b3dd0125-1'
+)
+options=('!strip' '!buildflags' '!emptydirs')
+source=(
+  "${_realname}-${pkgver}.tar.bz2::https://gnupg.org/ftp/gcrypt/${_realname}/${_realname}-${pkgver}.tar.bz2"
+  "${_realname}-${pkgver}.tar.bz2.sig::https://gnupg.org/ftp/gcrypt/${_realname}/${_realname}-${pkgver}.tar.bz2.sig"
+  gnulib-weak.patch
+  gpg-error-static-linking.patch
+)
+sha256sums=('82c3d2deb4ad96ad3925d6f9f124fe7205716055ab50e291116ef27975d169c0'
+            'SKIP'
+            'bb9fcb4713a62b28bddf0f6aa20e89b6b1e98bebce503bfa8efd5c1ff38a3c2f'
+            '07a60fb641195effd91d4da06d3ca95d9481c9f35ac0e94f320d7db8a83fbd72')
+#These might be signed by any of these keys https://gnupg.org/signature_key.html
+validpgpkeys=('5B80C5754298F0CB55D8ED6ABCEF7E294B092E28'
+              '6DAA6E64A76D2840571B4902528897B826403ADA'
+              'AC8E115BF73E2D8D47FA9908E98E9B2D19C6C8BD'
+              '02F38DFF731FF97CB039A1DA549E695E905BA208')
+
+prepare() {
+  cd "${srcdir}/${_realname}-${pkgver}"
+
+  patch -p1 -i "${srcdir}/gnulib-weak.patch"
+  patch -p1 -i "${srcdir}/gpg-error-static-linking.patch"
+  perl -0pi -e 's/case "\$\{host\}" in\n    x86_64-\*mingw32\*\)\n        have_w32_system=yes\n        have_w64_system=yes\n        ;;/case "${host}" in\n    x86_64-*mingw32*)\n        have_w32_system=yes\n        have_w64_system=yes\n        ;;/s' configure.ac
+  perl -0pi -e 's/if \(!strcmp \(host_os, "mingw32"\)\)\n        \{\n          include_file \(fname, lnr, "w32-add.h", write_line\);\n        \}/if (!strcmp (host_os, "mingw32"))\n        {\n          include_file (fname, lnr, "w32-add.h", write_line);\n        }/s; s/include_file \(fname, lnr, "syscfg\/lock-obj-pub\.\&\.h", write_line\);/if (!strcmp (host_os, "msys"))\n            include_file (fname, lnr,\n                          "syscfg\/lock-obj-pub.mingw32.h", write_line);\n          else\n            include_file (fname, lnr, "syscfg\/lock-obj-pub.&.h", write_line);/s' src/mkheader.c
+  perl -0pi -e 's/cygwin\* \| mingw\* \| windows\* \| pw32\* \| cegcc\*/cygwin* | msys* | mingw* | windows* | pw32* | cegcc*/g; s/cygwin\*\)/cygwin* | msys*)/g' m4/libtool.m4
+  autoreconf -fi
+}
+
+build() {
+  cd "${srcdir}/${_realname}-${pkgver}"
+
+  local _build_triplet="$(gcc -dumpmachine)"
+  local _target_include="-isystem /opt/${_target}/include -isystem /opt/${_target}/include/w32api"
+  local _target_defs=""
+
+  export PATH="/opt/bin:${PATH}"
+  export lt_cv_deplibs_check_method='pass_all'
+  export lt_cv_archive_cmds_need_lc='no'
+  export ARFLAGS='crsD'
+  export CPPFLAGS="${CPPFLAGS:-} ${_target_defs} ${_target_include}"
+  export CFLAGS="${CFLAGS:-} ${_target_defs} ${_target_include}"
+  export CXXFLAGS="${CXXFLAGS:-} ${_target_defs} ${_target_include}"
+
+  perl -0pi -e 's/cygwin\* \| mingw\* \| windows\* \| pw32\* \| cegcc\*/cygwin* | msys* | mingw* | windows* | pw32* | cegcc*/g; s/\n    cygwin\*\)\n      # Cygwin DLLs use '\''cyg'\'' prefix rather than '\''lib'\''/\n    cygwin* | msys*)\n      # Cygwin DLLs use '\''cyg'\'' prefix rather than '\''lib'\''/g' configure
+
+  ./configure \
+    CC="aarch64-pc-msys-gcc -B/opt/bin/" \
+    AR="aarch64-pc-cygwin-ar" \
+    RANLIB="aarch64-pc-cygwin-ranlib" \
+    LD="aarch64-pc-msys-ld" \
+    NM="aarch64-pc-msys-nm" \
+    STRIP="aarch64-pc-cygwin-strip" \
+    DLLTOOL="aarch64-pc-cygwin-dlltool" \
+    WINDRES="aarch64-pc-cygwin-windres" \
+    CC_FOR_BUILD=gcc \
+    --prefix=/usr \
+    --build="${_build_triplet}" \
+    --host="${_target}" \
+    --without-libiconv-prefix \
+    --without-libintl-prefix \
+    --enable-install-gpg-error-config \
+    --enable-shared \
+    --enable-static
+
+  # The upstream target only copies this script after a fork-heavy host self-test.
+  cp src/gpg-error-config-old src/gpg-error-config
+  make no_undefined=-no-undefined
+  make DESTDIR="${srcdir}/dest" install
+}
+
+check() {
+  local _dest="${srcdir}/dest"
+  local _pkgroot="${_dest}/usr"
+  local _dll
+  local _exe
+
+  test -f "${srcdir}/${_realname}-${pkgver}/src/gpg-error.h"
+  test -f "${srcdir}/${_realname}-${pkgver}/src/gpgrt.h"
+  test -f "${srcdir}/${_realname}-${pkgver}/src/gpg-error.def"
+  test -f "${_pkgroot}/include/gpg-error.h"
+  test -f "${_pkgroot}/lib/pkgconfig/gpg-error.pc"
+  test -f "${_pkgroot}/bin/gpg-error-config"
+  _dll="$(find "${_pkgroot}/lib" -maxdepth 1 -type f -name '*.dll' | head -n 1)"
+  _exe="$(find "${_pkgroot}/bin" -maxdepth 1 -type f -name '*.exe' | head -n 1)"
+  test -f "${_pkgroot}/lib/libgpg-error.a"
+  test -n "${_dll}"
+  test -n "${_exe}"
+
+  aarch64-pc-msys-objdump -f "${_dll}" | grep -F "file format pei-aarch64-little"
+  aarch64-pc-msys-objdump -p "${_dll}" | grep -F "msys-2.0.dll"
+  ! aarch64-pc-msys-objdump -p "${_dll}" | grep -Ei 'cygwin1\.dll|x86_64'
+
+  aarch64-pc-msys-objdump -f "${_exe}" | grep -F "file format pei-aarch64-little"
+  ! aarch64-pc-msys-objdump -p "${_exe}" | grep -Ei 'cygwin1\.dll|x86_64'
+
+  grep -F 'prefix=/usr' "${_pkgroot}/bin/gpg-error-config"
+  grep -F 'prefix=/usr' "${_pkgroot}/lib/pkgconfig/gpg-error.pc"
+  grep -F 'Libs.private:' "${_pkgroot}/lib/pkgconfig/gpg-error.pc"
+  grep -F '/usr' "${_pkgroot}/lib/pkgconfig/gpg-error.pc"
+  aarch64-pc-msys-nm -s "${_pkgroot}/lib/libgpg-error.a" | grep -F 'Archive index:'
+}
+
+package_mingw-w64-cross-msysarm64-libgpg-error() {
+  pkgdesc="ARM64 MSYS runtime library for GnuPG"
+  depends=("aarch64-pc-msys-runtime=${_runtime_version}")
+  provides=("aarch64-pc-msys-libgpg-error=${pkgver}")
+  conflicts=('aarch64-pc-msys-libgpg-error')
+
+  mkdir -p "${pkgdir}/opt/${_target}/usr/bin" "${pkgdir}/opt/${_target}/usr/share"
+  cp -a "${srcdir}/dest/usr/bin" "${pkgdir}/opt/${_target}/usr/"
+  cp -a "${srcdir}/dest/usr/lib"/*.dll "${pkgdir}/opt/${_target}/usr/bin/"
+  rm -f "${pkgdir}/opt/${_target}/usr/bin"/*-config
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING.LIB" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/COPYING.LIB"
+}
+
+package_mingw-w64-cross-msysarm64-libgpg-error-devel() {
+  pkgdesc="ARM64 MSYS libgpg-error headers and libraries"
+  groups=('development')
+  depends=("aarch64-pc-msys-libgpg-error=${pkgver}" "aarch64-pc-msys-runtime=${_runtime_version}")
+  provides=("aarch64-pc-msys-libgpg-error-devel=${pkgver}")
+  conflicts=('aarch64-pc-msys-libgpg-error-devel')
+  options=('staticlibs' '!strip')
+
+  mkdir -p "${pkgdir}/opt/${_target}/usr/bin" "${pkgdir}/opt/${_target}/usr/share"
+  cp -a "${srcdir}/dest/usr/bin"/*-config "${pkgdir}/opt/${_target}/usr/bin/"
+  cp -a "${srcdir}/dest/usr/include" "${pkgdir}/opt/${_target}/usr/"
+  cp -a "${srcdir}/dest/usr/lib" "${pkgdir}/opt/${_target}/usr/"
+  rm -f "${pkgdir}/opt/${_target}/usr/lib"/*.dll
+  aarch64-pc-cygwin-ranlib "${pkgdir}/opt/${_target}/usr/lib/libgpg-error.a"
+  aarch64-pc-cygwin-ranlib "${pkgdir}/opt/${_target}/usr/lib/libgpg-error.dll.a"
+  cp -a "${srcdir}/dest/usr/share/aclocal" "${pkgdir}/opt/${_target}/usr/share/"
+  cp -a "${srcdir}/dest/usr/share/common-lisp" "${pkgdir}/opt/${_target}/usr/share/"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING.LIB" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/COPYING.LIB"
+}
