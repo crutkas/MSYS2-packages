@@ -455,8 +455,6 @@ jobs:
           $compressed = "$input.bz2"
           $output = "$input.out"
           $pipeline = "$input.pipeline"
-          $bzip2Exe = Join-Path $bin 'bzip2.exe'
-          $bunzip2Exe = Join-Path $bin 'bunzip2.exe'
           Push-Location $evidence
           try {
             & $env:ComSpec /d /c `
@@ -472,10 +470,10 @@ jobs:
             $fileModeName = 'file-mode.bin'
             $fileMode = Join-Path $evidence $fileModeName
             Copy-Item $input $fileMode
-            & $bzip2Exe -k -f $fileModeName
+            & $env:ComSpec /d /c 'bzip2.exe -k -f file-mode.bin'
             if ($LASTEXITCODE -ne 0) { throw 'file compression failed' }
             Remove-Item -LiteralPath $fileMode
-            & $bunzip2Exe -k "$fileModeName.bz2"
+            & $env:ComSpec /d /c 'bunzip2.exe -k file-mode.bin.bz2'
             if ($LASTEXITCODE -ne 0) { throw 'file decompression failed' }
 
             $corruptName = 'corrupt.bz2'
@@ -486,11 +484,11 @@ jobs:
             $corruptBytes[$corruptIndex] =
               $corruptBytes[$corruptIndex] -bxor 0x40
             [IO.File]::WriteAllBytes($corrupt, $corruptBytes)
-            & $bzip2Exe -t $corruptName 2>$null
+            & $env:ComSpec /d /c 'bzip2.exe -t corrupt.bz2 >nul 2>&1'
             if ($LASTEXITCODE -eq 0) {
               throw 'CRC corruption was not rejected'
             }
-            & $bzip2Exe -dc 'missing.bz2' 2>$null
+            & $env:ComSpec /d /c 'bzip2.exe -dc missing.bz2 >nul 2>&1'
             if ($LASTEXITCODE -eq 0) {
               throw 'missing input was not rejected'
             }
