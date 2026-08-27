@@ -1,0 +1,127 @@
+# Maintainer: Chris Reddington <crutkas@microsoft.com>
+
+_target=aarch64-pc-msys
+_prefix=/opt/${_target}
+
+pkgbase=mingw-w64-cross-msysarm64-serf
+pkgname=("${pkgbase}" "${pkgbase}-devel")
+pkgver=1.3.10
+pkgrel=1
+pkgdesc="High-performance asynchronous HTTP client library for aarch64-pc-msys"
+arch=('x86_64')
+url="https://serf.apache.org/"
+msys2_repository_url="https://github.com/apache/serf"
+license=('spdx:Apache-2.0')
+groups=('mingw-w64-cross-toolchain' 'mingw-w64-cross')
+makedepends=(
+  'gcc'
+  'scons'
+  'mingw-w64-cross-cygwinarm64-binutils'
+  'mingw-w64-cross-cygwinarm64-gcc-stage1'
+  'mingw-w64-cross-msysarm64-apr-util-devel'
+  'mingw-w64-cross-msysarm64-libiconv-devel'
+  'mingw-w64-cross-msysarm64-openssl-devel'
+  'mingw-w64-cross-msysarm64-sysroot'
+  'mingw-w64-cross-msysarm64-zlib-devel'
+)
+options=('!strip' '!buildflags' '!emptydirs' '!libtool')
+source=("https://archive.apache.org/dist/serf/serf-${pkgver}.tar.bz2"
+        03-destdir.patch
+        05-disable-SHLIBVERSION.patch
+        06-strcasecmp.patch
+        07-sspi-auth.patch)
+sha256sums=('be81ef08baa2516ecda76a77adf7def7bc3227eeb578b9a33b45f7b41dc064e6'
+            '87767cd9b5e568a10f234df46f413a408613965e9d1b8cde1c0145f7eb20f0f1'
+            '8057f20b42f5ca49c886aecc33b0686f3505f0d75918a8ec552424c10fd69e35'
+            '313b272609729d80dedf608f9f1939526e687fdf4a1b50e1a66505c93c2ee56f'
+            '84a43b3b6d3024195fdc69d215898ac426286329025bfa239ebe27a5c7507bc0')
+
+prepare() {
+  cd "${srcdir}/serf-${pkgver}"
+
+  patch -p1 -i "${srcdir}/03-destdir.patch"
+  patch -p1 -i "${srcdir}/05-disable-SHLIBVERSION.patch"
+  patch -p1 -i "${srcdir}/06-strcasecmp.patch"
+  patch -p1 -i "${srcdir}/07-sspi-auth.patch"
+}
+
+build() {
+  cd "${srcdir}/serf-${pkgver}"
+
+  export MSYSTEM=MSYS
+  export CC=aarch64-pc-msys-gcc
+  export CXX=aarch64-pc-msys-g++
+  export AR=aarch64-pc-cygwin-ar
+  export NM=aarch64-pc-cygwin-nm
+  export RANLIB=aarch64-pc-cygwin-ranlib
+  export STRIP=aarch64-pc-cygwin-strip
+  export CPPFLAGS="-D__MSYS__ -I${_prefix}/include"
+  export CFLAGS="${CFLAGS} -D__MSYS__ -D_XOPEN_SOURCE=700"
+  export CXXFLAGS="${CXXFLAGS} -D__MSYS__ -D_XOPEN_SOURCE=700"
+  export LDFLAGS="-L${_prefix}/lib ${LDFLAGS}"
+  export LIBRARY_PATH="${_prefix}/lib"
+  export PKG_CONFIG_PATH="${_prefix}/lib/pkgconfig:${_prefix}/share/pkgconfig"
+
+  scons PREFIX="${_prefix}" \
+        APR="${_prefix}" \
+        APU="${_prefix}" \
+        ZLIB="${_prefix}" \
+        OPENSSL="${_prefix}" \
+        CFLAGS="${CFLAGS}" \
+        CXXFLAGS="${CXXFLAGS}"
+
+  install -d "${srcdir}/dest${_prefix}"
+  scons DESTDIR="${srcdir}/dest" install
+
+  local versions=($(echo "${pkgver}" | tr -t '.' '\n'))
+  local major=${versions[0]}
+
+  mv "${srcdir}/dest${_prefix}/lib/libserf-${major}-0.dll.a" \
+     "${srcdir}/dest${_prefix}/lib/libserf-${major}.dll.a"
+  mv "${srcdir}/dest${_prefix}/lib/libserf-${major}-0.a" \
+     "${srcdir}/dest${_prefix}/lib/libserf-${major}.a"
+  rm -f "${srcdir}/dest${_prefix}/lib/msys-serf-${major}-0.dll"
+  install -Dm755 msys-serf-${major}-0.dll \
+    "${srcdir}/dest${_prefix}/bin/msys-serf-${major}-0.dll"
+
+  find "${srcdir}/dest${_prefix}" -type f \( -name '*.dll' -o -name '*.a' -o -name '*.o' \) -print0 |
+    while IFS= read -r -d '' file; do
+      aarch64-pc-cygwin-objdump -f "${file}" | grep -F 'architecture: aarch64' >/dev/null
+    done
+}
+
+package_mingw-w64-cross-msysarm64-serf() {
+  pkgdesc="Serf DLLs for aarch64-pc-msys"
+  depends=(
+    'mingw-w64-cross-msysarm64-apr-util'
+    'mingw-w64-cross-msysarm64-libopenssl'
+    'mingw-w64-cross-msysarm64-zlib'
+  )
+  provides=("aarch64-pc-msys-serf=${pkgver}")
+  conflicts=('aarch64-pc-msys-serf')
+
+  install -d "${pkgdir}${_prefix}/bin"
+  cp -f "${srcdir}/dest${_prefix}/bin/"*.dll "${pkgdir}${_prefix}/bin/"
+  install -Dm644 "${srcdir}/serf-${pkgver}/LICENSE" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}
+
+package_mingw-w64-cross-msysarm64-serf-devel() {
+  pkgdesc="Serf headers and libraries for aarch64-pc-msys"
+  depends=(
+    "mingw-w64-cross-msysarm64-serf=${pkgver}"
+    'mingw-w64-cross-msysarm64-apr-util-devel'
+    'mingw-w64-cross-msysarm64-openssl-devel'
+    'mingw-w64-cross-msysarm64-zlib-devel'
+  )
+  provides=("aarch64-pc-msys-serf-devel=${pkgver}")
+  conflicts=('aarch64-pc-msys-serf-devel')
+  options=('staticlibs')
+
+  install -d "${pkgdir}${_prefix}/include" \
+    "${pkgdir}${_prefix}/lib"
+  cp -a "${srcdir}/dest${_prefix}/include" "${pkgdir}${_prefix}/"
+  cp -a "${srcdir}/dest${_prefix}/lib" "${pkgdir}${_prefix}/"
+  install -Dm644 "${srcdir}/serf-${pkgver}/LICENSE" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

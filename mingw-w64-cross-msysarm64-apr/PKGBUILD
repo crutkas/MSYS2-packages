@@ -1,0 +1,105 @@
+# Maintainer: Chris Reddington <crutkas@microsoft.com>
+
+_target=aarch64-pc-msys
+_prefix=/opt/${_target}
+
+pkgbase=mingw-w64-cross-msysarm64-apr
+pkgname=("${pkgbase}" "${pkgbase}-devel")
+pkgver=1.7.6
+pkgrel=1
+pkgdesc="Apache Portable Runtime for aarch64-pc-msys"
+arch=('x86_64')
+url="https://apr.apache.org/"
+msys2_repository_url="https://github.com/apache/apr"
+license=('spdx:Apache-2.0')
+groups=('mingw-w64-cross-toolchain' 'mingw-w64-cross')
+makedepends=(
+  'autotools'
+  'gcc'
+  'mingw-w64-cross-cygwinarm64-binutils'
+  'mingw-w64-cross-cygwinarm64-gcc-stage1'
+  'mingw-w64-cross-msysarm64-libxcrypt-devel'
+  'mingw-w64-cross-msysarm64-libuuid-devel'
+  'mingw-w64-cross-msysarm64-sysroot'
+)
+options=('!strip' '!buildflags' '!emptydirs' '!libtool')
+source=("https://archive.apache.org/dist/apr/apr-${pkgver}.tar.bz2")
+sha256sums=('49030d92d2575da735791b496dc322f3ce5cff9494779ba8cc28c7f46c5deb32')
+
+prepare() {
+  cd "${srcdir}/apr-${pkgver}"
+
+  autoreconf -fi
+}
+
+build() {
+  cd "${srcdir}/apr-${pkgver}"
+
+  export MSYSTEM=MSYS
+  export CC=aarch64-pc-msys-gcc
+  export CXX=aarch64-pc-msys-g++
+  export AR=aarch64-pc-cygwin-ar
+  export NM=aarch64-pc-cygwin-nm
+  export RANLIB=aarch64-pc-cygwin-ranlib
+  export STRIP=aarch64-pc-cygwin-strip
+  export CPPFLAGS="-D__MSYS__ -I${_prefix}/include"
+  export CFLAGS="${CFLAGS} -D__MSYS__"
+  export CXXFLAGS="${CXXFLAGS} -D__MSYS__"
+  export LDFLAGS="-L${_prefix}/lib ${LDFLAGS}"
+  export LIBRARY_PATH="${_prefix}/lib"
+  export PKG_CONFIG_PATH="${_prefix}/lib/pkgconfig:${_prefix}/share/pkgconfig"
+
+  ./configure \
+    --build="${CHOST}" \
+    --host="${_target}" \
+    --prefix="${_prefix}" \
+    --libexecdir="${_prefix}/lib/apr/modules" \
+    --datadir="${_prefix}/share/apr" \
+    --enable-shared \
+    --enable-static \
+    ac_cv_header_windows_h=no \
+    ac_cv_header_winsock2_h=no
+
+  make -j1
+  make DESTDIR="${srcdir}/dest" install
+
+  find "${srcdir}/dest${_prefix}" -type f \( -name '*.dll' -o -name '*.a' -o -name '*.o' \) -print0 |
+    while IFS= read -r -d '' file; do
+      aarch64-pc-cygwin-objdump -f "${file}" | grep -F 'architecture: aarch64' >/dev/null
+    done
+}
+
+package_mingw-w64-cross-msysarm64-apr() {
+  pkgdesc="Apache Portable Runtime DLLs for aarch64-pc-msys"
+  depends=('mingw-w64-cross-msysarm64-libxcrypt' 'mingw-w64-cross-msysarm64-libuuid')
+  provides=("aarch64-pc-msys-apr=${pkgver}")
+  conflicts=('aarch64-pc-msys-apr')
+
+  install -d "${pkgdir}${_prefix}/bin"
+  cp -f "${srcdir}/dest${_prefix}/bin/"*.dll "${pkgdir}${_prefix}/bin/"
+  install -Dm644 "${srcdir}/apr-${pkgver}/LICENSE" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}
+
+package_mingw-w64-cross-msysarm64-apr-devel() {
+  pkgdesc="Apache Portable Runtime headers and libraries for aarch64-pc-msys"
+  depends=(
+    "mingw-w64-cross-msysarm64-apr=${pkgver}"
+    'mingw-w64-cross-msysarm64-libxcrypt-devel'
+    'mingw-w64-cross-msysarm64-libuuid-devel'
+  )
+  provides=("aarch64-pc-msys-apr-devel=${pkgver}")
+  conflicts=('aarch64-pc-msys-apr-devel')
+  options=('staticlibs')
+
+  install -d "${pkgdir}${_prefix}/bin" \
+    "${pkgdir}${_prefix}/include" \
+    "${pkgdir}${_prefix}/lib" \
+    "${pkgdir}${_prefix}/share"
+  cp -a "${srcdir}/dest${_prefix}/bin"/*-config "${pkgdir}${_prefix}/bin/"
+  cp -a "${srcdir}/dest${_prefix}/include" "${pkgdir}${_prefix}/"
+  cp -a "${srcdir}/dest${_prefix}/lib" "${pkgdir}${_prefix}/"
+  cp -a "${srcdir}/dest${_prefix}/share/apr" "${pkgdir}${_prefix}/share/"
+  install -Dm644 "${srcdir}/apr-${pkgver}/LICENSE" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}
