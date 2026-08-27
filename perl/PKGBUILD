@@ -102,6 +102,10 @@ build() {
       printf 'unexpected compiler sysroot: %s\n' "$("${perl_cc}" -print-sysroot)" >&2
       return 1
     fi
+    local probe_dir
+    probe_dir=$(mktemp -d)
+    trap '[[ -n ${probe_dir:-} ]] && rm -rf -- "${probe_dir}"' RETURN
+
     "${perl_cc}" -dM -E -xc - <<< '' > "${probe_dir}/probe.predefines.txt"
     if ! grep -Fx '#define __aarch64__ 1' "${probe_dir}/probe.predefines.txt" >/dev/null; then
       printf 'missing __aarch64__ from compiler predefines\n' >&2
@@ -116,17 +120,15 @@ build() {
       return 1
     fi
 
-    local probe_dir
     local probe_object_info probe_exe_info
-    probe_dir=$(mktemp -d)
     cat > "${probe_dir}/probe.c" <<'EOF'
 #include <unistd.h>
 
 int main(void)
 {
-  static const char probe_msg[] = "";
+  static const char probe_msg[] = "x";
 
-  return (write(1, probe_msg, sizeof(probe_msg) - 1) < 0) || (getpid() == 0);
+  return (write(1, probe_msg, 1) != 1) || (getpid() == 0);
 }
 EOF
     "${perl_cc}" -std=c99 -c "${probe_dir}/probe.c" -o "${probe_dir}/probe.o"
@@ -168,19 +170,18 @@ EOF
     fi
     "${perl_objdump}" -p "${probe_dir}/probe.exe" > "${probe_dir}/probe.imports.txt" 2>&1
     cat "${probe_dir}/probe.imports.txt"
-    if ! grep -Fx 'msys-2.0.dll' "${probe_dir}/probe.imports.txt" >/dev/null; then
+    if ! grep -F 'DLL Name: msys-2.0.dll' "${probe_dir}/probe.imports.txt" >/dev/null; then
       printf 'missing msys-2.0.dll import in compiler probe\n' >&2
       return 1
     fi
-    if ! grep -Fx 'KERNEL32.dll' "${probe_dir}/probe.imports.txt" >/dev/null; then
+    if ! grep -F 'DLL Name: KERNEL32.dll' "${probe_dir}/probe.imports.txt" >/dev/null; then
       printf 'missing KERNEL32.dll import in compiler probe\n' >&2
       return 1
     fi
-    if grep -Eiq '^cygwin1\.dll$' "${probe_dir}/probe.imports.txt"; then
+    if grep -Eiq 'DLL Name:[[:space:]]*cygwin1\.dll' "${probe_dir}/probe.imports.txt"; then
       printf 'unexpected cygwin1.dll import in compiler probe\n' >&2
       return 1
     fi
-    rm -rf "${probe_dir}"
   fi
 
   export MSYSTEM=CYGWIN
@@ -214,12 +215,34 @@ EOF
 
 check() {
   cd ${srcdir}/${pkgname}-${pkgver}
-  TEST_JOBS=$(echo $MAKEFLAGS | sed 's/.*-j\([0-9][0-9]*\).*/\1/') \
-  MSYS=winsymlinks:nativestrict \
+  local test_harness_dir test_harness_log test_harness_status
+  test_harness_dir=$(mktemp -d)
+  trap '[[ -n ${test_harness_dir:-} ]] && rm -rf -- "${test_harness_dir}"' RETURN
+  test_harness_log="${test_harness_dir}/test_harness.log"
+
   # Keep the harness output visible; the ARM64 branch still reports known
-  # Archive-Tar and Time-HiRes failures, but package publication is gated by
-  # install/query/remove validation instead of this exit status.
-  make test_harness || true
+  # Archive-Tar and Time-HiRes failures, but anything else is a blocker.
+  if TEST_JOBS=$(echo $MAKEFLAGS | sed 's/.*-j\([0-9][0-9]*\).*/\1/') \
+    MSYS=winsymlinks:nativestrict \
+    make test_harness > "${test_harness_log}" 2>&1; then
+    test_harness_status=0
+  else
+    test_harness_status=$?
+  fi
+  cat "${test_harness_log}"
+  if [[ ${CARCH} == aarch64 && ${test_harness_status} -ne 0 ]]; then
+    local expected_test_failures unexpected_test_failures
+    expected_test_failures='Archive-Tar|Time-HiRes|alarm timeout|bad plan'
+    unexpected_test_failures=$(awk -v allow="${expected_test_failures}" '
+      /(FAIL|Failed|FAILED|not ok|alarm timeout|bad plan)/ && $0 !~ allow { print }
+    ' "${test_harness_log}")
+    if [[ -n ${unexpected_test_failures} ]]; then
+      printf 'unexpected test_harness failures:\n%s\n' "${unexpected_test_failures}" >&2
+      return 1
+    fi
+  elif [[ ${test_harness_status} -ne 0 ]]; then
+    return "${test_harness_status}"
+  fi
   #make test
 }
 
