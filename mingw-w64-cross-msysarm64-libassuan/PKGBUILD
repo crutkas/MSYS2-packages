@@ -28,6 +28,7 @@ msys2_repository_url="https://git.gnupg.org/cgi-bin/gitweb.cgi?p=libassuan.git"
 msys2_pgp_keys_url="https://gnupg.org/signature_key.html"
 license=('spdx:LGPL-2.1-or-later' 'spdx:GPL-3.0-or-later')
 makedepends=(
+  'diffutils'
   'gcc'
   'perl'
   'pkgconf'

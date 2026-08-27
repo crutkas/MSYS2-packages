@@ -197,6 +197,8 @@ jobs:
               '2408af61717dae87b00c855b132769a125c708907fc94a46bb16dae076113e5c'),
             @('patch-2.7.6-3-x86_64.pkg.tar.zst', 98395,
               'dd75ca0f715dd9c71a43af6a0ff3d068faeee1d768e02282d319671201cd5d45'),
+            @('diffutils-3.12-1-x86_64.pkg.tar.zst', 394515,
+              '7902c8ce3d4dd69a0f5e98dc9d5c83c17b23314ba486169db57ef6e2835ce3b6'),
             @('binutils-2.46.1-1-x86_64.pkg.tar.zst', 6186031,
               '6b20ffd521c04ae4151ed3c92cdff02051cd2139ab07db5ce4f50974bf232736'),
             @('isl-0.27-1-x86_64.pkg.tar.zst', 768472,
