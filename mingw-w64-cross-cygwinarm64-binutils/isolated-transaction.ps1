@@ -257,7 +257,8 @@ try {
         & (Join-Path $PSHOME 'pwsh.exe') -NoLogo -NoProfile -File $PseudoRelocTest `
             -RealFixtureDirectory $PseudoRelocFixtures `
             -Objdump (Join-Path $Root 'opt\bin\aarch64-pc-cygwin-objdump.exe') `
-            -Nm (Join-Path $Root 'opt\bin\aarch64-pc-cygwin-nm.exe')
+            -Nm (Join-Path $Root 'opt\bin\aarch64-pc-cygwin-nm.exe') `
+            -RequireRealFixtures
         if ($LASTEXITCODE -ne 0) {
             throw 'sealed real pseudo-reloc fixture matrix failed'
         }

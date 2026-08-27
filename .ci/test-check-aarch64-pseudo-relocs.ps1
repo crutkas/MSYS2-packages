@@ -4,7 +4,8 @@ param(
     [string] $PositivePePath,
     [string] $RealFixtureDirectory,
     [string] $Objdump = 'aarch64-pc-cygwin-objdump.exe',
-    [string] $Nm = 'aarch64-pc-cygwin-nm.exe'
+    [string] $Nm = 'aarch64-pc-cygwin-nm.exe',
+    [switch] $RequireRealFixtures
 )
 
 Set-StrictMode -Version Latest
@@ -169,8 +170,12 @@ try {
                         -ExpectedResult $fixture.result `
                         -ExpectedFlags @($fixture.flags) | Out-Null
                 }
+                'bundled-real-pe-fixtures	PASS'
             }
             elseif ($RealFixtureDirectory) {
+                if ($RequireRealFixtures) {
+                    throw 'Real PE fixtures require candidate objdump and nm.'
+                }
                 'bundled-real-pe-fixtures	SKIP (objdump/nm unavailable)'
             }
         }
@@ -214,3 +219,5 @@ finally {
         Remove-Item -LiteralPath $temp -Recurse -Force
     }
 }
+
+exit 0
