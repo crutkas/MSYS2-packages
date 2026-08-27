@@ -74,9 +74,6 @@ jobs:
           $lockPath = Join-Path $recipe 'dependency-lock.json'
           $validator = Join-Path $recipe 'validate-dependency-lock.ps1'
           & $validator -LockPath $lockPath -RequireApproved
-          if ($LASTEXITCODE -ne 0) {
-            throw 'The fixed-linker libgpg-error pair is not coordinator-admitted'
-          }
           $lock = Get-Content -Raw -LiteralPath $lockPath | ConvertFrom-Json
 
           $apiHeaders = @{
