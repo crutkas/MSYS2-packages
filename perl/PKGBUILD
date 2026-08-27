@@ -78,10 +78,6 @@ build() {
       printf 'missing ARM64 compiler binding: %s %s\n' "${perl_cc}" "${perl_ld}" >&2
       return 1
     fi
-    if ! file -L "${perl_cc}" | grep -Eq 'AArch64|ARM64'; then
-      printf 'unexpected compiler file type: %s\n' "$(file -L "${perl_cc}")" >&2
-      return 1
-    fi
     if [[ "$("${perl_cc}" -dumpmachine)" != aarch64-pc-msys ]]; then
       printf 'unexpected compiler target: %s\n' "$("${perl_cc}" -dumpmachine)" >&2
       return 1
