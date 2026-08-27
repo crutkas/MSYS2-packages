@@ -420,6 +420,8 @@ jobs:
           output="$(cygpath -u "$RUNNER_TEMP")/libgpg-error-native"
           mkdir -p "$output"
           cat > "$output/consumer.c" <<'EOF'
+          #define WINVER 0x0A00
+          #define _WIN32_WINNT 0x0A00
           #include <gpg-error.h>
           #include <stdio.h>
           #include <windows.h>
