@@ -261,6 +261,29 @@ jobs:
           If (Test-Path "$path") { rm -r -fo "$path" }
           Move-Item -Path ".\temp" -Destination "$path"
 
+      - name: Normalize ncurses patch line endings
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-native-arm64-ncurses') }}
+        shell: pwsh
+        run: |
+          $bash = 'C:\msys64\usr\bin\bash.exe'
+          $buildRoot = '${{ steps.facts.outputs.drive }}\_'
+          $buildRoot = & 'C:\msys64\usr\bin\cygpath.exe' -u $buildRoot
+          $script = @'
+          set -euo pipefail
+          cd '__BUILDROOT__'
+          for patch in \
+            mingw-w64-cross-msysarm64-ncurses/ncurses-6.6-msys-winconpty.patch \
+            mingw-w64-cross-msysarm64-ncurses/ncurses-6.6-msys-sleep-windows.patch \
+            mingw-w64-cross-msysarm64-ncurses/ncurses-6.6-msys-mkdir-mode.patch \
+            mingw-w64-cross-msysarm64-ncurses/ncurses-6.6-msys-widechars.patch
+          do
+            perl -0pi -e 's/\r\n/\n/g' "$patch"
+            ! grep -q $'\r' "$patch"
+          done
+          '@
+          $script = $script.Replace('__BUILDROOT__', $buildRoot)
+          & $bash --login -lc $script
+
       - name: Seed MSYS w32api runtime dependency
         if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-native-arm64-ncurses') }}
         shell: pwsh
