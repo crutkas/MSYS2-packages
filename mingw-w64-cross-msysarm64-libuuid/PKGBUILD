@@ -1,0 +1,418 @@
+# Maintainer: Chris Reddington <crutkas@microsoft.com>
+
+_realname=util-linux
+_target=aarch64-pc-msys
+_configure_host=aarch64-pc-cygwin
+_binutils_version=2.44.50
+_binutils_pkgrel=2
+_binutils_package_sha256=3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b
+_binutils_linker_sha256=075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f
+_binutils_source_commit=3f05fc4d3e0eeab265f2157e3257a7067b6e7223
+_binutils_release_url=https://github.com/crutkas/MSYS2-packages/releases/download/cygwinarm64-binutils-pr21-3356eec-20260827/mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst
+_runtime_version=3.6.10.r0.ga527ace21
+_runtime_pkgrel=1
+_sysroot_version=3.6.10.r0.ga527ace21
+_sysroot_pkgrel=1
+_gcc_version=15.0.1dev
+_gcc_pkgrel=1
+_w32api_version=14.0.0.r0.g9b3dd0125
+_w32api_pkgrel=1
+
+export SOURCE_DATE_EPOCH=1720080203
+
+pkgbase=mingw-w64-cross-msysarm64-libuuid
+pkgname=(
+  mingw-w64-cross-msysarm64-libuuid
+  mingw-w64-cross-msysarm64-libuuid-devel
+)
+pkgver=2.40.2
+pkgrel=1
+pkgdesc="Native libuuid for aarch64-pc-msys"
+arch=('x86_64')
+url="https://www.kernel.org/pub/linux/utils/util-linux/"
+msys2_repository_url="https://github.com/util-linux/util-linux"
+license=('spdx:BSD-3-Clause')
+groups=('mingw-w64-cross-toolchain' 'mingw-w64-cross')
+makedepends=(
+  'autotools'
+  'gcc'
+  'gettext-devel'
+  'gtk-doc'
+  "mingw-w64-cross-cygwinarm64-binutils=${_binutils_version}-${_binutils_pkgrel}"
+  "mingw-w64-cross-msysarm64-gcc=${_gcc_version}-${_gcc_pkgrel}"
+  "mingw-w64-cross-msysarm64-gcc-libs=${_gcc_version}-${_gcc_pkgrel}"
+  "mingw-w64-cross-msysarm64-runtime=${_runtime_version}-${_runtime_pkgrel}"
+  "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
+  "mingw-w64-cross-msysarm64-sysroot=${_sysroot_version}-${_sysroot_pkgrel}"
+  "mingw-w64-cross-msysarm64-w32api-runtime=${_w32api_version}-${_w32api_pkgrel}"
+)
+options=('!strip' '!buildflags' '!emptydirs')
+source=(
+  "https://www.kernel.org/pub/linux/utils/util-linux/v2.40/${_realname}-${pkgver}.tar.xz"
+  2.40.2-uuid_time.patch
+  README.md
+  validate-libuuid.sh
+  libuuid-smoke.c
+  "check-aarch64-pseudo-relocs-3356eec.ps1::https://raw.githubusercontent.com/crutkas/MSYS2-packages/3356eec1411983cc252b04afac32bca5f3b8d824/.ci/check-aarch64-pseudo-relocs.ps1"
+)
+sha256sums=(
+  'd78b37a66f5922d70edf3bdfb01a6b33d34ed3c3cafd6628203b2a2b67c8e8b3'
+  'f6954765c98b956d1006e14e43ee9ce14b423e91397e251d978a6d2d5947cbd0'
+  'bf981feb33b570b71ddbe3f5502a78178ea0838c07b5fc6dc85c7bf4dc3b04ed'
+  'cd957e28add4542a08ff5fd6ab71fa86e0686c69892113f68cf01b6086370ba4'
+  'f2d4176be48692937fddfb17db9632cc4a01d2930e7a62cae045b81cd6095fa7'
+  '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9'
+)
+
+_build_dir="build-${_target}"
+_stage_dir="stage-${_target}"
+_report_dir="libuuid-report"
+
+_require_package() {
+  local _name=$1
+  local _version=$2
+  local _identity
+
+  _identity="$(pacman -Q "${_name}")"
+  if [[ "${_identity}" != "${_name} ${_version}" ]]; then
+    printf 'ERROR: expected %s %s, found %s\n' \
+      "${_name}" "${_version}" "${_identity}" >&2
+    return 1
+  fi
+}
+
+_require_build_host() {
+  local _macro_dump
+  local _owner
+  local _resolved
+  local _target_file
+  local _target_path
+  local _tool
+
+  if [[ "${MSYSTEM:-}" != MSYS ||
+        "${CARCH:-}" != x86_64 ||
+        "${CHOST:-}" != x86_64-pc-cygwin ||
+        "$(uname -m)" != x86_64 ]]; then
+    printf 'ERROR: this cross package requires x86_64 MSYS; got MSYSTEM=%s CARCH=%s CHOST=%s uname=%s\n' \
+      "${MSYSTEM:-unset}" "${CARCH:-unset}" "${CHOST:-unset}" \
+      "$(uname -m)" >&2
+    return 1
+  fi
+
+  _require_package \
+    mingw-w64-cross-cygwinarm64-binutils \
+    "${_binutils_version}-${_binutils_pkgrel}"
+  _require_package \
+    mingw-w64-cross-msysarm64-gcc \
+    "${_gcc_version}-${_gcc_pkgrel}"
+  _require_package \
+    mingw-w64-cross-msysarm64-gcc-libs \
+    "${_gcc_version}-${_gcc_pkgrel}"
+  _require_package \
+    mingw-w64-cross-msysarm64-runtime \
+    "${_runtime_version}-${_runtime_pkgrel}"
+  _require_package \
+    mingw-w64-cross-msysarm64-runtime-devel \
+    "${_runtime_version}-${_runtime_pkgrel}"
+  _require_package \
+    mingw-w64-cross-msysarm64-sysroot \
+    "${_sysroot_version}-${_sysroot_pkgrel}"
+  _require_package \
+    mingw-w64-cross-msysarm64-w32api-runtime \
+    "${_w32api_version}-${_w32api_pkgrel}"
+
+  export PATH="/opt/bin:/usr/bin:${PATH}"
+  for _tool in \
+    gcc g++ ar as dlltool ld nm objcopy objdump ranlib readelf strip windres
+  do
+    _target_path="$(type -P "${_target}-${_tool}")"
+    if [[ "${_target_path}" != "/opt/bin/${_target}-${_tool}" ]]; then
+      printf 'ERROR: target tool is not package-owned: %s\n' \
+        "${_target}-${_tool}" >&2
+      return 1
+    fi
+    _target_file="${_target_path}.exe"
+    [[ -f "${_target_file}" || -L "${_target_file}" ]]
+    if [[ "${_tool}" == gcc || "${_tool}" == g++ ]]; then
+      _owner="$(pacman -Qoq "${_target_file}")"
+      [[ "${_owner}" == mingw-w64-cross-msysarm64-gcc ]]
+      continue
+    fi
+    [[ -L "${_target_file}" ]]
+    [[ "$(readlink "${_target_file}")" == \
+      "aarch64-pc-cygwin-${_tool}.exe" ]]
+    _owner="$(pacman -Qoq "${_target_file}")"
+    [[ "${_owner}" == mingw-w64-cross-cygwinarm64-binutils ]]
+    _resolved="$(realpath "${_target_file}")"
+    [[ "${_resolved}" == "/opt/bin/aarch64-pc-cygwin-${_tool}.exe" ]]
+    _owner="$(pacman -Qoq "${_resolved}")"
+    [[ "${_owner}" == mingw-w64-cross-cygwinarm64-binutils ]]
+  done
+  [[ "$(sha256sum "/opt/bin/${_target}-ld.exe" | awk '{ print $1 }')" == \
+    "${_binutils_linker_sha256}" ]]
+  for _tool in ar nm ranlib; do
+    _target_path="/opt/${_target}/bin/${_tool}.exe"
+    [[ -L "${_target_path}" ]]
+    [[ "$(pacman -Qoq "${_target_path}")" == \
+      mingw-w64-cross-msysarm64-gcc ]]
+  done
+
+  if [[ "$("${_target}-gcc" -dumpmachine)" != "${_target}" ]]; then
+    printf 'ERROR: compiler target is not %s\n' "${_target}" >&2
+    return 1
+  fi
+
+  _macro_dump="$("${_target}-gcc" -dM -E - < /dev/null)"
+  for _tool in __aarch64__ __CYGWIN__ __MSYS__ _WIN64; do
+    grep -Eq "^#define ${_tool}([[:space:]]|$)" <<< "${_macro_dump}"
+  done
+  if grep -Eq '^#define (__x86_64__|_M_X64)([[:space:]]|$)' \
+      <<< "${_macro_dump}"; then
+    printf 'ERROR: compiler exposes x64 target macros\n' >&2
+    return 1
+  fi
+
+  _resolved="$(realpath "$("${_target}-gcc" \
+    -print-file-name=libmsys-2.0.a)")"
+  [[ "${_resolved}" == "/opt/${_target}/lib/libmsys-2.0.a" ]]
+  _resolved="$(realpath "$("${_target}-gcc" \
+    -print-file-name=libkernel32.a)")"
+  [[ "${_resolved}" == "/opt/${_target}/usr/lib/libkernel32.a" ]]
+  _resolved="$(realpath "$("${_target}-gcc" -print-file-name=libgcc.a)")"
+  [[ "${_resolved}" == \
+    "/opt/lib/gcc/${_target}/15.0.1/libgcc.a" ]]
+}
+
+prepare() {
+  cd "${srcdir}/${_realname}-${pkgver}"
+
+  patch -p2 -i "${srcdir}/2.40.2-uuid_time.patch"
+  autoreconf -fi
+}
+
+build() {
+  local _build="${srcdir}/${_build_dir}"
+  local _stage="${srcdir}/${_stage_dir}"
+  local _report="${srcdir}/${_report_dir}"
+  local _source="${srcdir}/${_realname}-${pkgver}"
+  local _prefix_map
+
+  _require_build_host
+  rm -rf "${_build}" "${_stage}" "${_report}"
+  mkdir -p "${_build}" "${_stage}" "${_report}"
+
+  _prefix_map="-ffile-prefix-map=${srcdir}=. -fdebug-prefix-map=${srcdir}=. -fmacro-prefix-map=${srcdir}=."
+  export CC="/opt/bin/${_target}-gcc"
+  export CXX="/opt/bin/${_target}-g++"
+  export AR="/opt/bin/${_target}-ar"
+  export AS="/opt/bin/${_target}-as"
+  export DLLTOOL="/opt/bin/${_target}-dlltool"
+  export LD="/opt/bin/${_target}-ld"
+  export NM="/opt/bin/${_target}-nm"
+  export OBJCOPY="/opt/bin/${_target}-objcopy"
+  export OBJDUMP="/opt/bin/${_target}-objdump"
+  export RANLIB="/opt/bin/${_target}-ranlib"
+  export READELF="/opt/bin/${_target}-readelf"
+  export STRIP="/opt/bin/${_target}-strip"
+  export WINDRES="/opt/bin/${_target}-windres"
+  export CC_FOR_BUILD=/usr/bin/gcc
+  export CFLAGS="-O2 -g -pipe ${_prefix_map}"
+  export CPPFLAGS="-D__USE_LINUX_IOCTL_DEFS"
+  export LDFLAGS="-Wl,--enable-auto-import -Wl,--no-insert-timestamp"
+  export lt_cv_deplibs_check_method=pass_all
+
+  (
+    cd "${_build}"
+    "${_source}/configure" \
+      --build="${CHOST}" \
+      --host="${_configure_host}" \
+      --prefix=/usr \
+      --bindir=/bin \
+      --libdir=/usr/lib \
+      --includedir=/usr/include \
+      --enable-shared \
+      --enable-static \
+      --disable-all-programs \
+      --enable-libuuid \
+      --disable-libblkid \
+      --disable-libmount \
+      --disable-libsmartcols \
+      --disable-libfdisk \
+      --disable-uuidd \
+      --disable-nls \
+      --disable-bash-completion \
+      --disable-pylibmount \
+      --without-systemd \
+      --without-libiconv-prefix \
+      --without-libintl-prefix \
+      SOLIB_LDFLAGS=-no-undefined \
+      > "${_report}/configure.log" 2>&1
+
+    grep -F 'checking whether we are cross compiling... yes' \
+      "${_report}/configure.log"
+    grep -F 'checking dynamic linker characteristics... Win32 ld.exe' \
+      "${_report}/configure.log"
+    grep -F 'checking whether to build shared libraries... yes' \
+      "${_report}/configure.log"
+
+    make V=1 > "${_report}/build.log" 2>&1
+    make DESTDIR="${_stage}/opt/${_target}" install \
+      > "${_report}/install.log" 2>&1
+  )
+
+  mkdir -p "${_stage}/opt/${_target}/bin"
+  mv \
+    "${_stage}/opt/${_target}/usr/bin/msys-uuid-1.dll" \
+    "${_stage}/opt/${_target}/bin/"
+  rmdir "${_stage}/opt/${_target}/usr/bin"
+  rm -f "${_stage}/opt/${_target}/usr/lib/libuuid.la"
+  rm -rf "${_stage}/opt/${_target}/usr/share"
+
+  TARGET="${_target}" \
+  TARGET_CC="/opt/bin/${_target}-gcc" \
+  TARGET_AR="/opt/bin/${_target}-ar" \
+  TARGET_NM="/opt/bin/${_target}-nm" \
+  TARGET_OBJCOPY="/opt/bin/${_target}-objcopy" \
+  TARGET_OBJDUMP="/opt/bin/${_target}-objdump" \
+  TARGET_BUILD_TREE="${_build}" \
+  TARGET_STATIC_ARCHIVE="${_stage}/opt/${_target}/usr/lib/libuuid.a" \
+  CANONICAL_PSEUDO_RELOC_SCANNER="${srcdir}/check-aarch64-pseudo-relocs-3356eec.ps1" \
+    bash "${srcdir}/validate-libuuid.sh" \
+      "${_stage}" \
+      "${_report}/validation" \
+      "${srcdir}/libuuid-smoke.c"
+
+  {
+    printf 'package-version\t%s-%s\n' "${pkgver}" "${pkgrel}"
+    printf 'source-url\t%s\n' \
+      "https://www.kernel.org/pub/linux/utils/util-linux/v2.40/${_realname}-${pkgver}.tar.xz"
+    printf 'source-sha256\t%s\n' \
+      d78b37a66f5922d70edf3bdfb01a6b33d34ed3c3cafd6628203b2a2b67c8e8b3
+    printf 'target\t%s\n' "${_target}"
+    printf 'configure-host\t%s\n' "${_configure_host}"
+    printf 'binutils-linker-sha256\t%s\n' \
+      "${_binutils_linker_sha256}"
+    printf 'binutils-package-url\t%s\n' \
+      "${_binutils_release_url}"
+    printf 'binutils-package-sha256\t%s\n' \
+      "${_binutils_package_sha256}"
+    printf 'binutils-source-commit\t%s\n' \
+      "${_binutils_source_commit}"
+    printf 'canonical-scanner-sha256\t%s\n' \
+      888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9
+    pacman -Q \
+      mingw-w64-cross-cygwinarm64-binutils \
+      mingw-w64-cross-msysarm64-gcc \
+      mingw-w64-cross-msysarm64-gcc-libs \
+      mingw-w64-cross-msysarm64-runtime \
+      mingw-w64-cross-msysarm64-runtime-devel \
+      mingw-w64-cross-msysarm64-sysroot \
+      mingw-w64-cross-msysarm64-w32api-runtime
+  } > "${_report}/source-identity.txt"
+
+  (
+    cd "${_stage}"
+    sha256sum \
+      "opt/${_target}/bin/msys-uuid-1.dll" \
+      "opt/${_target}/usr/include/uuid/uuid.h" \
+      "opt/${_target}/usr/lib/libuuid.dll.a" \
+      "opt/${_target}/usr/lib/pkgconfig/uuid.pc"
+  ) > "${_report}/package-manifest.sha256"
+}
+
+check() {
+  local _report="${srcdir}/${_report_dir}"
+  local _stage="${srcdir}/${_stage_dir}"
+  local _check_report="${srcdir}/libuuid-check-report"
+
+  rm -rf "${_check_report}"
+  TARGET="${_target}" \
+  TARGET_CC="/opt/bin/${_target}-gcc" \
+  TARGET_AR="/opt/bin/${_target}-ar" \
+  TARGET_NM="/opt/bin/${_target}-nm" \
+  TARGET_OBJCOPY="/opt/bin/${_target}-objcopy" \
+  TARGET_OBJDUMP="/opt/bin/${_target}-objdump" \
+  TARGET_BUILD_TREE="${srcdir}/${_build_dir}" \
+  TARGET_STATIC_ARCHIVE="${_stage}/opt/${_target}/usr/lib/libuuid.a" \
+  CANONICAL_PSEUDO_RELOC_SCANNER="${srcdir}/check-aarch64-pseudo-relocs-3356eec.ps1" \
+    bash "${srcdir}/validate-libuuid.sh" \
+      "${_stage}" \
+      "${_check_report}" \
+      "${srcdir}/libuuid-smoke.c"
+
+  diff -u \
+    "${_report}/validation/summary.tsv" \
+    "${_check_report}/summary.tsv"
+  diff -u \
+    "${_report}/validation/imports.tsv" \
+    "${_check_report}/imports.tsv"
+  (
+    cd "${_stage}"
+    sha256sum -c "${_report}/package-manifest.sha256"
+  )
+}
+
+package_mingw-w64-cross-msysarm64-libuuid() {
+  local _source="${srcdir}/${_realname}-${pkgver}"
+  local _stage="${srcdir}/${_stage_dir}/opt/${_target}"
+
+  pkgdesc="Native libuuid runtime for aarch64-pc-msys"
+  depends=(
+    "mingw-w64-cross-msysarm64-gcc-libs=${_gcc_version}-${_gcc_pkgrel}"
+    "mingw-w64-cross-msysarm64-runtime=${_runtime_version}-${_runtime_pkgrel}"
+  )
+  provides=("aarch64-pc-msys-libuuid=${pkgver}")
+  conflicts=('aarch64-pc-msys-libuuid')
+
+  install -Dm755 \
+    "${_stage}/bin/msys-uuid-1.dll" \
+    "${pkgdir}/opt/${_target}/bin/msys-uuid-1.dll"
+  install -Dm644 \
+    "${_source}/Documentation/licenses/COPYING.BSD-3-Clause" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/COPYING.BSD-3-Clause"
+}
+
+package_mingw-w64-cross-msysarm64-libuuid-devel() {
+  local _report="${srcdir}/${_report_dir}"
+  local _source="${srcdir}/${_realname}-${pkgver}"
+  local _stage="${srcdir}/${_stage_dir}/opt/${_target}"
+  local _sharedir="${pkgdir}/opt/${_target}/share/msys-sysroot/libuuid"
+
+  pkgdesc="Native libuuid headers and libraries for aarch64-pc-msys"
+  depends=(
+    "mingw-w64-cross-msysarm64-libuuid=${pkgver}-${pkgrel}"
+    "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
+  )
+  provides=("aarch64-pc-msys-libuuid-devel=${pkgver}")
+  conflicts=('aarch64-pc-msys-libuuid-devel')
+  options=('!strip')
+
+  install -Dm644 \
+    "${_stage}/usr/include/uuid/uuid.h" \
+    "${pkgdir}/opt/${_target}/usr/include/uuid/uuid.h"
+  install -d "${pkgdir}/opt/${_target}/usr/lib"
+  install -m644 \
+    "${_stage}/usr/lib/libuuid.dll.a" \
+    -t "${pkgdir}/opt/${_target}/usr/lib/"
+  install -Dm644 \
+    "${_stage}/usr/lib/pkgconfig/uuid.pc" \
+    "${pkgdir}/opt/${_target}/usr/lib/pkgconfig/uuid.pc"
+
+  install -d "${_sharedir}/validation"
+  cp -a "${_report}/validation/." "${_sharedir}/validation/"
+  install -m644 \
+    "${_report}/package-manifest.sha256" \
+    "${_report}/source-identity.txt" \
+    "${_sharedir}/"
+  install -m755 \
+    "${srcdir}/validate-libuuid.sh" \
+    "${_sharedir}/validate-libuuid.sh"
+  install -m644 \
+    "${srcdir}/README.md" \
+    "${srcdir}/check-aarch64-pseudo-relocs-3356eec.ps1" \
+    "${srcdir}/libuuid-smoke.c" \
+    "${_sharedir}/"
+  install -Dm644 \
+    "${_source}/Documentation/licenses/COPYING.BSD-3-Clause" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/COPYING.BSD-3-Clause"
+}

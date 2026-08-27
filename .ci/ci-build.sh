@@ -296,6 +296,14 @@ for package in "${packages[@]}"; do
     pacman -Sy
     echo "::endgroup::"
 
+    if [[ "$package" == mingw-w64-cross-msysarm64-libuuid ]]; then
+        execute 'Validating libuuid package transaction' \
+            bash "$DIR/validate-msysarm64-libuuid-packages.sh"
+        rm -f "${package}"/*.pkg.tar.*
+        unset package
+        continue
+    fi
+
     cd "$package"
     for pkg in *.pkg.tar.*; do
         pkgname="$(echo "$pkg" | rev | cut -d- -f4- | rev)"

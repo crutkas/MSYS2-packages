@@ -60,23 +60,43 @@ jobs:
         id: arm64-settings
         shell: pwsh
         run: |
+          if ('${{ github.repository }}' -ne 'crutkas/MSYS2-packages') {
+            "enabled=0" >> $env:GITHUB_OUTPUT
+            "mode=disabled" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+
           $branchCandidates = @('${{ github.ref_name }}', '${{ github.head_ref }}') | Where-Object { $_ }
-          $match = @('crutkas-package-aarch64-static-libgcc', 'crutkas-congenial-system', 'crutkas-aarch64-gcc-layer') |
+          $gccBootstrapBranches = @(
+            'crutkas-package-aarch64-static-libgcc',
+            'crutkas-congenial-system',
+            'crutkas-aarch64-gcc-layer'
+          )
+          $nativePackageBranches = @('crutkas-arm64-msys-libuuid')
+          $match = @($gccBootstrapBranches + $nativePackageBranches) |
             Where-Object { $branchCandidates -contains $_ } |
             Select-Object -First 1
           if (-not $match) {
             "enabled=0" >> $env:GITHUB_OUTPUT
+            "mode=disabled" >> $env:GITHUB_OUTPUT
             exit 0
           }
 
           $baseRef = switch ($match) {
+            'crutkas-arm64-msys-libuuid' { 'crutkas-aarch64-gcc-layer' }
             'crutkas-aarch64-gcc-layer' { 'crutkas-package-aarch64-static-libgcc' }
             'crutkas-congenial-system' { 'crutkas-package-aarch64-static-libgcc' }
             default { 'master' }
           }
+          $mode = if ($nativePackageBranches -contains $match) {
+            'native-package'
+          } else {
+            'gcc-bootstrap'
+          }
           $prefixes = 'mingw-w64-cross-cygwinarm64- mingw-w64-cross-msysarm64-'
 
           "enabled=1" >> $env:GITHUB_OUTPUT
+          "mode=$mode" >> $env:GITHUB_OUTPUT
           "base_ref=$baseRef" >> $env:GITHUB_OUTPUT
           "package_prefixes=$prefixes" >> $env:GITHUB_OUTPUT
           "run_check=1" >> $env:GITHUB_OUTPUT
@@ -104,7 +124,7 @@ jobs:
           & 'C:\msys64\usr\bin\pacman.exe' --noconfirm --needed -S git python base-devel
 
       - name: Download fork-local AArch64 Cygwin inputs
-        if: ${{ steps.arm64-settings.outputs.enabled == '1' }}
+        if: ${{ steps.arm64-settings.outputs.mode == 'gcc-bootstrap' }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -153,7 +173,7 @@ jobs:
           }
 
       - name: Install fork-local AArch64 Cygwin inputs
-        if: ${{ steps.arm64-settings.outputs.enabled == '1' }}
+        if: ${{ steps.arm64-settings.outputs.mode == 'gcc-bootstrap' }}
         shell: pwsh
         run: |
           $input_dir = Join-Path $env:RUNNER_TEMP 'cygwinarm64-inputs'
@@ -168,7 +188,7 @@ jobs:
             "$input_dir\mingw-w64-cross-cygwinarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst"
 
       - name: Preflight fork-local AArch64 Cygwin inputs
-        if: ${{ steps.arm64-settings.outputs.enabled == '1' }}
+        if: ${{ steps.arm64-settings.outputs.mode == 'gcc-bootstrap' }}
         shell: pwsh
         run: |
           $packages = @(
@@ -195,7 +215,7 @@ jobs:
           & $bash --login -lc $script
 
       - name: Add MSYS tool aliases
-        if: ${{ steps.arm64-settings.outputs.enabled == '1' }}
+        if: ${{ steps.arm64-settings.outputs.mode == 'gcc-bootstrap' }}
         shell: pwsh
         run: |
           $binDir = 'C:\msys64\opt\bin'
@@ -207,6 +227,11 @@ jobs:
               Copy-Item $source $dest
             }
           }
+
+      - name: Install released AArch64 MSYS toolchain
+        if: ${{ steps.arm64-settings.outputs.mode == 'native-package' }}
+        shell: pwsh
+        run: .\temp\.ci\install-msysarm64-libuuid-toolchain.ps1
 
       - name: Move Checkout
         run: |
@@ -241,6 +266,62 @@ jobs:
           path: |
             ${{ steps.facts.outputs.drive }}/_/mingw-w64-cross-msysarm64-libstdcxx-headers/src/libstdcxx-headers-report/*
             ${{ steps.facts.outputs.drive }}/_/mingw-w64-cross-msysarm64-gcc/src/gcc-report/*
+            ${{ steps.facts.outputs.drive }}/_/mingw-w64-cross-msysarm64-libuuid/src/libuuid-report/*
+            ${{ steps.facts.outputs.drive }}/_/mingw-w64-cross-msysarm64-libuuid/src/libuuid-transaction-report/*
+
+      - name: Upload libuuid validation evidence
+        if: ${{ steps.arm64-settings.outputs.mode == 'native-package' && !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: MSYS-libuuid-evidence
+          if-no-files-found: warn
+          path: |
+            ${{ steps.facts.outputs.drive }}/_/mingw-w64-cross-msysarm64-libuuid/src/libuuid-report/*
+            ${{ steps.facts.outputs.drive }}/_/mingw-w64-cross-msysarm64-libuuid/src/libuuid-transaction-report/*
+
+  native-libuuid-smoke:
+    if: >-
+      ${{
+        needs.build.result == 'success' &&
+        github.repository == 'crutkas/MSYS2-packages' &&
+        (github.ref_name == 'crutkas-arm64-msys-libuuid' ||
+         github.head_ref == 'crutkas-arm64-msys-libuuid')
+      }}
+    needs: build
+    runs-on: windows-11-arm
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: msys2/setup-msys2@v2
+        id: native-msys2
+        with:
+          cache: false
+          msystem: MSYS
+          update: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: MSYS-packages
+          path: artifacts
+
+      - name: Run native ARM64 libuuid smoke
+        shell: pwsh
+        run: |
+          .\.ci\run-msysarm64-libuuid-native-smoke.ps1 `
+            -ArtifactDirectory .\artifacts `
+            -MsysRoot '${{ steps.native-msys2.outputs.msys2-location }}'
+
+      - name: Upload native smoke evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          if-no-files-found: error
+          name: MSYS-libuuid-native-smoke
+          path: artifacts/native-smoke-evidence/*
 
   package-grokker:
     if: ${{ !(github.repository == 'crutkas/MSYS2-packages' && github.head_ref == 'crutkas-package-aarch64-static-libgcc') }}
