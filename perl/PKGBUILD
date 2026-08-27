@@ -185,10 +185,11 @@ EOF
   fi
 
   export MSYSTEM=CYGWIN
-  ./Configure -des -Dusethreads \
-    -Doptimize="${CFLAGS}" \
-    -Dprefix=/usr \
-    -Dvendorprefix=/usr \
+  local configure_log="${probe_dir}/Configure.log"
+  if ! ./Configure -des -Dusethreads \
+  -Doptimize="${CFLAGS}" \
+  -Dprefix=/usr \
+  -Dvendorprefix=/usr \
     -Dprivlib=/usr/share/perl5/core_perl \
     -Darchlib=/usr/lib/perl5/core_perl \
     -Dsitelib=/usr/share/perl5/site_perl \
@@ -205,7 +206,11 @@ EOF
     -Dlibperl=msys-perl"$(echo "${pkgver%.[0-9]*}" | tr . _)".dll \
     -Dcc="${perl_cc}" -Dld="${perl_ld}" \
     -Accflags="$CFLAGS -fwrapv" \
-    -Ud_setproctitle
+    -Ud_setproctitle > "${configure_log}" 2>&1; then
+      cat "${configure_log}"
+      return 1
+    fi
+    cat "${configure_log}"
 
   LC_ALL=C make
 
