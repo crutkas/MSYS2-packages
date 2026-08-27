@@ -35,149 +35,362 @@ jobs:
     runs-on: windows-2025
 
     steps:
-      - name: Configure Git line endings
-        shell: pwsh
-        run: |
-          git config --global core.autocrlf false
-          git config --global core.eol lf
-
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Update MSYS2 build environment
+      - name: Snapshot hosted MSYS state before private build
         shell: pwsh
         run: |
-          $pacmanConf = 'C:\msys64\etc\pacman.conf'
-          $contents = Get-Content $pacmanConf -Raw
-          if ($contents -notmatch '^\[staging\]') {
-            $contents = "[staging]`nServer = https://repo.msys2.org/staging/`nSigLevel = Never`n$contents"
-            Set-Content $pacmanConf -Value $contents -NoNewline
-          }
-          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -Suuy
-          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -Suu
-          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm --needed -S `
-            base-devel gcc git gnupg python
-          if ($LASTEXITCODE -ne 0) {
-            throw "MSYS2 update failed with exit code $LASTEXITCODE"
-          }
+          $evidence = Join-Path $env:RUNNER_TEMP 'zlib-shared-state'
+          & .\mingw-w64-cross-msysarm64-zlib\snapshot-shared-state.ps1 `
+            -Label before `
+            -OutputDirectory $evidence `
+            -SharedRoot 'C:\msys64'
 
-      - name: Pin, redownload, and atomically install compiler inputs
+      - name: Materialize immutable private build root
+        id: private
         shell: pwsh
         env:
-          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          $destination = Join-Path $env:RUNNER_TEMP 'msysarm64-zlib-toolchain'
-          & .\mingw-w64-cross-msysarm64-zlib\bootstrap-toolchain.ps1 `
-            -Destination $destination `
-            -MsysRoot 'C:\msys64' `
-            -Install
+          $rootParent = Join-Path $env:RUNNER_TEMP 'zlib-private-root'
+          $inputs = Join-Path $env:RUNNER_TEMP 'zlib-private-inputs'
+          $evidence = Join-Path $env:RUNNER_TEMP 'zlib-private-evidence'
+          & .\mingw-w64-cross-msysarm64-zlib\bootstrap-private-root.ps1 `
+            -RootParent $rootParent `
+            -InputRoot $inputs `
+            -EvidenceRoot $evidence
 
-      - name: Build and validate package split
+          "msys_root=$(Join-Path $rootParent 'msys64')" >> $env:GITHUB_OUTPUT
+          "inputs=$inputs" >> $env:GITHUB_OUTPUT
+          "evidence=$evidence" >> $env:GITHUB_OUTPUT
+
+      - name: Build and audit package split in private root
+        id: package
         shell: pwsh
         run: |
-          $workspace = & 'C:\msys64\usr\bin\cygpath.exe' -u $env:GITHUB_WORKSPACE
-          $inputRoot = Join-Path `
-            $env:RUNNER_TEMP `
-            'msysarm64-zlib-toolchain\primary'
-          $inputRoot = & 'C:\msys64\usr\bin\cygpath.exe' -u $inputRoot
+          $msysRoot = '${{ steps.private.outputs.msys_root }}'
+          $inputs = '${{ steps.private.outputs.inputs }}'
+          $privateEvidence = '${{ steps.private.outputs.evidence }}'
+          $output = Join-Path $env:RUNNER_TEMP 'zlib-private-output'
+          New-Item -ItemType Directory -Path $output | Out-Null
+
+          $bash = Join-Path $msysRoot 'usr\bin\bash.exe'
+          $cygpath = Join-Path $msysRoot 'usr\bin\cygpath.exe'
+          $workspace = (& $cygpath -u $env:GITHUB_WORKSPACE).Trim()
+          $inputRoot = (& $cygpath -u (
+            Join-Path $inputs 'toolchain\primary')).Trim()
+          $pacmanConfig = (& $cygpath -u (
+            Join-Path $inputs 'toolchain\private-pacman.conf')).Trim()
+          $outputRoot = (& $cygpath -u $output).Trim()
+          $pwshPath = (& $cygpath -u (
+            (Get-Process -Id $PID).Path)).Trim()
           $script = @'
           set -euo pipefail
-          export PATH=/usr/bin:/opt/bin:/mingw64/bin:$PATH
-          mkdir -p "$HOME"
-          cd "$1/mingw-w64-cross-msysarm64-zlib"
-          dos2unix -q PKGBUILD README.md bootstrap-toolchain.ps1 canonicalize-packages.sh validate-zlib.sh validate-packages.sh ../.ci/check-aarch64-pseudo-relocs.ps1 *.patch
-          bash -n PKGBUILD canonicalize-packages.sh validate-zlib.sh validate-packages.sh
-          ../.ci/fetch-validpgpkeys.sh
-          makepkg --noconfirm --noprogressbar --cleanbuild
-          bash ./canonicalize-packages.sh ./*.pkg.tar.zst
-          rm -rf ci-package-report
-          ./validate-packages.sh . ci-package-report "$2"
+          export PATH=/opt/bin:/usr/bin
+          export HOME=/home/build
+          export MSYSTEM=MSYS
+          export MSYS=winsymlinks:sys
+          export TZ=UTC
+          export SOURCE_DATE_EPOCH=1703203200
+          export PSEUDO_RELOC_PWSH="$4"
+          export PACMAN_CONFIG="$5"
+          export PACMAN_GPGDIR=/etc/pacman.d/gnupg
+          workspace=$1
+          input_root=$2
+          output=$3
+          recipe="$workspace/mingw-w64-cross-msysarm64-zlib"
+          /usr/bin/mkdir -p \
+            "$HOME" \
+            "$output/packages" \
+            "$output/logs" \
+            "$output/build"
+
+          cd "$recipe"
+          test "$(/usr/bin/sha256sum "$recipe/mark-adler.asc" |
+            /usr/bin/cut -d" " -f1)" = \
+            1458b5b96dd3904ef1d4cc24d27135dcf3b9abdce4e3689ad58041b482a3bbde
+          /usr/bin/gpg \
+            --batch \
+            --yes \
+            --dearmor \
+            --output "$output/mark-adler.gpg" \
+            "$recipe/mark-adler.asc"
+          fingerprint=$(
+            /usr/bin/gpg --batch --with-colons --show-keys \
+              "$output/mark-adler.gpg" \
+              | /usr/bin/awk -F: '$1 == "fpr" {print $10; exit}'
+          )
+          test "$fingerprint" = 5ED46A6721D365587791E2AA783FCD8E58BCAFBA
+          /usr/bin/makepkg \
+            --verifysource \
+            --skippgpcheck \
+            --nodeps \
+            --noconfirm
+          /usr/bin/gpgv \
+            --keyring "$output/mark-adler.gpg" \
+            "$recipe/zlib-1.3.1.tar.xz.asc" \
+            "$recipe/zlib-1.3.1.tar.xz" \
+            > "$output/gpgv.stdout.txt" \
+            2> "$output/gpgv.stderr.txt"
+          /usr/bin/printf \
+            'fingerprint\t%s\narmored-key\t%s\nbinary-keyring\t%s\nsource\t%s\nsignature\t%s\n' \
+            "$fingerprint" \
+            "$(/usr/bin/sha256sum "$recipe/mark-adler.asc" | /usr/bin/cut -d" " -f1)" \
+            "$(/usr/bin/sha256sum "$output/mark-adler.gpg" | /usr/bin/cut -d" " -f1)" \
+            "$(/usr/bin/sha256sum "$recipe/zlib-1.3.1.tar.xz" | /usr/bin/cut -d" " -f1)" \
+            "$(/usr/bin/sha256sum "$recipe/zlib-1.3.1.tar.xz.asc" | /usr/bin/cut -d" " -f1)" \
+            > "$output/source-signature-identity.tsv"
+          PKGDEST="$output/packages" \
+          LOGDEST="$output/logs" \
+          BUILDDIR="$output/build" \
+            /usr/bin/makepkg \
+              --noconfirm \
+              --noprogressbar \
+              --cleanbuild \
+              --skippgpcheck \
+              --nodeps \
+              --log
+          /usr/bin/bash ./canonicalize-packages.sh \
+            "$output/packages"/*.pkg.tar.zst
+          /usr/bin/rm -rf "$output/lifecycle"
+          PACMAN=/usr/bin/pacman \
+          PACMAN_CONFIG="$PACMAN_CONFIG" \
+          PACMAN_GPGDIR="$PACMAN_GPGDIR" \
+          PSEUDO_RELOC_PWSH="$4" \
+            /usr/bin/bash ./validate-packages.sh \
+              "$output/packages" \
+              "$output/lifecycle" \
+              "$input_root" \
+              "$recipe"
           '@
-          & 'C:\msys64\usr\bin\bash.exe' `
-            --noprofile --norc -c $script -- $workspace $inputRoot
+          & $bash --noprofile --norc -c $script -- `
+            $workspace $inputRoot $outputRoot $pwshPath $pacmanConfig
           if ($LASTEXITCODE -ne 0) {
-            throw "zlib build or validation failed with exit code $LASTEXITCODE"
+            throw "Private zlib build failed: $LASTEXITCODE"
           }
 
-      - name: Collect release artifacts
-        shell: pwsh
-        run: |
-          $output = Join-Path $env:GITHUB_WORKSPACE 'artifacts'
-          New-Item -ItemType Directory -Path $output | Out-Null
-          Copy-Item `
-            (Join-Path $env:GITHUB_WORKSPACE 'mingw-w64-cross-msysarm64-zlib\*.pkg.tar.zst') `
-            $output
-          Copy-Item `
-            (Join-Path $env:GITHUB_WORKSPACE 'mingw-w64-cross-msysarm64-zlib\ci-package-report\release-SHA256SUMS') `
-            $output
-
-      - name: Collect native pseudo-reloc smoke inputs
-        shell: pwsh
-        run: |
-          $bundle = Join-Path $env:GITHUB_WORKSPACE 'native-smoke-inputs'
-          New-Item -ItemType Directory -Path $bundle | Out-Null
-          $inputs = [ordered]@{
-            'pseudo-reloc-cxx.exe' = Join-Path `
-              $env:GITHUB_WORKSPACE `
-              'mingw-w64-cross-msysarm64-zlib\src\zlib-report\pseudo-reloc-cxx.exe'
-            'msys-gcc_s-seh-1.dll' = `
-              'C:\msys64\opt\lib\gcc\aarch64-pc-msys\msys-gcc_s-seh-1.dll'
-            'msys-stdc++-6.dll' = `
-              'C:\msys64\opt\lib\gcc\aarch64-pc-msys\15.0.1\msys-stdc++-6.dll'
-          }
-          foreach ($entry in $inputs.GetEnumerator()) {
-            if (-not (Test-Path -LiteralPath $entry.Value -PathType Leaf)) {
-              throw "native smoke input is missing: $($entry.Value)"
+          & .\mingw-w64-cross-msysarm64-zlib\snapshot-shared-state.ps1 `
+            -Label after `
+            -OutputDirectory $privateEvidence `
+            -SharedRoot $msysRoot
+          foreach ($name in @('db', 'gpg')) {
+            $before = Join-Path `
+              $privateEvidence "shared-$name-before.csv"
+            $after = Join-Path `
+              $privateEvidence "shared-$name-after.csv"
+            $beforeHash = (
+              Get-FileHash -LiteralPath $before -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+            $afterHash = (
+              Get-FileHash -LiteralPath $after -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+            if ($beforeHash -ne $afterHash) {
+              throw "Private $name state changed during build"
             }
-            Copy-Item `
-              -LiteralPath $entry.Value `
-              -Destination (Join-Path $bundle $entry.Key)
           }
-          $manifest = @(
-            Get-ChildItem -LiteralPath $bundle -File |
-              Sort-Object Name |
-              ForEach-Object {
-                $hash = (
-                  Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName
-                ).Hash.ToLowerInvariant()
-                "$hash  $($_.Name)"
-              }
+          $privateBefore = Get-Content `
+            (Join-Path $privateEvidence 'shared-state-before.json') -Raw |
+            ConvertFrom-Json
+          $privateAfter = Get-Content `
+            (Join-Path $privateEvidence 'shared-state-after.json') -Raw |
+            ConvertFrom-Json
+          if (
+            $privateBefore.pacman_log.bytes -ne
+              $privateAfter.pacman_log.bytes -or
+            $privateBefore.pacman_log.sha256 -ne
+              $privateAfter.pacman_log.sha256
+          ) {
+            throw 'Private pacman log changed during build'
+          }
+
+          $buildReport = Get-ChildItem `
+            -LiteralPath (Join-Path $output 'build') `
+            -Recurse `
+            -Directory `
+            -Filter zlib-report |
+            Select-Object -First 1
+          if (-not $buildReport) {
+            throw 'Private zlib build report is missing'
+          }
+          & .\mingw-w64-cross-msysarm64-zlib\validate-evidence-encoding.ps1 `
+            -Root $buildReport.FullName `
+            -OutputPath (Join-Path $output 'build-evidence-encoding.json')
+          & .\mingw-w64-cross-msysarm64-zlib\validate-evidence-encoding.ps1 `
+            -Root (Join-Path $output 'lifecycle') `
+            -OutputPath (Join-Path $output 'lifecycle-evidence-encoding.json')
+
+          "output=$output" >> $env:GITHUB_OUTPUT
+          "report=$($buildReport.FullName)" >> $env:GITHUB_OUTPUT
+
+      - name: Prove hosted MSYS state remained unchanged
+        shell: pwsh
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP 'zlib-shared-state'
+          & .\mingw-w64-cross-msysarm64-zlib\snapshot-shared-state.ps1 `
+            -Label after `
+            -OutputDirectory $evidence `
+            -SharedRoot 'C:\msys64'
+
+          $pairs = @(
+            @('shared-db-before.csv', 'shared-db-after.csv'),
+            @('shared-gpg-before.csv', 'shared-gpg-after.csv')
           )
-          [System.IO.File]::WriteAllText(
-            (Join-Path $bundle 'SHA256SUMS'),
-            (($manifest -join "`n") + "`n"),
-            [System.Text.UTF8Encoding]::new($false)
+          foreach ($pair in $pairs) {
+            $before = Join-Path $evidence $pair[0]
+            $after = Join-Path $evidence $pair[1]
+            $beforeHash = (
+              Get-FileHash -LiteralPath $before -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+            $afterHash = (
+              Get-FileHash -LiteralPath $after -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+            if ($beforeHash -ne $afterHash) {
+              throw "Hosted shared state changed: $($pair[0])"
+            }
+          }
+          $beforeState = Get-Content `
+            (Join-Path $evidence 'shared-state-before.json') -Raw |
+            ConvertFrom-Json
+          $afterState = Get-Content `
+            (Join-Path $evidence 'shared-state-after.json') -Raw |
+            ConvertFrom-Json
+          if (
+            $beforeState.pacman_log.bytes -ne $afterState.pacman_log.bytes -or
+            $beforeState.pacman_log.sha256 -ne
+              $afterState.pacman_log.sha256
+          ) {
+            throw 'Hosted shared pacman log changed'
+          }
+
+      - name: Collect and seal build evidence
+        id: collect
+        shell: pwsh
+        run: |
+          $output = '${{ steps.package.outputs.output }}'
+          $report = '${{ steps.package.outputs.report }}'
+          $privateEvidence = '${{ steps.private.outputs.evidence }}'
+          $msysRoot = '${{ steps.private.outputs.msys_root }}'
+          $artifactRoot = Join-Path $env:RUNNER_TEMP 'zlib-artifacts'
+          $packages = Join-Path $artifactRoot 'packages'
+          $validation = Join-Path $artifactRoot 'validation'
+          $native = Join-Path $artifactRoot 'native-inputs'
+          New-Item -ItemType Directory -Path `
+            $artifactRoot, $packages, $validation, $native | Out-Null
+
+          Copy-Item `
+            -LiteralPath (Get-ChildItem (
+              Join-Path $output 'packages\*.pkg.tar.zst')).FullName `
+            -Destination $packages
+          Copy-Item `
+            -LiteralPath (Join-Path $output 'lifecycle\release-SHA256SUMS') `
+            -Destination $packages
+          Copy-Item -LiteralPath $report `
+            -Destination (Join-Path $validation 'build-report') -Recurse
+          Copy-Item -LiteralPath (Join-Path $output 'lifecycle') `
+            -Destination (Join-Path $validation 'lifecycle') -Recurse
+          Copy-Item -LiteralPath $privateEvidence `
+            -Destination (Join-Path $validation 'private-root') -Recurse
+          Copy-Item `
+            -LiteralPath (Join-Path $env:RUNNER_TEMP 'zlib-shared-state') `
+            -Destination (Join-Path $validation 'hosted-shared-state') `
+            -Recurse
+          Copy-Item -LiteralPath (
+            Join-Path $output 'build-evidence-encoding.json'
+          ) -Destination $validation
+          Copy-Item -LiteralPath (
+            Join-Path $output 'lifecycle-evidence-encoding.json'
+          ) -Destination $validation
+          foreach ($name in @(
+            'gpgv.stdout.txt',
+            'gpgv.stderr.txt',
+            'mark-adler.gpg',
+            'source-signature-identity.tsv'
+          )) {
+            Copy-Item -LiteralPath (Join-Path $output $name) `
+              -Destination $validation
+          }
+
+          $nativeFiles = [ordered]@{
+            'pseudo-reloc-cxx.exe' = Join-Path `
+              $report 'scanner-inputs\pseudo-reloc-cxx.exe'
+            'pseudo-reloc-cxx.pseudo-relocs.json' = Join-Path `
+              $report 'pseudo-reloc-cxx.pseudo-relocs.json'
+            'msys-gcc_s-seh-1.dll' = Join-Path `
+              $msysRoot 'opt\lib\gcc\aarch64-pc-msys\msys-gcc_s-seh-1.dll'
+            'msys-stdc++-6.dll' = Join-Path `
+              $msysRoot `
+              'opt\lib\gcc\aarch64-pc-msys\15.0.1\msys-stdc++-6.dll'
+            'native-smoke.ps1' = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              'mingw-w64-cross-msysarm64-zlib\native-smoke.ps1'
+            'seal-evidence.ps1' = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              'mingw-w64-cross-msysarm64-zlib\seal-evidence.ps1'
+            'validate-evidence-encoding.ps1' = Join-Path `
+              $env:GITHUB_WORKSPACE `
+              'mingw-w64-cross-msysarm64-zlib\validate-evidence-encoding.ps1'
+          }
+          $nativeManifest = @("path`tbytes`tsha256")
+          foreach ($entry in $nativeFiles.GetEnumerator()) {
+            if (-not (Test-Path -LiteralPath $entry.Value -PathType Leaf)) {
+              throw "Native input is missing: $($entry.Value)"
+            }
+            $destination = Join-Path $native $entry.Key
+            Copy-Item -LiteralPath $entry.Value -Destination $destination
+            $item = Get-Item -LiteralPath $destination
+            $hash = (
+              Get-FileHash -LiteralPath $destination -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+            $nativeManifest += "$($entry.Key)`t$($item.Length)`t$hash"
+          }
+          [IO.File]::WriteAllText(
+            (Join-Path $native 'SHA256SUMS.tsv'),
+            (($nativeManifest -join "`n") + "`n"),
+            [Text.UTF8Encoding]::new($false)
           )
 
-      - name: Upload package release candidates
-        uses: actions/upload-artifact@v4
+          @(
+            'actions/checkout 11d5960a326750d5838078e36cf38b85af677262'
+            'actions/upload-artifact ea165f8d65b6e75b540449e92b4886f43607fa02'
+            'actions/download-artifact d3f86a106a0bac45b974a628896c90dbdf5c8093'
+          ) | Set-Content `
+            -LiteralPath (Join-Path $validation 'action-commits.txt') `
+            -Encoding utf8NoBOM
+
+          & .\mingw-w64-cross-msysarm64-zlib\seal-evidence.ps1 `
+            -Root $validation `
+            -ManifestPath (Join-Path $validation 'EVIDENCE-MANIFEST.tsv') `
+            -SealPath (Join-Path $validation 'EVIDENCE-SEAL.json')
+
+          "artifact_root=$artifactRoot" >> $env:GITHUB_OUTPUT
+
+      - name: Upload package candidates
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: msysarm64-zlib-packages
           if-no-files-found: error
-          retention-days: 14
-          path: artifacts/*
+          retention-days: 90
+          path: ${{ steps.collect.outputs.artifact_root }}/packages/*
 
-      - name: Upload validation evidence
-        uses: actions/upload-artifact@v4
+      - name: Upload sealed build validation
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: msysarm64-zlib-validation
           if-no-files-found: error
-          retention-days: 14
-          path: |
-            .ci/check-aarch64-pseudo-relocs.ps1
-            mingw-w64-cross-msysarm64-zlib/src/zlib-report/*
-            mingw-w64-cross-msysarm64-zlib/ci-package-report/*
-            ${{ runner.temp }}/msysarm64-zlib-toolchain/*.tsv
+          retention-days: 90
+          include-hidden-files: true
+          path: ${{ steps.collect.outputs.artifact_root }}/validation/**
 
-      - name: Upload native pseudo-reloc smoke inputs
-        uses: actions/upload-artifact@v4
+      - name: Upload bound native inputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: msysarm64-zlib-native-inputs
           if-no-files-found: error
-          retention-days: 14
-          path: native-smoke-inputs/*
+          retention-days: 90
+          path: ${{ steps.collect.outputs.artifact_root }}/native-inputs/*
 
   native-smoke:
     if: >-
@@ -190,172 +403,79 @@ jobs:
     runs-on: windows-11-arm
 
     steps:
-      - name: Initialize native ARM64 MSYS2 tools
-        id: msys2
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: MSYS
-          update: true
-          install: tar zstd
-
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: msysarm64-zlib-packages
           path: packages
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: msysarm64-zlib-native-inputs
           path: native-inputs
 
-      - name: Download pinned native runtime
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $runtime = Join-Path $env:RUNNER_TEMP 'native-runtime'
-          New-Item -ItemType Directory -Path $runtime | Out-Null
-          $name = 'mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst'
-          gh release download msysarm64-runtime-pr10-a527-20260824 `
-            --repo crutkas/MSYS2-packages `
-            --pattern $name `
-            --dir $runtime
-          $actual = (Get-FileHash -Algorithm SHA256 (Join-Path $runtime $name)).Hash.ToLowerInvariant()
-          $expected = '158c505f45025a466950faa7c85c9fd85e9d32384dd27b53586ffc75d71ca78e'
-          if ($actual -ne $expected) {
-            throw "native runtime SHA-256 mismatch: $actual"
-          }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: msysarm64-zlib-validation
+          path: validation
 
-      - name: Execute native ARM64 minigzip roundtrip
+      - name: Execute and attest native ARM64 payload
         shell: pwsh
         run: |
-          $processor = Get-CimInstance -Class Win32_Processor | Select-Object -First 1
-          if ($processor.Architecture -ne 12) {
-            throw "native smoke requires ARM64 Windows; processor architecture is $($processor.Architecture)"
-          }
+          & .\native-inputs\native-smoke.ps1 `
+            -PackagesDirectory (Resolve-Path .\packages) `
+            -NativeInputsDirectory (Resolve-Path .\native-inputs) `
+            -ValidationDirectory (Resolve-Path .\validation) `
+            -OutputDirectory (Join-Path $env:RUNNER_TEMP 'zlib-native-output')
 
-          $msysRoot = '${{ steps.msys2.outputs.msys2-location }}'
-          $bash = Join-Path $msysRoot 'usr\bin\bash.exe'
-          $workspace = & (Join-Path $msysRoot 'usr\bin\cygpath.exe') -u $env:GITHUB_WORKSPACE
-          $temp = & (Join-Path $msysRoot 'usr\bin\cygpath.exe') -u $env:RUNNER_TEMP
-          $extractScript = @'
-          set -euo pipefail
-          export PATH=/usr/bin:/bin:$PATH
-          packages="$1/packages"
-          native_inputs="$1/native-inputs"
-          temp="$2"
-          stage="$temp/msysarm64-zlib-native-stage"
-          root="$temp/msysarm64-zlib-native-root"
-          rm -rf "$stage" "$root"
-          mkdir -p "$stage" "$root/usr/bin"
-          (
-            cd "$packages"
-            sha256sum -c release-SHA256SUMS
-          )
-          (
-            cd "$native_inputs"
-            sha256sum -c SHA256SUMS
-          )
-          MSYS=winsymlinks:sys bsdtar -xf \
-            "$temp/native-runtime/mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst" \
-            -C "$stage"
-          MSYS=winsymlinks:sys bsdtar -xf \
-            "$packages/mingw-w64-cross-msysarm64-zlib-1.3.1-1-x86_64.pkg.tar.zst" \
-            -C "$stage"
-          MSYS=winsymlinks:sys bsdtar -xf \
-            "$packages/mingw-w64-cross-msysarm64-zlib-minigzip-1.3.1-1-x86_64.pkg.tar.zst" \
-            -C "$stage"
-          cp "$stage/opt/aarch64-pc-msys/bin/msys-2.0.dll" "$root/usr/bin/"
-          cp "$stage/opt/aarch64-pc-msys/usr/bin/msys-z.dll" "$root/usr/bin/"
-          cp "$stage/opt/aarch64-pc-msys/usr/bin/minigzip.exe" "$root/usr/bin/"
-          cp "$native_inputs/pseudo-reloc-cxx.exe" "$root/usr/bin/"
-          cp "$native_inputs/msys-gcc_s-seh-1.dll" "$root/usr/bin/"
-          cp "$native_inputs/msys-stdc++-6.dll" "$root/usr/bin/"
-          '@
-          & $bash --noprofile --norc -c $extractScript -- $workspace $temp
-          if ($LASTEXITCODE -ne 0) {
-            throw "native payload extraction failed with exit code $LASTEXITCODE"
-          }
+      - name: Seal durable run evidence
+        id: durable
+        shell: pwsh
+        run: |
+          $durable = Join-Path $env:RUNNER_TEMP 'zlib-durable-evidence'
+          $upload = Join-Path $env:RUNNER_TEMP 'zlib-durable-upload'
+          New-Item -ItemType Directory -Path $durable, $upload | Out-Null
+          Copy-Item -LiteralPath .\packages `
+            -Destination (Join-Path $durable 'packages') -Recurse
+          Copy-Item -LiteralPath .\native-inputs `
+            -Destination (Join-Path $durable 'native-inputs') -Recurse
+          Copy-Item -LiteralPath .\validation `
+            -Destination (Join-Path $durable 'validation') -Recurse
+          Copy-Item `
+            -LiteralPath (Join-Path $env:RUNNER_TEMP 'zlib-native-output') `
+            -Destination (Join-Path $durable 'native-output') -Recurse
 
-          $nativeRoot = Join-Path $env:RUNNER_TEMP 'msysarm64-zlib-native-root'
-          $bin = Join-Path $nativeRoot 'usr\bin'
-          function Assert-AA64([string]$Path) {
-            $bytes = [System.IO.File]::ReadAllBytes($Path)
-            $offset = [BitConverter]::ToInt32($bytes, 0x3c)
-            $machine = [BitConverter]::ToUInt16($bytes, $offset + 4)
-            if ($machine -ne 0xaa64) {
-              throw "$Path is not AA64: 0x$($machine.ToString('x4'))"
-            }
-          }
-          Assert-AA64 (Join-Path $bin 'msys-2.0.dll')
-          Assert-AA64 (Join-Path $bin 'msys-z.dll')
-          Assert-AA64 (Join-Path $bin 'minigzip.exe')
-          Assert-AA64 (Join-Path $bin 'pseudo-reloc-cxx.exe')
-          Assert-AA64 (Join-Path $bin 'msys-gcc_s-seh-1.dll')
-          Assert-AA64 (Join-Path $bin 'msys-stdc++-6.dll')
+          & .\native-inputs\validate-evidence-encoding.ps1 `
+            -Root $durable `
+            -OutputPath (Join-Path $durable 'EVIDENCE-ENCODING.json')
+          & .\native-inputs\seal-evidence.ps1 `
+            -Root $durable `
+            -ManifestPath (Join-Path $durable 'EVIDENCE-MANIFEST.tsv') `
+            -SealPath (Join-Path $durable 'EVIDENCE-SEAL.json')
 
-          $input = Join-Path $nativeRoot 'roundtrip.txt'
-          $compressed = "$input.gz"
-          $output = "$input.out"
-          [System.IO.File]::WriteAllText(
-            $input,
-            ("native ARM64 MSYS zlib roundtrip`n" * 256),
-            [System.Text.UTF8Encoding]::new($false)
-          )
-          $env:MSYSTEM = 'MSYS'
-          $env:MSYS2_PATH_TYPE = 'inherit'
-          Push-Location $bin
-          try {
-            & $env:ComSpec /d /c "`"minigzip.exe`" < `"$input`" > `"$compressed`""
-            if ($LASTEXITCODE -ne 0) {
-              throw "native compression failed with exit code $LASTEXITCODE"
-            }
-            & $env:ComSpec /d /c "`"minigzip.exe`" -d < `"$compressed`" > `"$output`""
-            if ($LASTEXITCODE -ne 0) {
-              throw "native decompression failed with exit code $LASTEXITCODE"
-            }
-          }
-          finally {
-            Pop-Location
-          }
+          Copy-Item `
+            -LiteralPath (Join-Path $durable 'EVIDENCE-MANIFEST.tsv') `
+            -Destination $upload
+          Copy-Item `
+            -LiteralPath (Join-Path $durable 'EVIDENCE-SEAL.json') `
+            -Destination $upload
+          Compress-Archive `
+            -Path (Join-Path $durable '*') `
+            -DestinationPath (Join-Path $upload 'zlib-durable-evidence.zip') `
+            -CompressionLevel Optimal
+          "upload=$upload" >> $env:GITHUB_OUTPUT
 
-          $inputHash = (Get-FileHash -Algorithm SHA256 $input).Hash.ToLowerInvariant()
-          $outputHash = (Get-FileHash -Algorithm SHA256 $output).Hash.ToLowerInvariant()
-          if ($inputHash -ne $outputHash) {
-            throw "native roundtrip mismatch: input=$inputHash output=$outputHash"
-          }
-
-          $pseudoRelocOutput = @(
-            & (Join-Path $bin 'pseudo-reloc-cxx.exe') 2>&1
-          ) | ForEach-Object { $_.ToString() }
-          $pseudoRelocOutput | Set-Content `
-            (Join-Path $nativeRoot 'pseudo-reloc-cxx.stdout.txt') `
-            -Encoding utf8NoBOM
-          if ($LASTEXITCODE -ne 0) {
-            throw "native C++ pseudo-reloc probe failed with exit code $LASTEXITCODE"
-          }
-          if ($pseudoRelocOutput -notcontains 'cxx-runtime-ok') {
-            throw 'native C++ pseudo-reloc probe omitted cxx-runtime-ok'
-          }
-
-          @(
-            "processor`t$($processor.Name)"
-            "architecture`tARM64"
-            "runtime`t3.6.10.r0.ga527ace21-1"
-            "zlib`t1.3.1-1"
-            "input-sha256`t$inputHash"
-            "output-sha256`t$outputHash"
-            "pseudo-reloc-cxx`tcxx-runtime-ok"
-          ) | Set-Content `
-            (Join-Path $nativeRoot 'native-smoke.tsv') `
-            -Encoding utf8NoBOM
-
-      - name: Upload native execution evidence
-        uses: actions/upload-artifact@v4
+      - name: Upload native process evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: msysarm64-zlib-native-smoke
           if-no-files-found: error
-          retention-days: 14
-          path: |
-            ${{ runner.temp }}/msysarm64-zlib-native-root/native-smoke.tsv
-            ${{ runner.temp }}/msysarm64-zlib-native-root/pseudo-reloc-cxx.stdout.txt
+          retention-days: 90
+          path: ${{ runner.temp }}/zlib-native-output/**
+
+      - name: Upload durable evidence seal
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: msysarm64-zlib-durable-evidence
+          if-no-files-found: error
+          retention-days: 90
+          path: ${{ steps.durable.outputs.upload }}/*

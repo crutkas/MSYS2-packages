@@ -13,6 +13,20 @@ mkdir -p "$report_dir"
 report_dir=$(cd "$report_dir" && pwd)
 input_dir=$(cd "$3" && pwd)
 recipe_dir=$(cd "${4:-$package_dir}" && pwd)
+pacman=${PACMAN:-/usr/bin/pacman}
+pacman_config=${PACMAN_CONFIG:-/etc/pacman.conf}
+pacman_gpgdir=${PACMAN_GPGDIR:-/etc/pacman.d/gnupg}
+test -x "$pacman"
+parent_pacman=(
+  "$pacman"
+  --root /
+  --dbpath /var/lib/pacman
+  --cachedir /var/cache/pacman/pkg
+  --logfile /var/log/zlib-private-pacman.log
+  --config "$pacman_config"
+  --hookdir /etc/pacman.d/hooks
+  --gpgdir "$pacman_gpgdir"
+)
 
 runtime_name=mingw-w64-cross-msysarm64-zlib
 devel_name=mingw-w64-cross-msysarm64-zlib-devel
@@ -40,6 +54,45 @@ for archive in "${archives[@]}"; do
   test -f "$archive"
 done
 
+content_root="${report_dir}/package-content"
+/usr/bin/mkdir -p "$content_root"
+for archive in "${archives[@]}"; do
+  archive_name=$(/usr/bin/basename "$archive")
+  archive_root="${content_root}/${archive_name}"
+  /usr/bin/mkdir -p "$archive_root"
+  /usr/bin/bsdtar -tf "$archive" \
+    > "${report_dir}/${archive_name}.files.txt"
+  while IFS= read -r path; do
+    case "$path" in
+      /*|[A-Za-z]:*|..|../*|*/../*|*/..)
+        echo "Unsafe package path: $archive: $path" >&2
+        exit 1
+        ;;
+    esac
+  done < "${report_dir}/${archive_name}.files.txt"
+  /usr/bin/bsdtar --numeric-owner -tvf "$archive" \
+    > "${report_dir}/${archive_name}.headers.txt"
+  if /usr/bin/awk '$3 != 0 || $4 != 0 {exit 1}' \
+      "${report_dir}/${archive_name}.headers.txt"; then
+    :
+  else
+    echo "Non-root tar header: $archive" >&2
+    exit 1
+  fi
+  if /usr/bin/grep -Eq '^[hl]' \
+      "${report_dir}/${archive_name}.headers.txt"; then
+    echo "Unexpected package hardlink or symlink: $archive" >&2
+    exit 1
+  fi
+  MSYS=winsymlinks:sys \
+    /usr/bin/bsdtar -xf "$archive" -C "$archive_root"
+  if /usr/bin/find "$archive_root" -type l -print -quit \
+      | /usr/bin/grep -q .; then
+    echo "Unexpected package symlink: $archive" >&2
+    exit 1
+  fi
+done
+
 assert_metadata() {
   local archive=$1
   local package_name=$2
@@ -47,13 +100,21 @@ assert_metadata() {
   local metadata="${report_dir}/${package_name}.PKGINFO"
   local expected_line
 
-  bsdtar -xOf "$archive" .PKGINFO > "$metadata"
+  /usr/bin/bsdtar -xOf "$archive" .PKGINFO > "$metadata"
   grep -Fx "pkgname = ${package_name}" "$metadata"
   grep -Fx 'pkgver = 1.3.1-1' "$metadata"
   grep -Fx 'arch = x86_64' "$metadata"
   for expected_line in "$@"; do
     grep -Fx "$expected_line" "$metadata"
   done
+
+  local mtree="${report_dir}/${package_name}.MTREE"
+  /usr/bin/bsdtar -xOf "$archive" .MTREE | /usr/bin/gzip -dc > "$mtree"
+  /usr/bin/grep -Eq '^/set .*uid=0 .*gid=0' "$mtree"
+  if /usr/bin/grep -Eq '(^|[[:space:]])(uid|gid)=[1-9][0-9]*' "$mtree"; then
+    echo "Non-root MTREE ownership: $archive" >&2
+    return 1
+  fi
 }
 
 assert_metadata "$runtime_archive" "$runtime_name" \
@@ -72,7 +133,7 @@ assert_metadata "$minigzip_archive" "$minigzip_name" \
 snapshot_shared_root() {
   local prefix=$1
 
-  pacman -Q | LC_ALL=C sort > "${prefix}.packages.txt"
+  "${parent_pacman[@]}" -Q | LC_ALL=C sort > "${prefix}.packages.txt"
   (
     cd /var/lib/pacman
     find local -type f -printf '%P\0' \
@@ -81,6 +142,19 @@ snapshot_shared_root() {
           sha256sum "local/${file}"
         done
   ) > "${prefix}.local-db.sha256"
+  (
+    cd /etc/pacman.d/gnupg
+    find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+  ) > "${prefix}.gpg.sha256"
+  if [[ -f /var/log/zlib-private-pacman.log ]]; then
+    /usr/bin/stat -c '%s' /var/log/zlib-private-pacman.log \
+      > "${prefix}.pacman-log.bytes"
+    /usr/bin/sha256sum /var/log/zlib-private-pacman.log \
+      > "${prefix}.pacman-log.sha256"
+  else
+    : > "${prefix}.pacman-log.bytes"
+    : > "${prefix}.pacman-log.sha256"
+  fi
 }
 
 snapshot_isolated_root() {
@@ -131,13 +205,20 @@ transaction_root="${report_dir}/pacman-root"
 dbpath="${transaction_root}/var/lib/pacman"
 cachedir="${transaction_root}/var/cache/pacman/pkg"
 hookdir="${transaction_root}/etc/pacman.d/hooks"
+gpgdir="${transaction_root}/etc/pacman.d/gnupg"
 logfile="${transaction_root}/var/log/pacman.log"
-pacman_config="${report_dir}/isolated-pacman.conf"
+pacman_config="${transaction_root}/etc/pacman.conf"
 if [[ -e "$transaction_root" ]]; then
   echo "isolated transaction root already exists: $transaction_root" >&2
   exit 1
 fi
-mkdir -p "$dbpath" "$cachedir" "$hookdir" "$(dirname "$logfile")"
+mkdir -p \
+  "$dbpath" \
+  "$cachedir" \
+  "$hookdir" \
+  "$gpgdir" \
+  "$(dirname "$logfile")"
+/usr/bin/cp -a /etc/pacman.d/gnupg/. "$gpgdir/"
 cat > "$pacman_config" <<'EOF'
 [options]
 Architecture = auto
@@ -146,14 +227,14 @@ LocalFileSigLevel = Optional
 EOF
 
 isolated_pacman=(
-  pacman
+  "$pacman"
   --root "$transaction_root"
   --dbpath "$dbpath"
   --cachedir "$cachedir"
   --hookdir "$hookdir"
   --logfile "$logfile"
   --config "$pacman_config"
-  --gpgdir /etc/pacman.d/gnupg
+  --gpgdir "$gpgdir"
 )
 snapshot_isolated_root "${report_dir}/isolated-root-before.txt"
 
@@ -208,6 +289,10 @@ test "$(readlink /opt/aarch64-pc-msys/bin/ar.exe)" = \
   ../../aarch64-pc-cygwin/bin/ar.exe
 
 PSEUDO_RELOC_SCANNER="${recipe_dir}/../.ci/check-aarch64-pseudo-relocs.ps1" \
+PSEUDO_RELOC_WRAPPER="${recipe_dir}/scan-aarch64-pseudo-relocs.ps1" \
+PACMAN="$pacman" \
+PACMAN_CONFIG="$pacman_config" \
+PACMAN_GPGDIR="$pacman_gpgdir" \
   "${recipe_dir}/validate-zlib.sh" \
   "$isolated_prefix" \
   "${report_dir}/installed-payload"
@@ -239,6 +324,10 @@ cmp \
 snapshot_shared_root "$shared_after"
 cmp "${shared_before}.packages.txt" "${shared_after}.packages.txt"
 cmp "${shared_before}.local-db.sha256" "${shared_after}.local-db.sha256"
+cmp "${shared_before}.gpg.sha256" "${shared_after}.gpg.sha256"
+cmp "${shared_before}.pacman-log.bytes" "${shared_after}.pacman-log.bytes"
+cmp "${shared_before}.pacman-log.sha256" \
+  "${shared_after}.pacman-log.sha256"
 rm -rf "$transaction_root"
 
 (

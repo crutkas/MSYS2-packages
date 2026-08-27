@@ -18,11 +18,24 @@ package. On a native ARM64 MSYS installation that prefix becomes `/usr`.
 
 ## Immutable compiler inputs
 
-The focused fork CI installs the complete compiler dependency graph in one
-`pacman -U` transaction with `MSYS=winsymlinks:sys`. Every release asset is
-downloaded independently with both `gh` and `curl`, checked against GitHub's
-published digest and size, and checked against these SHA-256 pins before
-installation.
+The focused fork CI never installs into the hosted `C:\msys64` root. It
+downloads the 42,820,476-byte MSYS2 base asset `532401203` twice and requires
+SHA-256 `3a56d2f156002c41de8c7e1e73ed6753e64c5e02389210c6d8a38b6d01349783`.
+The private root receives only these additional host packages:
+
+| Asset | SHA-256 |
+| --- | --- |
+| `diffutils-3.12-1-x86_64.pkg.tar.zst` | `7902c8ce3d4dd69a0f5e98dc9d5c83c17b23314ba486169db57ef6e2835ce3b6` |
+| `isl-0.27-1-x86_64.pkg.tar.zst` | `cdd0a4ce0bf0d9e3f3eff2b770b8143e09e126a614de8b55bb5d30fc596b92d1` |
+| `make-4.4.1-3-x86_64.pkg.tar.zst` | `af0bdba17f06fe037f0194069adaa31a8fe45f1a11381501896aea1fae37bd5d` |
+| `mpc-1.4.1-1-x86_64.pkg.tar.zst` | `0f5073ec2e8be265854ee3c7cb1079b5e8e02264d53e659d8414988c6c182f16` |
+| `patch-2.7.6-3-x86_64.pkg.tar.zst` | `dd75ca0f715dd9c71a43af6a0ff3d068faeee1d768e02282d319671201cd5d45` |
+
+Every base, host, and toolchain asset is downloaded independently with
+`Invoke-WebRequest` and `HttpClient`, then checked against an exact byte count
+and SHA-256 before one private `pacman` transaction. Root, database, cache,
+log, config, hooks, and GPG paths are all explicit. The source signature is
+verified by private `gpgv` against the committed Mark Adler key.
 
 Runtime/sysroot release `msysarm64-runtime-pr10-a527-20260824`:
 
@@ -75,8 +88,8 @@ The package-owned shared pseudo-reloc scanner is vendored from producer head
 
 ## Validation
 
-The package check reuses zlib's `make test` and minigzip round trip on the
-build host. Target validation checks PE machine `0xAA64`, all static/import
+The target build reuses zlib's example and minigzip programs in static and
+dynamic forms. Target validation checks PE machine `0xAA64`, all static/import
 archive members and armaps, every emitted object and PE, DLL imports, public
 and import symbols, dynamic and static consumer links, pkg-config paths,
 pseudo-reloc v2 records, and a deterministic payload manifest. Pseudo-reloc
@@ -86,3 +99,19 @@ Focused CI also installs and removes all three split packages atomically in a
 fresh isolated libalpm root, and requires the shared package database snapshots
 from before and after that proof to match. The ARM runner executes the packaged
 dynamic minigzip round trip with the released native `msys-2.0.dll`.
+
+Each pseudo-reloc report binds the exact retained input SHA-256 and the
+scanner, objdump, and nm hashes. Evidence text is validated as UTF-8 without a
+BOM. Native evidence records OS and process architecture, `IsWow64Process2`
+results, and every loaded module's AA64 machine and SHA-256.
+
+All external actions are pinned to full commits:
+
+- `actions/checkout@11d5960a326750d5838078e36cf38b85af677262`
+- `actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02`
+- `actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093`
+
+Release `msysarm64-zlib-pr32-20260827` is a frozen noncanonical predecessor
+and must not be consumed or modified. A replacement is published only under a
+new annotated prerelease tag after independent push/PR equality and durable
+evidence sealing.

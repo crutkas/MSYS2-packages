@@ -27,6 +27,8 @@ for package in "$@"; do
     printf '%s\0' **/* \
       | LANG=C bsdtar -cnf - --format=mtree \
           --options='!all,use-set,type,uid,gid,mode,time,size,sha256,link' \
+          --uid 0 \
+          --gid 0 \
           --null --files-from - --exclude .MTREE \
       | gzip -c -f -n > .MTREE
     touch -d "@${SOURCE_DATE_EPOCH}" .MTREE

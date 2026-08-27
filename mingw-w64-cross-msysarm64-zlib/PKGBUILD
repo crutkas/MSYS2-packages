@@ -40,15 +40,14 @@ msys2_references=(
 license=('spdx:Zlib')
 groups=('mingw-w64-cross-toolchain' 'mingw-w64-cross')
 makedepends=(
-  'gcc'
   'make'
+  'patch'
   "mingw-w64-cross-cygwinarm64-binutils=${_binutils_version}-${_binutils_pkgrel}"
   "mingw-w64-cross-msysarm64-gcc=${_gcc_version}-${_gcc_pkgrel}"
   "mingw-w64-cross-msysarm64-gcc-libs=${_gcc_version}-${_gcc_pkgrel}"
   "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
   "mingw-w64-cross-msysarm64-sysroot=${_sysroot_version}-${_sysroot_pkgrel}"
   "mingw-w64-cross-msysarm64-w32api-runtime=${_w32api_version}-1"
-  'python'
 )
 options=('!strip' '!buildflags' '!emptydirs')
 source=(
@@ -57,6 +56,7 @@ source=(
   zlib-1.2.13-gzopen_w.patch
   zlib-1.2.13-minizip-fixuncrypt.patch
   validate-zlib.sh
+  scan-aarch64-pseudo-relocs.ps1
   README.md
 )
 sha256sums=(
@@ -65,8 +65,9 @@ sha256sums=(
   '43726a2170b298059391c0faec0c893aa7ca59b1201afd9f807c49d39ce25527'
   '3c5186940741cf380ab598362c564c792965e9d25906ef75087e9e7389becbc5'
   '7c60bc88074ca0d5b806d6b39ee183206f4697749ce96d81fcef9cad3df76eca'
-  '132a26ddf883ef3650ab8989d5e101bda893dca7c5821962b5671cfae84ce5e1'
-  '20d65d9c2fe0cedc1ff62e34a8cde337254c1ffa1f5e3e5ad6a2db2f05c813ff'
+  'c3d905c050ddd2f39e068174b5b5f9f0691ff63045dc5034ee4fe559fa9b6f94'
+  '70f1d82364c2dfcf27bab428b9ec52c18469f2ae7f7c4362da7deaa505591fee'
+  '21697eeff8af3dbf4b50c02704c2aaa33e75281c838a407f5bf2926b8b3b0f44'
 )
 validpgpkeys=('5ED46A6721D365587791E2AA783FCD8E58BCAFBA')
 
@@ -76,13 +77,13 @@ export TZ=UTC
 prepare() {
   cd "${srcdir}/${_realname}-${pkgver}"
 
-  patch -p2 -i "${srcdir}/zlib-1.2.13-configure.patch"
-  patch -p2 -i "${srcdir}/zlib-1.2.13-gzopen_w.patch"
-  patch -p2 -i "${srcdir}/zlib-1.2.13-minizip-fixuncrypt.patch"
+  /usr/bin/patch -p2 -i "${srcdir}/zlib-1.2.13-configure.patch"
+  /usr/bin/patch -p2 -i "${srcdir}/zlib-1.2.13-gzopen_w.patch"
+  /usr/bin/patch -p2 -i "${srcdir}/zlib-1.2.13-minizip-fixuncrypt.patch"
 
-  tr -d '\r' < "${srcdir}/validate-zlib.sh" \
+  /usr/bin/tr -d '\r' < "${srcdir}/validate-zlib.sh" \
     > "${srcdir}/validate-zlib.lf.sh"
-  chmod 755 "${srcdir}/validate-zlib.lf.sh"
+  /usr/bin/chmod 755 "${srcdir}/validate-zlib.lf.sh"
 }
 
 build() {
@@ -101,30 +102,49 @@ build() {
   local _objdump="${_tool_prefix}-objdump.exe"
   local _ranlib="${_tool_prefix}-ranlib.exe"
   local _rc="${_tool_prefix}-windres.exe"
+  local _strings="${_tool_prefix}-strings.exe"
+  local _strip="${_tool_prefix}-strip.exe"
   local _scanner="${startdir}/../.ci/check-aarch64-pseudo-relocs.ps1"
-  local _prefix_map="-ffile-prefix-map=${srcdir}=. -fdebug-prefix-map=${srcdir}=. -fmacro-prefix-map=${srcdir}=."
+  local _scanner_wrapper="${srcdir}/scan-aarch64-pseudo-relocs.ps1"
+  local _prefix_map="-ffile-prefix-map=${srcdir}=. -fdebug-prefix-map=${srcdir}=. -fmacro-prefix-map=${srcdir}=. -ffile-prefix-map=${startdir}=. -fdebug-prefix-map=${startdir}=. -fmacro-prefix-map=${startdir}=."
   local _target_cflags="-O2 -pipe -D__MSYS__ --sysroot=${_sysroot} -specs=${_specs} ${_prefix_map}"
   local _target_ldflags="--sysroot=${_sysroot} -L${_sysroot}/lib -L${_sysroot}/usr/lib -Wl,--no-insert-timestamp"
+  local _make=/usr/bin/make
+  local _pacman=/usr/bin/pacman
+  local _pacman_config="${PACMAN_CONFIG:-/etc/pacman.conf}"
+  local _pacman_gpgdir="${PACMAN_GPGDIR:-/etc/pacman.d/gnupg}"
+  local _sha256sum=/usr/bin/sha256sum
+  local -a _pacman_args=(
+    --root /
+    --dbpath /var/lib/pacman
+    --cachedir /var/cache/pacman/pkg
+    --logfile /var/log/zlib-private-pacman.log
+    --config "${_pacman_config}"
+    --hookdir /etc/pacman.d/hooks
+    --gpgdir "${_pacman_gpgdir}"
+  )
 
-  export PATH="/opt/bin:/usr/bin:${PATH}"
+  export PATH="/opt/bin:/usr/bin"
   test "$("${_cc}" -dumpmachine)" = "${_target}"
-  test "$(pacman -Qoq "${_cc}")" = mingw-w64-cross-msysarm64-gcc
-  test "$(sha256sum "${_ld}" | cut -d' ' -f1)" = \
+  test "$("${_pacman}" "${_pacman_args[@]}" -Qoq "${_cc}")" = \
+    mingw-w64-cross-msysarm64-gcc
+  test "$("${_sha256sum}" "${_ld}" | /usr/bin/cut -d' ' -f1)" = \
     "${_binutils_linker_sha256}"
-  test "$(sha256sum "${_scanner}" | cut -d' ' -f1)" = \
+  test "$("${_sha256sum}" "${_scanner}" | /usr/bin/cut -d' ' -f1)" = \
     "${_pseudo_reloc_scanner_sha256}"
-  test "$(pacman -Q mingw-w64-cross-cygwinarm64-binutils)" = \
+  test "$("${_pacman}" "${_pacman_args[@]}" \
+    -Q mingw-w64-cross-cygwinarm64-binutils)" = \
     "mingw-w64-cross-cygwinarm64-binutils ${_binutils_version}-${_binutils_pkgrel}"
-  test "$(pacman -Qoq "${_ar}")" = \
+  test "$("${_pacman}" "${_pacman_args[@]}" -Qoq "${_ar}")" = \
     mingw-w64-cross-cygwinarm64-binutils
   test -f "${_sysroot}/bin/msys-2.0.dll"
   test -f "${_sysroot}/lib/libmsys-2.0.a"
   test -f "${_sysroot}/usr/lib/libkernel32.a"
   test -f "${_specs}"
 
-  rm -rf "${_dest}" "${_report}"
-  mkdir -p "${_dest}" "${_report}"
-  make -C "${_source}" -f win32/Makefile.gcc clean
+  /usr/bin/rm -rf "${_dest}" "${_report}"
+  /usr/bin/mkdir -p "${_dest}" "${_report}"
+  "${_make}" -C "${_source}" -f win32/Makefile.gcc clean
   (
     cd "${_source}"
     CHOST="${_target}" \
@@ -136,7 +156,7 @@ build() {
     LDFLAGS="${_target_ldflags}" \
       ./configure --prefix=/usr --static
   )
-  make -C "${_source}" -j1 -f win32/Makefile.gcc \
+  "${_make}" -C "${_source}" -j1 -f win32/Makefile.gcc \
     CC="${_cc}" \
     LD="${_cc}" \
     AR="${_ar}" \
@@ -148,9 +168,14 @@ build() {
     CFLAGS="${_target_cflags}" \
     LDFLAGS="${_target_ldflags}" \
     SHAREDLIB=msys-z.dll
+  local _pe
+  for _pe in "${_source}/"*.dll "${_source}/"*.exe; do
+    test -f "${_pe}"
+    "${_strip}" --strip-debug "${_pe}"
+  done
   "${_ranlib}" -D "${_source}/libz.dll.a"
 
-  make -C "${_source}" -f win32/Makefile.gcc install \
+  "${_make}" -C "${_source}" -f win32/Makefile.gcc install \
     DESTDIR="${_dest}" \
     SHAREDLIB=msys-z.dll \
     BINARY_PATH=/usr/bin \
@@ -159,11 +184,11 @@ build() {
     prefix=/usr \
     SHARED_MODE=1
 
-  install -Dm755 "${_source}/minigzip_d.exe" \
+  /usr/bin/install -Dm755 "${_source}/minigzip_d.exe" \
     "${_dest}/usr/bin/minigzip.exe"
-  install -Dm644 "${_source}/zlib.3" \
+  /usr/bin/install -Dm644 "${_source}/zlib.3" \
     "${_dest}/usr/share/man/man3/zlib.3"
-  sed -i 's| -L${sharedlibdir}||g' \
+  /usr/bin/sed -i 's| -L${sharedlibdir}||g' \
     "${_dest}/usr/lib/pkgconfig/zlib.pc"
 
   TARGET="${_target}" \
@@ -172,9 +197,13 @@ build() {
   TARGET_AR="${_ar}" \
   TARGET_NM="${_nm}" \
   TARGET_OBJDUMP="${_objdump}" \
+  TARGET_STRINGS="${_strings}" \
+  TARGET_STRIP="${_strip}" \
   TARGET_BINUTILS_ROOT="${_binutils_root}" \
   TARGET_BUILD_DIR="${_source}" \
   PSEUDO_RELOC_SCANNER="${_scanner}" \
+  PSEUDO_RELOC_WRAPPER="${_scanner_wrapper}" \
+  PACMAN="${_pacman}" \
     "${srcdir}/validate-zlib.lf.sh" "${_dest}/usr" "${_report}"
 
   cat > "${_report}/source-identity.txt" <<EOF
@@ -197,28 +226,18 @@ binutils-linker-sha256	${_binutils_linker_sha256}
 binutils-producer-head	${_binutils_producer_head}
 binutils-producer-run	${_binutils_producer_run}
 pseudo-reloc-scanner-sha256	${_pseudo_reloc_scanner_sha256}
+source-signing-key-sha256	1458b5b96dd3904ef1d4cc24d27135dcf3b9abdce4e3689ad58041b482a3bbde
+scanner-wrapper-sha256	70f1d82364c2dfcf27bab428b9ec52c18469f2ae7f7c4362da7deaa505591fee
 EOF
 }
 
 check() {
-  local _source="${srcdir}/${_realname}-${pkgver}"
-  local _host_check="${srcdir}/host-check"
-  local _payload="${_host_check}/roundtrip.txt"
-
-  rm -rf "${_host_check}"
-  cp -a "${_source}" "${_host_check}"
-  (
-    cd "${_host_check}"
-    unset AR AS CC CXX LD NM OBJDUMP RANLIB RC STRIP
-    make -f win32/Makefile.gcc clean
-    ./configure --prefix=/usr --static
-    make -j1
-    make test
-    printf 'native aarch64-pc-msys zlib roundtrip\n' > "${_payload}"
-    ./minigzip < "${_payload}" > "${_payload}.gz"
-    ./minigzip -d < "${_payload}.gz" > "${_payload}.out"
-    cmp "${_payload}" "${_payload}.out"
-  )
+/usr/bin/grep -Fx $'target\taarch64-pc-msys' \
+  "${srcdir}/zlib-report/source-identity.txt"
+/usr/bin/grep -Fx $'machine\t0xAA64' \
+  "${srcdir}/zlib-report/validated.txt"
+test "$(/usr/bin/grep -c $'\tpass$' \
+  "${srcdir}/zlib-report/pseudo-relocs.tsv")" -eq 10
 }
 
 package_mingw-w64-cross-msysarm64-zlib() {
@@ -237,7 +256,8 @@ package_mingw-w64-cross-msysarm64-zlib() {
     "${pkgdir}/opt/${_target}/usr/bin/msys-z.dll"
   install -d "${_docdir}"
   cp -a "${srcdir}/zlib-report/." "${_docdir}/"
-  rm -f "${_docdir}/"*.exe
+  /usr/bin/rm -f "${_docdir}/"*.exe
+  /usr/bin/rm -rf "${_docdir}/scanner-inputs"
   install -Dm755 "${srcdir}/validate-zlib.lf.sh" \
     "${_docdir}/validate-zlib.sh"
   install -Dm644 "${srcdir}/README.md" "${_docdir}/README.md"

@@ -22,10 +22,16 @@ cxx=${TARGET_CXX:-"/opt/bin/${target}-g++.exe"}
 ar=${TARGET_AR:-/opt/bin/aarch64-pc-cygwin-ar.exe}
 nm=${TARGET_NM:-/opt/bin/aarch64-pc-cygwin-nm.exe}
 objdump=${TARGET_OBJDUMP:-/opt/bin/aarch64-pc-cygwin-objdump.exe}
+strings=${TARGET_STRINGS:-/opt/bin/aarch64-pc-cygwin-strings.exe}
+strip=${TARGET_STRIP:-/opt/bin/aarch64-pc-cygwin-strip.exe}
 binutils_root=${TARGET_BINUTILS_ROOT:-/opt/bin}
 build_dir=${TARGET_BUILD_DIR:-}
 scanner=${PSEUDO_RELOC_SCANNER:-}
+scanner_wrapper=${PSEUDO_RELOC_WRAPPER:-}
 powershell=${PSEUDO_RELOC_PWSH:-pwsh}
+pacman=${PACMAN:-/usr/bin/pacman}
+pacman_config=${PACMAN_CONFIG:-/etc/pacman.conf}
+pacman_gpgdir=${PACMAN_GPGDIR:-/etc/pacman.d/gnupg}
 scanner_sha256=888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9
 linker="${binutils_root}/aarch64-pc-cygwin-ld.exe"
 linker_sha256=075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f
@@ -37,11 +43,22 @@ minigzip="${prefix}/bin/minigzip.exe"
 static_lib="${prefix}/lib/libz.a"
 import_lib="${prefix}/lib/libz.dll.a"
 pc_file="${prefix}/lib/pkgconfig/zlib.pc"
+pacman_args=(
+  --root /
+  --dbpath /var/lib/pacman
+  --cachedir /var/cache/pacman/pkg
+  --logfile /var/log/zlib-private-pacman.log
+  --config "$pacman_config"
+  --hookdir /etc/pacman.d/hooks
+  --gpgdir "$pacman_gpgdir"
+)
 
-for tool in "$cc" "$cxx" "$ar" "$nm" "$objdump" "$linker" python "$powershell"; do
-  command -v "$tool" >/dev/null
+for tool in \
+  "$cc" "$cxx" "$ar" "$nm" "$objdump" "$strings" "$linker" \
+  "$strip" "$pacman" "$scanner" "$scanner_wrapper" "$powershell"
+do
+  test -x "$tool" || test -f "$tool"
 done
-test -f "$scanner"
 for file in \
   "$dll" \
   "$minigzip" \
@@ -58,15 +75,22 @@ test "$("$cc" -dumpmachine)" = "$target"
 test "$("$cc" -dumpversion)" = 15.0.1
 test "$("$cxx" -dumpmachine)" = "$target"
 test "$("$cxx" -dumpversion)" = 15.0.1
-test "$(pacman -Qoq "$cc")" = mingw-w64-cross-msysarm64-gcc
-test "$(pacman -Qoq "$cxx")" = mingw-w64-cross-msysarm64-gcc
-compiler_identity=$(pacman -Q mingw-w64-cross-msysarm64-gcc)
+test "$("$pacman" "${pacman_args[@]}" -Qoq "$cc")" = \
+  mingw-w64-cross-msysarm64-gcc
+test "$("$pacman" "${pacman_args[@]}" -Qoq "$cxx")" = \
+  mingw-w64-cross-msysarm64-gcc
+compiler_identity=$(
+  "$pacman" "${pacman_args[@]}" -Q mingw-w64-cross-msysarm64-gcc
+)
 test "$(sha256sum "$linker" | cut -d' ' -f1)" = "$linker_sha256"
 test "$(sha256sum "$scanner" | cut -d' ' -f1)" = "$scanner_sha256"
-binutils_identity=$(pacman -Q mingw-w64-cross-cygwinarm64-binutils)
+binutils_identity=$(
+  "$pacman" "${pacman_args[@]}" -Q \
+    mingw-w64-cross-cygwinarm64-binutils
+)
 test "$binutils_identity" = \
   'mingw-w64-cross-cygwinarm64-binutils 2.44.50-2'
-test "$(pacman -Qoq "$ar")" = \
+test "$("$pacman" "${pacman_args[@]}" -Qoq "$ar")" = \
   mingw-w64-cross-cygwinarm64-binutils
 
 gcc_search=(
@@ -82,22 +106,20 @@ cxx_header_search=(
   -isystem "${cxx_include}/backward"
 )
 
-python - "$dll" "$minigzip" <<'PY'
-import pathlib
-import struct
-import sys
+audit_private_paths() {
+  local file=$1
+  local stem=$2
+  local ascii="${report_dir}/${stem}.strings-ascii.txt"
+  local utf16="${report_dir}/${stem}.strings-utf16le.txt"
+  local forbidden='([A-Za-z]:\\|/c/Users/|/cygdrive/|/home/runner|\.copilot|RUNNER_TEMP|runner[_-]?temp|[\\/]_work[\\/])'
 
-for name in sys.argv[1:]:
-    data = pathlib.Path(name).read_bytes()
-    if data[:2] != b"MZ":
-        raise SystemExit(f"{name}: missing DOS header")
-    pe_offset = struct.unpack_from("<I", data, 0x3C)[0]
-    if data[pe_offset:pe_offset + 4] != b"PE\0\0":
-        raise SystemExit(f"{name}: missing PE signature")
-    machine = struct.unpack_from("<H", data, pe_offset + 4)[0]
-    if machine != 0xAA64:
-        raise SystemExit(f"{name}: expected AA64, got 0x{machine:04X}")
-PY
+  "$strings" -a "$file" > "$ascii"
+  "$strings" -a -e l "$file" > "$utf16"
+  if /usr/bin/grep -Eai "$forbidden" "$ascii" "$utf16"; then
+    echo "Private path leaked into $file" >&2
+    return 1
+  fi
+}
 
 audit_pe() {
   local file=$1
@@ -117,59 +139,40 @@ audit_pe() {
     echo "$file contains a foreign target or import" >&2
     return 1
   fi
+  audit_private_paths "$file" "$stem"
 }
 
-: > "${report_dir}/pseudo-relocs.tsv"
+scanner_inputs="${report_dir}/scanner-inputs"
+/usr/bin/mkdir -p "$scanner_inputs"
+/usr/bin/printf \
+  'label\tinput-sha256\tscanner-sha256\tobjdump-sha256\tnm-sha256\tformat\trecords\tflags\treport-sha256\tresult\n' \
+  > "${report_dir}/pseudo-relocs.tsv"
 audit_pseudo_relocs() {
   local file=$1
   local stem=$2
   local output="${report_dir}/${stem}.pseudo-relocs.json"
-  local file_win output_win scanner_win objdump_win nm_win
+  local file_win output_win scanner_win wrapper_win objdump_win nm_win
+  local retained_win summary_win
 
   file_win=$(cygpath -w "$file")
   output_win=$(cygpath -w "$output")
   scanner_win=$(cygpath -w "$scanner")
+  wrapper_win=$(cygpath -w "$scanner_wrapper")
   objdump_win=$(cygpath -w "$objdump")
   nm_win=$(cygpath -w "$nm")
+  retained_win=$(cygpath -w "$scanner_inputs")
+  summary_win=$(cygpath -w "${report_dir}/pseudo-relocs.tsv")
   MSYS2_ARG_CONV_EXCL='*' \
     "$powershell" -NoLogo -NoProfile -NonInteractive \
-      -File "$scanner_win" \
+      -File "$wrapper_win" \
       -PePath "$file_win" \
+      -Label "$stem" \
+      -ScannerPath "$scanner_win" \
       -OutputPath "$output_win" \
       -Objdump "$objdump_win" \
-      -Nm "$nm_win"
-
-  python - "$output" "$stem" \
-    "${report_dir}/pseudo-relocs.tsv" <<'PY'
-import json
-import pathlib
-import sys
-
-output_path = pathlib.Path(sys.argv[1])
-stem = sys.argv[2]
-report_path = pathlib.Path(sys.argv[3])
-data = json.loads(output_path.read_text(encoding="utf-8-sig"))
-if data.get("result") != "pass":
-    raise SystemExit(f"{stem}: shared pseudo-reloc scanner did not pass")
-violations = data.get("policy_violations", [])
-flags = data.get("flags", [])
-if violations or any(flag not in (8, 16, 32, 64) for flag in flags):
-    raise SystemExit(f"{stem}: rejected pseudo-reloc policy: {violations!r}")
-if any(flag in (12, 21) for flag in flags):
-    raise SystemExit(f"{stem}: ambiguous pseudo-reloc flags: {flags!r}")
-data["input_path"] = stem
-output_path.write_text(
-    json.dumps(data, indent=2, sort_keys=True) + "\n",
-    encoding="utf-8",
-    newline="\n",
-)
-flag_text = ",".join(str(flag) for flag in flags) or "none"
-with pathlib.Path(report_path).open("a", encoding="utf-8", newline="\n") as report:
-    report.write(
-        f"{stem}\t{data.get('table_format')}\t"
-        f"{data.get('record_count')}\t{flag_text}\tpass\n"
-    )
-PY
+      -Nm "$nm_win" \
+      -RetainedInputDirectory "$retained_win" \
+      -SummaryPath "$summary_win"
 }
 
 audit_pe "$dll" zlib-dll
@@ -220,6 +223,9 @@ audit_archive() {
       "${workdir}/archive-member.objdump.txt" >/dev/null
     grep -F 'file format pe-aarch64-little' \
       "${workdir}/archive-member.objdump.txt" >/dev/null
+    audit_private_paths \
+      "${workdir}/archive-member.o" \
+      "${stem}-member-${count}"
     count=$((count + 1))
   done < "${report_dir}/${stem}.members.txt"
   test "$count" -gt 0
@@ -275,6 +281,7 @@ EOF
   -Wl,--no-insert-timestamp \
   -lz \
   -o "${workdir}/compression-smoke-dynamic.exe"
+"$strip" --strip-debug "${workdir}/compression-smoke-dynamic.exe"
 audit_pe "${workdir}/compression-smoke-dynamic.exe" compression-smoke-dynamic
 audit_pseudo_relocs \
   "${workdir}/compression-smoke-dynamic.exe" \
@@ -293,6 +300,7 @@ grep -Fix 'msys-z.dll' \
   "$static_lib" \
   -Wl,--no-insert-timestamp \
   -o "${workdir}/compression-smoke-static.exe"
+"$strip" --strip-debug "${workdir}/compression-smoke-static.exe"
 audit_pe "${workdir}/compression-smoke-static.exe" compression-smoke-static
 audit_pseudo_relocs \
   "${workdir}/compression-smoke-static.exe" \
@@ -307,6 +315,7 @@ fi
 
 cat > "${workdir}/pseudo-reloc-cxx.cc" <<'EOF'
 #include <iostream>
+#include <cstdlib>
 #include <stdexcept>
 #include <string>
 
@@ -333,6 +342,8 @@ main()
       return 2;
   }
 
+  if (std::getenv("MSYS_ZLIB_NATIVE_HOLD") != nullptr)
+    std::cin.get();
   std::cout << "cxx-runtime-ok" << std::endl;
   return 0;
 }
@@ -348,6 +359,7 @@ EOF
   -Wl,--no-insert-timestamp \
   "${workdir}/pseudo-reloc-cxx.cc" \
   -o "${workdir}/pseudo-reloc-cxx.exe"
+"$strip" --strip-debug "${workdir}/pseudo-reloc-cxx.exe"
 audit_pe "${workdir}/pseudo-reloc-cxx.exe" pseudo-reloc-cxx
 audit_pseudo_relocs "${workdir}/pseudo-reloc-cxx.exe" pseudo-reloc-cxx
 grep -Fix 'msys-2.0.dll' \
