@@ -66,6 +66,25 @@ done
 
 "${ar}" t "${import_lib}" > "${report}/import-library-members.txt"
 test -s "${report}/import-library-members.txt"
+"${objdump}" -f "${import_lib}" \
+  > "${report}/import-library-formats.txt"
+test "$(
+  grep -c 'file format pe-aarch64-little' \
+    "${report}/import-library-formats.txt"
+)" -eq "$(wc -l < "${report}/import-library-members.txt")"
+test "$(
+  grep -c 'architecture: aarch64' \
+    "${report}/import-library-formats.txt"
+)" -eq "$(wc -l < "${report}/import-library-members.txt")"
+if grep -Ei 'pei-i386|pe-x86-64|architecture: i386' \
+    "${report}/import-library-formats.txt"; then
+  echo 'import archive contains a foreign member' >&2
+  exit 1
+fi
+"${nm}" --print-armap "${import_lib}" \
+  > "${report}/import-library-armap.txt"
+grep -Fx 'Archive index:' "${report}/import-library-armap.txt"
+grep -Eq '^crypt in .+\.o$' "${report}/import-library-armap.txt"
 "${nm}" -A "${import_lib}" > "${report}/import-library-symbols.txt"
 grep -Eq '[[:space:]]I[[:space:]]+__imp_crypt$' \
   "${report}/import-library-symbols.txt"
@@ -74,6 +93,25 @@ grep -Eq '[[:space:]]T[[:space:]]+crypt$' \
 
 "${ar}" t "${static_lib}" > "${report}/static-library-members.txt"
 test -s "${report}/static-library-members.txt"
+"${objdump}" -f "${static_lib}" \
+  > "${report}/static-library-formats.txt"
+test "$(
+  grep -c 'file format pe-aarch64-little' \
+    "${report}/static-library-formats.txt"
+)" -eq "$(wc -l < "${report}/static-library-members.txt")"
+test "$(
+  grep -c 'architecture: aarch64' \
+    "${report}/static-library-formats.txt"
+)" -eq "$(wc -l < "${report}/static-library-members.txt")"
+if grep -Ei 'pei-i386|pe-x86-64|architecture: i386' \
+    "${report}/static-library-formats.txt"; then
+  echo 'static archive contains a foreign member' >&2
+  exit 1
+fi
+"${nm}" --print-armap "${static_lib}" \
+  > "${report}/static-library-armap.txt"
+grep -Fx 'Archive index:' "${report}/static-library-armap.txt"
+grep -Eq '^crypt in .+\.o$' "${report}/static-library-armap.txt"
 "${nm}" -g --defined-only "${static_lib}" \
   > "${report}/static-library-symbols.txt"
 grep -Eq '[[:space:]]T[[:space:]]+crypt$' \

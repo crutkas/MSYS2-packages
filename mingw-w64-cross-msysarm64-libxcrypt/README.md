@@ -13,6 +13,11 @@ accepted by the validator.
   version `3.6.10.r0.ga527ace21-1`
 - Full GCC: `msysarm64-gcc-pr13-20260826`, version `15.0.1dev-1`
 - GCC support packages: `msysarm64-gcc-pr13-support-20260826`
+- Fixed binutils: `cygwinarm64-binutils-pr21-3356eec-20260827`,
+  version `2.44.50-2`, package SHA-256
+  `3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b`,
+  linker SHA-256
+  `075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f`
 - w32api: `14.0.0.r0.g9b3dd0125-1`
 
 The focused workflow verifies each GitHub release digest, downloads every
@@ -33,7 +38,12 @@ Cross checks cover AA64 PE/COFF identity, imports, exported symbols, import
 archive members, static archive members, headers, pkg-config metadata, and
 dynamic/static link probes. Both `libcrypt` and `libxcrypt` pkg-config aliases
 must produce the same staged-sysroot flags and drive the dynamic consumer link,
-matching APR-style detection. A `windows-11-arm` job runs the known DES vector
+matching APR-style detection. The reviewed fixed-binutils scanner rejects
+pseudo-reloc flags 12, 21, or any unknown width in every emitted PE image.
+The scanner is pinned to package commit `3356eec1411983cc252b04afac32bca5f3b8d824`
+with SHA-256
+`888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9`.
+A `windows-11-arm` job runs the known DES vector
 `crypt("password", "ab") == "abJnggxhB/yWI"` natively.
 
 This package and its releases are for `crutkas/MSYS2-packages` only. They must

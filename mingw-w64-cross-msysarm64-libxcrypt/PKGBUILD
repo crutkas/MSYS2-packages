@@ -13,6 +13,9 @@ _gcc_version=15.0.1dev
 _gcc_pkgrel=1
 _support_release_tag=msysarm64-gcc-pr13-support-20260826
 _w32api_version=14.0.0.r0.g9b3dd0125
+_binutils_release_tag=cygwinarm64-binutils-pr21-3356eec-20260827
+_binutils_version=2.44.50
+_binutils_pkgrel=2
 
 pkgbase=mingw-w64-cross-msysarm64-libxcrypt
 pkgname=(
@@ -31,6 +34,7 @@ makedepends=(
   'make'
   'perl'
   'pkgconf'
+  "mingw-w64-cross-cygwinarm64-binutils=${_binutils_version}-${_binutils_pkgrel}"
   "mingw-w64-cross-msysarm64-gcc=${_gcc_version}-${_gcc_pkgrel}"
   "mingw-w64-cross-msysarm64-gcc-libs=${_gcc_version}-${_gcc_pkgrel}"
   "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
@@ -51,8 +55,8 @@ sha256sums=(
   'SKIP'
   'd7fc862abcae33cf62c4c267e321ad02ac831d1897f0296cb96a0d8e528ab183'
   'bab215235696be1338184944f6956cea1fbf004c34ff50d2c729b77cc70357a0'
-  '49a9c68b3eb35a93b3327d5468c9a98d5ba4e01c014f4070f176a64735da7285'
-  'fb60a2bad91cb01137826743d7ffa256094e862960191e894f3fcae9deeebd7d'
+  'f156c10a5a77f233162dde1de563fd9262c8b45876f425e7a62c52afb4a542dd'
+  '6e39820848b1198df75106b11f42753eee433784552c11e00d0dbccde94782cc'
 )
 validpgpkeys=('678CE3FEE430311596DB8C16F52E98007594C21D')
 
@@ -133,6 +137,21 @@ gcc-release	${_gcc_release_tag}
 gcc-version	${_gcc_version}-${_gcc_pkgrel}
 gcc-support-release	${_support_release_tag}
 w32api-version	${_w32api_version}-1
+binutils-release	${_binutils_release_tag}
+binutils-version	${_binutils_version}-${_binutils_pkgrel}
+binutils-asset-id	532446043
+binutils-package-sha256	3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b
+binutils-pkginfo-sha256	c49d9b366e4c5e5a564511cce75042a51629d2ef5887aa5a9256c5974eea3826
+binutils-package-head	3356eec1411983cc252b04afac32bca5f3b8d824
+binutils-package-run	33044771291
+binutils-linker-sha256	075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f
+binutils-source-commit	3f05fc4d3e0eeab265f2157e3257a7067b6e7223
+binutils-source-tree	ecca625d45883e13128283a8c1750dac7997f729
+binutils-source-archive-sha256	d11c2b4453318a6168287fe74655c54aa15bf12f415f9ffe3f0ea32e30a3411e
+binutils-scanner-commit	3356eec1411983cc252b04afac32bca5f3b8d824
+binutils-scanner-sha256	888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9
+binutils-native-run	33083775213
+binutils-native-seal-sha256	b0546f2d78882d4112a25861fd1b2ba9fc3cd2061b917de48a703079189af118
 EOF
 
   grep -Fx $'target\taarch64-pc-msys' \
@@ -140,6 +159,8 @@ EOF
   grep -Fx $'runtime-release\tmsysarm64-runtime-pr10-a527-20260824' \
     "${_report}/source-identity.txt"
   grep -Fx $'gcc-release\tmsysarm64-gcc-pr13-20260826' \
+    "${_report}/source-identity.txt"
+  grep -Fx $'binutils-release\tcygwinarm64-binutils-pr21-3356eec-20260827' \
     "${_report}/source-identity.txt"
 }
 

@@ -90,9 +90,14 @@ jobs:
 
           $assets = @(
             [pscustomobject]@{
-              Tag = 'cygwinarm64-gcc-static-runtime-20260815'
-              Name = 'mingw-w64-cross-cygwinarm64-binutils-2.44.50-1-x86_64.pkg.tar.zst'
-              SHA256 = '8908cb690952788153b60bc4fb659826bbd8a03a26c1073f76c0be7ed6f97518'
+              Tag = 'cygwinarm64-binutils-pr21-3356eec-20260827'
+              Name = 'mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst'
+              SHA256 = '3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b'
+            }
+            [pscustomobject]@{
+              Tag = 'cygwinarm64-binutils-pr21-3356eec-20260827'
+              Name = 'native-arm64-fixed-linker-run33083775213.zip'
+              SHA256 = 'b0546f2d78882d4112a25861fd1b2ba9fc3cd2061b917de48a703079189af118'
             }
             [pscustomobject]@{
               Tag = 'cygwinarm64-gcc-static-runtime-20260815'
@@ -211,12 +216,40 @@ jobs:
           $manifest | Set-Content `
             (Join-Path $env:RUNNER_TEMP 'msysarm64-inputs.tsv')
 
+          $scannerUrl = 'https://raw.githubusercontent.com/crutkas/MSYS2-packages/3356eec1411983cc252b04afac32bca5f3b8d824/.ci/check-aarch64-pseudo-relocs.ps1'
+          $scanner = Join-Path $primary 'check-aarch64-pseudo-relocs.ps1'
+          $scannerSecondary = Join-Path $secondary 'check-aarch64-pseudo-relocs.ps1'
+          & curl.exe --fail --location --retry 3 `
+            --output $scanner $scannerUrl
+          if ($LASTEXITCODE -ne 0) {
+            throw 'primary pseudo-reloc scanner download failed'
+          }
+          & curl.exe --fail --location --retry 3 `
+            --output $scannerSecondary $scannerUrl
+          if ($LASTEXITCODE -ne 0) {
+            throw 'secondary pseudo-reloc scanner download failed'
+          }
+          $scannerHash = (
+            Get-FileHash -Algorithm SHA256 $scanner
+          ).Hash.ToLowerInvariant()
+          $scannerSecondaryHash = (
+            Get-FileHash -Algorithm SHA256 $scannerSecondary
+          ).Hash.ToLowerInvariant()
+          if ($scannerHash -ne '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9' -or
+              $scannerSecondaryHash -ne $scannerHash) {
+            throw 'reviewed pseudo-reloc scanner hash mismatch'
+          }
+          Add-Content `
+            (Join-Path $env:RUNNER_TEMP 'msysarm64-inputs.tsv') `
+            "3356eec1411983cc252b04afac32bca5f3b8d824`tcheck-aarch64-pseudo-relocs.ps1`t$scannerHash`t$scannerSecondaryHash"
+          "FIXED_BINUTILS_SCANNER=$scanner" >> $env:GITHUB_ENV
+
       - name: Install pinned inputs in one pacman transaction
         shell: pwsh
         run: |
           $inputDir = Join-Path $env:RUNNER_TEMP 'msysarm64-inputs-primary'
           $packages = @(
-            'mingw-w64-cross-cygwinarm64-binutils-2.44.50-1-x86_64.pkg.tar.zst'
+            'mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst'
             'mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-2-x86_64.pkg.tar.zst'
             'mingw-w64-cross-cygwinarm64-gcc-libs-stage1-15.0.1dev-2-x86_64.pkg.tar.zst'
             'mingw-w64-cross-cygwinarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst'
@@ -250,6 +283,8 @@ jobs:
           $script = @'
           set -euo pipefail
           export PATH="/opt/bin:${PATH}"
+          test "$(pacman -Q mingw-w64-cross-cygwinarm64-binutils)" = \
+            'mingw-w64-cross-cygwinarm64-binutils 2.44.50-2'
           test "$(aarch64-pc-msys-gcc -dumpmachine)" = aarch64-pc-msys
           test "$(aarch64-pc-msys-gcc -dumpversion)" = 15.0.1
           test -x /opt/aarch64-pc-cygwin/bin/as.exe
@@ -257,6 +292,29 @@ jobs:
           test -x /opt/aarch64-pc-cygwin/bin/objdump.exe
           test -f /opt/aarch64-pc-msys/bin/msys-2.0.dll
           test -f /opt/aarch64-pc-msys/lib/libmsys-2.0.a
+          test "$(
+            sha256sum /opt/aarch64-pc-cygwin/bin/ld.bfd.exe |
+              awk '{print $1}'
+          )" = 075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f
+          test "$(
+            sha256sum "$(readlink -f /opt/bin/aarch64-pc-msys-ld.exe)" |
+              awk '{print $1}'
+          )" = 075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f
+          for tool in \
+            addr2line ar as c++filt dlltool dllwrap elfedit gprof \
+            ld ld.bfd nm objcopy objdump ranlib readelf size strings \
+            strip windmc windres
+          do
+            bridge="/opt/bin/aarch64-pc-msys-${tool}.exe"
+            test -L "$bridge"
+            test "$(readlink "$bridge")" = "aarch64-pc-cygwin-${tool}.exe"
+            resolved="$(readlink -f "$bridge")"
+            test -x "$resolved"
+            test "$(pacman -Qqo "$bridge")" = \
+              mingw-w64-cross-cygwinarm64-binutils
+            test "$(pacman -Qqo "$resolved")" = \
+              mingw-w64-cross-cygwinarm64-binutils
+          done
 
           cat > /tmp/aarch64-pc-msys-preflight.c <<'EOF'
           #include <stdint.h>
@@ -310,6 +368,65 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw 'libxcrypt package build failed'
           }
+
+      - name: Scan rebuilt ARM64 PE outputs
+        shell: pwsh
+        run: |
+          $env:PATH = 'C:\msys64\usr\bin;C:\msys64\opt\bin;' + $env:PATH
+          $objdump = 'C:\msys64\opt\bin\aarch64-pc-cygwin-objdump.exe'
+          $nm = 'C:\msys64\opt\bin\aarch64-pc-cygwin-nm.exe'
+          $buildRoot = "${{ steps.facts.outputs.drive }}\_"
+          $report = Join-Path $buildRoot `
+            'mingw-w64-cross-msysarm64-libxcrypt\src\libxcrypt-report'
+          $dest = Join-Path $buildRoot `
+            'mingw-w64-cross-msysarm64-libxcrypt\src\dest-aarch64-pc-msys'
+          $audit = Join-Path $buildRoot 'artifacts\libxcrypt-audit'
+          $scannerResults = Join-Path $audit 'pseudo-reloc-scans'
+          New-Item -ItemType Directory -Force -Path $scannerResults |
+            Out-Null
+
+          $images = [ordered]@{
+            'msys-crypt-2' = Join-Path $dest 'usr\bin\msys-crypt-2.dll'
+            'dynamic-crypt-smoke' = Join-Path $report 'native-crypt-smoke.exe'
+            'static-crypt-smoke' = Join-Path $report 'static-crypt-smoke.exe'
+          }
+          $summary = @()
+          foreach ($entry in $images.GetEnumerator()) {
+            $format = @(& $objdump -f $entry.Value 2>&1)
+            $formatText = $format -join "`n"
+            if ($LASTEXITCODE -ne 0 -or
+                -not ($formatText -match 'file format pei-aarch64-little') -or
+                -not ($formatText -match 'architecture: aarch64')) {
+              throw "non-AA64 emitted PE: $($entry.Value)"
+            }
+            if ($formatText -match 'pei-i386|pe-x86-64') {
+              throw "foreign PE format detected: $($entry.Value)"
+            }
+
+            $output = Join-Path $scannerResults "$($entry.Key).json"
+            & $env:FIXED_BINUTILS_SCANNER `
+              -PePath $entry.Value `
+              -OutputPath $output `
+              -Objdump $objdump `
+              -Nm $nm
+            if ($LASTEXITCODE -ne 0) {
+              throw "pseudo-reloc scan failed: $($entry.Value)"
+            }
+            $scan = Get-Content $output -Raw | ConvertFrom-Json
+            $flags = @($scan.flags)
+            $violations = @(
+              $flags | Where-Object { $_ -notin @(8, 16, 32, 64) }
+            )
+            if ($scan.result -ne 'pass' -or
+                $violations.Count -ne 0 -or
+                12 -in $flags -or 21 -in $flags) {
+              throw "ambiguous pseudo-reloc record: $($entry.Value)"
+            }
+            $summary += "$($entry.Key)`t$($scan.record_count)`t$($flags -join ',')"
+          }
+          $summary | Set-Content (Join-Path $audit 'pseudo-reloc-summary.tsv')
+          Copy-Item $env:FIXED_BINUTILS_SCANNER `
+            (Join-Path $audit 'check-aarch64-pseudo-relocs.ps1')
 
       - name: Audit package transactions and ownership
         shell: pwsh
@@ -487,6 +604,10 @@ jobs:
             "$transaction_root/opt/aarch64-pc-msys/bin/msys-2.0.dll" \
             "$audit_dir/"
           cp "$runtime_dll" "$audit_dir/"
+          pacman -Q mingw-w64-cross-cygwinarm64-binutils \
+            > "$audit_dir/fixed-binutils-identity.txt"
+          sha256sum /opt/aarch64-pc-cygwin/bin/ld.bfd.exe \
+            > "$audit_dir/fixed-binutils-linker.sha256"
           bsdtar -xOf \
             "$input_root/mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst" \
             opt/lib/gcc/aarch64-pc-msys/msys-gcc_s-seh-1.dll \
@@ -571,6 +692,34 @@ jobs:
           }
 
           $bundle = Resolve-Path 'audit'
+          $scanner = Get-ChildItem $bundle -Recurse `
+            -Filter check-aarch64-pseudo-relocs.ps1 |
+            Select-Object -First 1
+          if (-not $scanner) {
+            throw 'reviewed pseudo-reloc scanner is missing'
+          }
+          $scannerHash = (
+            Get-FileHash -Algorithm SHA256 $scanner.FullName
+          ).Hash.ToLowerInvariant()
+          if ($scannerHash -ne '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9') {
+            throw 'reviewed pseudo-reloc scanner hash mismatch'
+          }
+          $scans = @(
+            Get-ChildItem $bundle -Recurse -Filter '*.json' |
+              Where-Object DirectoryName -Like '*pseudo-reloc-scans*'
+          )
+          if ($scans.Count -ne 3) {
+            throw "expected three pseudo-reloc scan records, got $($scans.Count)"
+          }
+          foreach ($scanFile in $scans) {
+            $scan = Get-Content $scanFile.FullName -Raw | ConvertFrom-Json
+            $flags = @($scan.flags)
+            if ($scan.result -ne 'pass' -or
+                12 -in $flags -or 21 -in $flags -or
+                @($flags | Where-Object { $_ -notin @(8, 16, 32, 64) }).Count -ne 0) {
+              throw "invalid pseudo-reloc seal: $($scanFile.Name)"
+            }
+          }
           $smoke = Get-ChildItem $bundle -Recurse `
             -Filter native-crypt-smoke.exe |
             Select-Object -First 1
