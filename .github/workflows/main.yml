@@ -421,14 +421,39 @@ jobs:
           mkdir -p "$output"
           cat > "$output/consumer.c" <<'EOF'
           #include <gpg-error.h>
-          #include <unistd.h>
+          #include <stdio.h>
+          #include <windows.h>
+          #include <tlhelp32.h>
 
           int main(void) {
+            USHORT process_machine = 0;
+            USHORT native_machine = 0;
             const char *version = gpg_error_check_version(GPG_ERROR_VERSION);
             gpg_error_t error = gpg_error(GPG_ERR_GENERAL);
             const char *message = gpg_strerror(error);
-            sleep(5);
-            return !(version && message && gpg_err_code(error) == GPG_ERR_GENERAL);
+            if (!IsWow64Process2(GetCurrentProcess(), &process_machine, &native_machine)) {
+              return 2;
+            }
+            printf("process_machine=0x%04x native_machine=0x%04x\n",
+                   process_machine, native_machine);
+
+            HANDLE snapshot = CreateToolhelp32Snapshot(
+              TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, GetCurrentProcessId());
+            if (snapshot == INVALID_HANDLE_VALUE) {
+              return 3;
+            }
+            MODULEENTRY32 module = { .dwSize = sizeof(module) };
+            if (!Module32First(snapshot, &module)) {
+              CloseHandle(snapshot);
+              return 4;
+            }
+            do {
+              printf("module=%s\n", module.szModule);
+            } while (Module32Next(snapshot, &module));
+            CloseHandle(snapshot);
+
+            return !(version && message &&
+                     gpg_err_code(error) == GPG_ERR_GENERAL);
           }
           EOF
           include=/opt/aarch64-pc-msys/usr/include
@@ -462,23 +487,25 @@ jobs:
           $env:PATH = "$targetBin;$env:PATH"
           foreach ($kind in @('dynamic', 'static')) {
             $exe = Join-Path $env:RUNNER_TEMP "libgpg-error-native\$kind-consumer.exe"
-            $process = Start-Process -FilePath $exe -PassThru
-            Start-Sleep -Seconds 1
-            $process.Refresh()
-            $modules = @($process.Modules | ForEach-Object ModuleName)
-            $proof += "$kind PID=$($process.Id) modules=$($modules -join ',')"
-            if ($modules -notcontains 'msys-2.0.dll') {
+            $output = @(& $exe 2>&1 | ForEach-Object ToString)
+            if ($LASTEXITCODE -ne 0) {
+              throw "$kind consumer exited with $LASTEXITCODE"
+            }
+            $output | Set-Content (Join-Path $evidence "$kind-output.txt")
+            $proof += "$kind output=$($output -join ',')"
+            if (-not ($output -match '^process_machine=0x0000 native_machine=0xaa64$')) {
+              throw "$kind consumer did not prove native ARM64 execution"
+            }
+            if (-not ($output -match '^module=msys-2.0.dll$')) {
               throw "$kind consumer did not load msys-2.0.dll"
             }
-            if ($kind -eq 'dynamic' -and $modules -notcontains 'msys-gpg-error-0.dll') {
+            if ($kind -eq 'dynamic' -and
+                -not ($output -match '^module=msys-gpg-error-0.dll$')) {
               throw 'dynamic consumer did not load msys-gpg-error-0.dll'
             }
-            if ($kind -eq 'static' -and $modules -contains 'msys-gpg-error-0.dll') {
+            if ($kind -eq 'static' -and
+                $output -match '^module=msys-gpg-error-0.dll$') {
               throw 'static consumer unexpectedly loaded msys-gpg-error-0.dll'
-            }
-            $process.WaitForExit()
-            if ($process.ExitCode -ne 0) {
-              throw "$kind consumer exited with $($process.ExitCode)"
             }
             $proof += "$kind exit=0"
           }
