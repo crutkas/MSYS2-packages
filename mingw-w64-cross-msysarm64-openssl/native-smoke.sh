@@ -28,10 +28,14 @@ OPENSSL_MODULES=$(cygpath -w "${root}/usr/lib/ossl-modules")
 
 "${dynamic_smoke}"
 "${static_smoke}"
-"${bin}/dlopen-smoke.exe" "${bin}/dlopen-generic.dll" \
-  > dlopen-generic.txt 2>&1
-"${bin}/dlopen-smoke.exe" "${bin}/dlopen-crypto.dll" \
-  > dlopen-crypto.txt 2>&1
+(
+  cd "${bin}"
+  ./dlopen-smoke.exe ./dlopen-generic.dll
+) > "${report}/dlopen-generic.txt" 2>&1
+(
+  cd "${bin}"
+  ./dlopen-smoke.exe ./dlopen-crypto.dll
+) > "${report}/dlopen-crypto.txt" 2>&1
 
 "${openssl}" version -a > version.txt
 grep -F 'OpenSSL 3.5.1' version.txt
