@@ -160,15 +160,24 @@ jobs:
         shell: pwsh
         run: |
           $input_dir = Join-Path $env:RUNNER_TEMP 'cygwinarm64-inputs'
-          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -U `
-            "$input_dir\mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst" `
-            "$input_dir\mingw-w64-cross-cygwinarm64-headers-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst" `
-            "$input_dir\mingw-w64-cross-cygwinarm64-windows-default-manifest-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst" `
-            "$input_dir\mingw-w64-cross-cygwinarm64-sysroot-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst" `
-            "$input_dir\mingw-w64-cross-cygwinarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst" `
-            "$input_dir\mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-2-x86_64.pkg.tar.zst" `
-            "$input_dir\mingw-w64-cross-cygwinarm64-gcc-libs-stage1-15.0.1dev-2-x86_64.pkg.tar.zst" `
-            "$input_dir\mingw-w64-cross-cygwinarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst"
+          $savedMsys = $env:MSYS
+          try {
+            $env:MSYS = 'winsymlinks:sys'
+            & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -U `
+              "$input_dir\mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst" `
+              "$input_dir\mingw-w64-cross-cygwinarm64-headers-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst" `
+              "$input_dir\mingw-w64-cross-cygwinarm64-windows-default-manifest-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst" `
+              "$input_dir\mingw-w64-cross-cygwinarm64-sysroot-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst" `
+              "$input_dir\mingw-w64-cross-cygwinarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst" `
+              "$input_dir\mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-2-x86_64.pkg.tar.zst" `
+              "$input_dir\mingw-w64-cross-cygwinarm64-gcc-libs-stage1-15.0.1dev-2-x86_64.pkg.tar.zst" `
+              "$input_dir\mingw-w64-cross-cygwinarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst"
+            if ($LASTEXITCODE -ne 0) {
+              throw "AArch64 Cygwin bootstrap transaction failed: $LASTEXITCODE"
+            }
+          } finally {
+            $env:MSYS = $savedMsys
+          }
 
       - name: Preflight fork-local AArch64 Cygwin inputs
         if: ${{ steps.arm64-settings.outputs.enabled == '1' }}
@@ -190,6 +199,14 @@ jobs:
             'mingw-w64-cross-cygwinarm64-binutils 2.44.50-2'
           test "$(sha256sum /opt/bin/aarch64-pc-cygwin-ld.exe | cut -d' ' -f1)" = \
             '075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f'
+          for tool in \
+            addr2line ar as c++filt dlltool dllwrap elfedit gprof ld ld.bfd \
+            nm objcopy objdump ranlib readelf size strings strip windmc windres
+          do
+            alias="/opt/bin/aarch64-pc-msys-${tool}.exe"
+            test -L "$alias"
+            test "$(readlink "$alias")" = "aarch64-pc-cygwin-${tool}.exe"
+          done
           LIBRARY_PATH=/opt/lib/gcc/aarch64-pc-cygwin/15.0.1:/opt/aarch64-pc-msys/lib
           libgcc=$(LIBRARY_PATH="$LIBRARY_PATH" aarch64-pc-cygwin-gcc -print-file-name=libgcc.a)
           libkernel32=$(LIBRARY_PATH="$LIBRARY_PATH" aarch64-pc-cygwin-gcc -print-file-name=libkernel32.a)
