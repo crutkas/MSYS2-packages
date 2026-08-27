@@ -1,0 +1,116 @@
+# Maintainer: Chris Reddington <crutkas@microsoft.com>
+
+_target=aarch64-pc-msys
+_prefix=/opt/${_target}
+
+pkgbase=mingw-w64-cross-msysarm64-apr-util
+pkgname=("${pkgbase}" "${pkgbase}-devel")
+pkgver=1.6.3
+pkgrel=1
+pkgdesc="Apache Portable Runtime Utility Library for aarch64-pc-msys"
+arch=('x86_64')
+url="https://apr.apache.org/"
+msys2_repository_url="https://github.com/apache/apr-util"
+license=('spdx:Apache-2.0')
+groups=('mingw-w64-cross-toolchain' 'mingw-w64-cross')
+makedepends=(
+  'autotools'
+  'gcc'
+  'mingw-w64-cross-cygwinarm64-binutils'
+  'mingw-w64-cross-cygwinarm64-gcc-stage1'
+  'mingw-w64-cross-msysarm64-apr-devel'
+  'mingw-w64-cross-msysarm64-libexpat-devel'
+  'mingw-w64-cross-msysarm64-libsqlite-devel'
+  'mingw-w64-cross-msysarm64-libxcrypt-devel'
+  'mingw-w64-cross-msysarm64-sysroot'
+)
+options=('!strip' '!buildflags' '!emptydirs' '!libtool')
+source=("https://archive.apache.org/dist/apr/apr-util-${pkgver}.tar.bz2"
+        plugins.patch)
+sha256sums=('a41076e3710746326c3945042994ad9a4fcac0ce0277dd8fea076fec3c9772b5'
+            '3280d6ed8e577b626e60d495856d16f6944c3144c495fe9ed8cad6b39332824c')
+
+prepare() {
+  cd "${srcdir}/apr-util-${pkgver}"
+
+  patch -p1 -i "${srcdir}/plugins.patch"
+  autoreconf -fi
+}
+
+build() {
+  cd "${srcdir}/apr-util-${pkgver}"
+
+  export MSYSTEM=MSYS
+  export CC=aarch64-pc-msys-gcc
+  export CXX=aarch64-pc-msys-g++
+  export AR=aarch64-pc-cygwin-ar
+  export NM=aarch64-pc-cygwin-nm
+  export RANLIB=aarch64-pc-cygwin-ranlib
+  export STRIP=aarch64-pc-cygwin-strip
+  export CPPFLAGS="-D__MSYS__ -I${_prefix}/include"
+  export CFLAGS="${CFLAGS} -D__MSYS__"
+  export CXXFLAGS="${CXXFLAGS} -D__MSYS__"
+  export LDFLAGS="-L${_prefix}/lib ${LDFLAGS}"
+  export LIBRARY_PATH="${_prefix}/lib"
+  export PKG_CONFIG_PATH="${_prefix}/lib/pkgconfig:${_prefix}/share/pkgconfig"
+
+  ./configure \
+    --build="${CHOST}" \
+    --host="${_target}" \
+    --prefix="${_prefix}" \
+    --with-apr="${_prefix}" \
+    --with-expat="${_prefix}" \
+    --without-gdbm \
+    --without-ldap \
+    --without-pgsql \
+    --with-sqlite3="${_prefix}" \
+    --enable-shared \
+    --enable-static
+
+  make -j1
+  make DESTDIR="${srcdir}/dest" install
+
+  find "${srcdir}/dest${_prefix}" -type f \( -name '*.dll' -o -name '*.a' -o -name '*.o' \) -print0 |
+    while IFS= read -r -d '' file; do
+      aarch64-pc-cygwin-objdump -f "${file}" | grep -F 'architecture: aarch64' >/dev/null
+    done
+}
+
+package_mingw-w64-cross-msysarm64-apr-util() {
+  pkgdesc="Apache Portable Runtime Utility DLLs for aarch64-pc-msys"
+  depends=(
+    'mingw-w64-cross-msysarm64-apr'
+    'mingw-w64-cross-msysarm64-libexpat'
+    'mingw-w64-cross-msysarm64-libsqlite'
+    'mingw-w64-cross-msysarm64-libxcrypt'
+  )
+  provides=("aarch64-pc-msys-apr-util=${pkgver}")
+  conflicts=('aarch64-pc-msys-apr-util')
+
+  install -d "${pkgdir}${_prefix}/bin"
+  cp -f "${srcdir}/dest${_prefix}/bin/"*.dll "${pkgdir}${_prefix}/bin/"
+  install -Dm644 "${srcdir}/apr-util-${pkgver}/LICENSE" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}
+
+package_mingw-w64-cross-msysarm64-apr-util-devel() {
+  pkgdesc="Apache Portable Runtime Utility headers and libraries for aarch64-pc-msys"
+  depends=(
+    "mingw-w64-cross-msysarm64-apr-util=${pkgver}"
+    'mingw-w64-cross-msysarm64-apr-devel'
+    'mingw-w64-cross-msysarm64-libexpat-devel'
+    'mingw-w64-cross-msysarm64-libsqlite-devel'
+  )
+  provides=("aarch64-pc-msys-apr-util-devel=${pkgver}")
+  conflicts=('aarch64-pc-msys-apr-util-devel')
+  options=('staticlibs')
+
+  install -d "${pkgdir}${_prefix}/bin" \
+    "${pkgdir}${_prefix}/include" \
+    "${pkgdir}${_prefix}/lib"
+  cp -a "${srcdir}/dest${_prefix}/bin"/*-config "${pkgdir}${_prefix}/bin/"
+  cp -a "${srcdir}/dest${_prefix}/include" "${pkgdir}${_prefix}/"
+  cp -a "${srcdir}/dest${_prefix}/lib" "${pkgdir}${_prefix}/"
+  install -Dm644 "${srcdir}/apr-util-${pkgver}/LICENSE" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}
