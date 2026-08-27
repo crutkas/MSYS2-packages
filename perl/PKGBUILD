@@ -118,7 +118,10 @@ build() {
 int main(void) { return 0; }
 EOF
     "${perl_cc}" -std=c99 -c "${probe_dir}/probe.c" -o "${probe_dir}/probe.o"
-    "${perl_cc}" -std=c99 "${probe_dir}/probe.c" -o "${probe_dir}/probe.exe"
+    "${perl_cc}" -std=c99 "${probe_dir}/probe.c" \
+      -Wl,--subsystem,console \
+      -lkernel32 -lntdll \
+      -o "${probe_dir}/probe.exe"
     local probe_object_info probe_exe_info probe_imports
     probe_object_info=$("${perl_objdump}" -f "${probe_dir}/probe.o" 2>&1)
     if ! grep -F 'file format pe-aarch64-little' <<<"${probe_object_info}" >/dev/null; then
@@ -135,11 +138,15 @@ EOF
       return 1
     fi
     probe_imports=$("${perl_objdump}" -p "${probe_dir}/probe.exe" 2>&1 | sed -n 's/^ *DLL Name: //p')
-    if ! grep -Fx 'msys-2.0.dll' <<<"${probe_imports}" >/dev/null; then
-      printf 'missing msys-2.0.dll import in compiler probe\n' >&2
+    if ! grep -Fx 'KERNEL32.dll' <<<"${probe_imports}" >/dev/null; then
+      printf 'missing KERNEL32.dll import in compiler probe\n' >&2
       return 1
     fi
-    if grep -Eiq '^cygwin1\.dll$' <<<"${probe_imports}"; then
+    if ! grep -Fx 'ntdll.dll' <<<"${probe_imports}" >/dev/null; then
+      printf 'missing ntdll.dll import in compiler probe\n' >&2
+      return 1
+    fi
+    if grep -Eiq '^(cygwin1|msys-2\.0)\.dll$' <<<"${probe_imports}"; then
       printf 'unexpected cygwin1.dll import in compiler probe\n' >&2
       return 1
     fi
