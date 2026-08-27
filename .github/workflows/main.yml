@@ -138,6 +138,7 @@ jobs:
             --dir $destination
           gh release download msysarm64-gcc-deps-20260826 `
             --repo crutkas/MSYS2-packages `
+            --pattern 'mingw-w64-cross-msysarm64-libstdc++-headers-*.pkg.tar.zst' `
             --pattern 'mingw-w64-cross-msysarm64-w32api-runtime-*.pkg.tar.zst' `
             --dir $destination
           gh release download msysarm64-gcc-pr13-20260826 `
@@ -154,6 +155,7 @@ jobs:
             'mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' = '33861708e7f981b4eef5b93ef135ab3a43d2757533f64df6f61a146d823c355f'
             'mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-1-x86_64.pkg.tar.zst' = 'f6260f3190fd602a5311c0c4cc47381405e96d9d049a679589f0b5c7be25fffe'
             'mingw-w64-cross-cygwinarm64-binutils-2.44.50-1-x86_64.pkg.tar.zst' = '8908cb690952788153b60bc4fb659826bbd8a03a26c1073f76c0be7ed6f97518'
+            'mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst' = '9715aab6894379bf5ab936a3a559f286fb4aedbb64f0774d7457182e00648e08'
             'mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst' = '7727936f4212e5af04e9739eca60f157c0875796c1e82fcfb79fd4398b111e24'
             'mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst' = 'a74887c76a933ec424933bf662729d94975b83138af783bd93f2e7acd95c3a22'
             'mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst' = '990f163cacf9ffce1b58445be91fedc57f135cc26a88d7dba109806446b41438'
@@ -180,22 +182,8 @@ jobs:
             "$input_dir\mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst" `
             "$input_dir\mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-1-x86_64.pkg.tar.zst" `
             "$input_dir\mingw-w64-cross-cygwinarm64-binutils-2.44.50-1-x86_64.pkg.tar.zst" `
+            "$input_dir\mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst" `
             "$input_dir\mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst"
-
-      - name: Build local AArch64 MSYS libstdc++ headers
-        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-arm64-msys-perl' || github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-arm64-msys-perl' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
-        shell: pwsh
-        run: |
-          $msys2Root = '${{ steps.msys2.outputs.msys2-location }}'
-          $bash = Join-Path $msys2Root 'usr\bin\bash.exe'
-          $pacman = Join-Path $msys2Root 'usr\bin\pacman.exe'
-          $repoRoot = Join-Path $env:GITHUB_WORKSPACE 'temp'
-          $checkoutRoot = & (Join-Path $msys2Root 'usr\bin\cygpath.exe') -u $repoRoot
-          $script = "set -e; export MSYS=winsymlinks:sys; cd '$checkoutRoot/mingw-w64-cross-msysarm64-libstdcxx-headers' && makepkg --noconfirm --noprogressbar --syncdeps --rmdeps --cleanbuild"
-          & $bash --login -lc $script
-          $pkg = Get-ChildItem -Path (Join-Path $repoRoot 'mingw-w64-cross-msysarm64-libstdcxx-headers') -Filter 'mingw-w64-cross-msysarm64-libstdc++-headers-*.pkg.tar.*' | Select-Object -First 1
-          if (-not $pkg) { throw 'libstdc++ headers package was not produced' }
-          & $pacman --noconfirm -U $pkg.FullName
 
       - name: Install fork-local AArch64 MSYS GCC
         if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-arm64-msys-perl' || github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-arm64-msys-perl' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system') }}
