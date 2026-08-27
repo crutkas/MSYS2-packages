@@ -69,19 +69,31 @@ if ($scannerHash -ne '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd9357
     throw "Unexpected pseudo-reloc scanner hash: $scannerHash"
 }
 $pseudoRelocReports = Join-Path $evidence 'pseudo-relocs'
-New-Item -ItemType Directory -Force -Path $pseudoRelocReports | Out-Null
+$structureReports = Join-Path $evidence 'pe-structure'
+New-Item -ItemType Directory -Force -Path $pseudoRelocReports, $structureReports |
+    Out-Null
 $smokePayload = Join-Path $target 'share\msys-sysroot\openssl\smoke'
 $peFiles = @(
     Get-ChildItem -File -Recurse $targetUsr |
         Where-Object { $_.Extension -in '.exe', '.dll' }
-    Get-ChildItem -File $smokePayload -Filter '*.exe'
+    Get-ChildItem -File $smokePayload |
+        Where-Object { $_.Extension -in '.exe', '.dll' }
 )
-if ($peFiles.Count -lt 9) {
-    throw "Expected at least nine OpenSSL PE files; found $($peFiles.Count)."
+if ($peFiles.Count -lt 13) {
+    throw "Expected at least thirteen OpenSSL PE files; found $($peFiles.Count)."
 }
 foreach ($pe in $peFiles) {
     $relative = $pe.FullName.Substring($target.Length + 1)
     $outputName = ($relative -replace '[\\/:]', '_') + '.json'
+    $structure = @(& $objdump -f -p -h -x $pe.FullName 2>&1)
+    $structureText = $structure -join [Environment]::NewLine
+    if ($LASTEXITCODE -ne 0 -or
+        $structureText -notmatch 'file format pei-aarch64-little' -or
+        $structureText -notmatch 'architecture: aarch64') {
+        throw "Invalid native PE structure: $relative"
+    }
+    $structure | Set-Content -Encoding utf8 `
+        (Join-Path $structureReports ($outputName + '.txt'))
     $pwsh = Join-Path $PSHOME 'pwsh.exe'
     & $pwsh -NoProfile -File $ScannerPath -PePath $pe.FullName `
         -OutputPath (Join-Path $pseudoRelocReports $outputName) `
@@ -101,18 +113,82 @@ if ($scanReports.Count -ne $peFiles.Count -or
     throw 'Native OpenSSL pseudo-reloc policy failed.'
 }
 
+$legacy = Join-Path $targetUsr 'lib\ossl-modules\legacy.dll'
+$crypto = Join-Path $targetUsr 'bin\msys-crypto-3.dll'
+foreach ($dll in @($legacy, $crypto)) {
+    $details = @(& $objdump -f -p -h -x $dll 2>&1)
+    $detailsText = $details -join [Environment]::NewLine
+    if ($LASTEXITCODE -ne 0 -or
+        $detailsText -notmatch 'AddressOfEntryPoint\s+[0-9a-fA-F]*[1-9a-fA-F]' -or
+        $detailsText -notmatch 'Exception Directory' -or
+        $detailsText -notmatch '\.pdata' -or
+        $detailsText -notmatch '\.xdata' -or
+        $detailsText -notmatch 'Base Relocation Directory' -or
+        $detailsText -notmatch '\.reloc') {
+        throw "Incomplete PE metadata: $dll"
+    }
+}
+$legacySymbols = @(& $nm -an $legacy 2>&1)
+$legacySymbolText = $legacySymbols -join [Environment]::NewLine
+if ($LASTEXITCODE -ne 0 -or $legacySymbolText -notmatch '\sOSSL_provider_init$') {
+    throw 'legacy.dll does not export OSSL_provider_init.'
+}
+
+$closurePaths = @(
+    $openssl,
+    (Join-Path $bin 'msys-crypto-3.dll'),
+    (Join-Path $bin 'msys-ssl-3.dll'),
+    (Join-Path $bin 'msys-2.0.dll'),
+    $legacy
+)
+if ($null -ne $libgcc) {
+    $closurePaths += Join-Path $bin 'msys-gcc_s-seh-1.dll'
+}
+$closurePaths | ForEach-Object {
+    $file = Get-Item $_
+    [pscustomobject]@{
+        path = $file.FullName
+        bytes = $file.Length
+        machine = 'AA64'
+        sha256 = (Get-FileHash -Algorithm SHA256 $file.FullName).Hash.ToLowerInvariant()
+    }
+} | ConvertTo-Json -Depth 4 |
+    Set-Content -Encoding utf8 (Join-Path $evidence 'loaded-closure.json')
+
 $dynamicSmoke = Join-Path $bin 'openssl-dynamic-smoke.exe'
 $staticSmoke = Join-Path $bin 'openssl-static-smoke.exe'
 Copy-Item -Force (Join-Path $smokePayload 'openssl-smoke.exe') $dynamicSmoke
 Copy-Item -Force (Join-Path $smokePayload 'openssl-static-smoke.exe') $staticSmoke
+Copy-Item -Force (Join-Path $smokePayload 'dlopen-smoke.exe') $bin
+Copy-Item -Force (Join-Path $smokePayload 'dlopen-generic.dll') $bin
+Copy-Item -Force (Join-Path $smokePayload 'dlopen-crypto.dll') $bin
+Copy-Item -Force (Join-Path $smokePayload 'provider-minimal.dll') $bin
+
 $bash = Join-Path $HostMsysRoot 'usr\bin\bash.exe'
 $cygpath = Join-Path $HostMsysRoot 'usr\bin\cygpath.exe'
 $rootMsys = (& $cygpath -u $root | Select-Object -Last 1).Trim()
 $evidenceMsys = (& $cygpath -u $evidence | Select-Object -Last 1).Trim()
 $harnessMsys = (& $cygpath -u $NativeHarnessPath | Select-Object -Last 1).Trim()
+$dumpDirectory = Join-Path $evidence 'dumps'
+New-Item -ItemType Directory -Force -Path $dumpDirectory | Out-Null
+$werKey = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\openssl.exe'
+New-Item -Path $werKey -Force | Out-Null
+New-ItemProperty -Path $werKey -Name DumpFolder -Value $dumpDirectory `
+    -PropertyType ExpandString -Force | Out-Null
+New-ItemProperty -Path $werKey -Name DumpType -Value 2 `
+    -PropertyType DWord -Force | Out-Null
 $nativeOutput = & $bash --noprofile --norc $harnessMsys $rootMsys $evidenceMsys 2>&1 |
     Out-String
 if ($LASTEXITCODE -ne 0 -or $nativeOutput -notmatch 'native-arm64-openssl=pass') {
+    Start-Sleep -Seconds 3
+    $dump = Get-ChildItem -File $dumpDirectory -Filter '*.dmp' |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    $debugger = Get-Command cdb.exe -CommandType Application -ErrorAction SilentlyContinue
+    if ($null -ne $dump -and $null -ne $debugger) {
+        & $debugger.Source -z $dump.FullName `
+            -c '!analyze -v; .ecxr; k; lm; q' *>&1 |
+            Set-Content -Encoding utf8 (Join-Path $evidence 'crash-analysis.txt')
+    }
     throw "Native OpenSSL harness failed: $nativeOutput"
 }
 

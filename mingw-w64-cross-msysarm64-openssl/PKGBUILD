@@ -61,6 +61,10 @@ source=(
   '0006-Add-Cygwin-aarch64-target.patch'
   '0007-Fix-AArch64-Cygwin-LP64-detection.patch'
   'check-aarch64-pseudo-relocs.ps1'
+  'dlopen-generic.c'
+  'dlopen-crypto.c'
+  'dlopen-smoke.c'
+  'provider-minimal.c'
   'openssl-smoke.c'
   'validate-openssl.sh'
   'native-smoke.ps1'
@@ -77,10 +81,14 @@ sha256sums=(
   '04a695fe4b2d70ac8174c7312233c84aac353a7453bcf6d5b035d7cdf5f40930'
   '9553ece2fb6579c204282410378dfccb0314815281c3e67476fa6093a04b6237'
   '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9'
+  'eaa2a658a66f54f1a44269f2ac223b1fc4955779b86728ca8a5c521aa1d87494'
+  '1c74e8fefabd0e1b96b4c6ef661617b1f1346358ab060993fe66df1d806eaec3'
+  'd40e23aac7d1ae70ee0ac1372a7be4de325c2afc9379230b8cfbaafbc95b30be'
+  '209da461eed6715882e6dacd47d3ed0117b7d7f5ee9e1040ab199fc4b0a09790'
   '5a1e12688cbf045f5af572b2d695976564ded4675d075b3fe42e0cc0e949911b'
-  'ddbdf30941410b4894be6d60ca6a8e8c58b26730213b054666503b502908cc9e'
-  '5300ce21b1328464766988447616b122bcfc1fc73690bd0b5c1ebc6e4c589eeb'
-  'cf238fd8eeaed28fa82a2c241108d175c6a923bacc211be0246da82e17c83797'
+  '0d49533d377d1bdd0d470ff95797f6393ed2701f4bda1a351cd3e4af86a69afd'
+  'ed65822a17d50301fe6978acbed86391d604a395913377985c75f942ea5b0d13'
+  '74f2802fb4067f6ae12eaaccff1b2b45eecaa108aff6cb15dce8985709ecb2b6'
   '9b6ee992136357adc72320cbf9723e22dc2f644ed42cb20f2c08753c372dd01b'
 )
 validpgpkeys=(
@@ -159,6 +167,7 @@ check() {
   RUNTIME_VERSION="${_runtime_version}-${_runtime_pkgrel}" \
   GCC_RELEASE_TAG="${_gcc_release_tag}" \
   GCC_VERSION="${_gcc_version}-${_gcc_pkgrel}" \
+  SMOKE_SOURCES_DIR="${srcdir}" \
     bash "${srcdir}/validate-openssl.sh" \
       "${_dest}" \
       "${srcdir}/${_source_root}" \
@@ -239,6 +248,12 @@ package_mingw-w64-cross-msysarm64-openssl-devel() {
   install -m644 "${srcdir}/check-aarch64-pseudo-relocs.ps1" "${_reportdir}/"
   install -m755 "${srcdir}/native-smoke.sh" "${_reportdir}/"
   install -m644 "${srcdir}/openssl-smoke.c" "${_reportdir}/"
+  install -m644 \
+    "${srcdir}/dlopen-generic.c" \
+    "${srcdir}/dlopen-crypto.c" \
+    "${srcdir}/dlopen-smoke.c" \
+    "${srcdir}/provider-minimal.c" \
+    "${_reportdir}/"
   install -m644 "${srcdir}/README.md" "${_reportdir}/"
   install -Dm644 "${srcdir}/${_source_root}/LICENSE.txt" \
     "${_licensedir}/LICENSE.txt"

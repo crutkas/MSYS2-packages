@@ -28,6 +28,10 @@ OPENSSL_MODULES=$(cygpath -w "${root}/usr/lib/ossl-modules")
 
 "${dynamic_smoke}"
 "${static_smoke}"
+"${bin}/dlopen-smoke.exe" "${bin}/dlopen-generic.dll" \
+  > dlopen-generic.txt 2>&1
+"${bin}/dlopen-smoke.exe" "${bin}/dlopen-crypto.dll" \
+  > dlopen-crypto.txt 2>&1
 
 "${openssl}" version -a > version.txt
 grep -F 'OpenSSL 3.5.1' version.txt
@@ -37,10 +41,47 @@ for iteration in 1 2 3; do
   grep -F 'OpenSSL 3.5.1' "lifecycle-${iteration}.txt"
 done
 
-"${openssl}" list -providers -provider default -provider legacy \
-  > providers.txt
-grep -Eq '^[[:space:]]+default$' providers.txt
-grep -Eq '^[[:space:]]+legacy$' providers.txt
+run_provider_control() {
+  local name=$1
+  shift
+  set +e
+  "${openssl}" list -providers "$@" \
+    > "providers-${name}.out" 2> "providers-${name}.err"
+  local status=$?
+  set -e
+  printf '%s\t%s\n' "${name}" "${status}" \
+    >> provider-controls.tsv
+  return "${status}"
+}
+
+: > provider-controls.tsv
+default_status=0
+legacy_status=0
+combined_status=0
+minimal_status=0
+minimal_provider_dir=$(cygpath -w "${bin}")
+run_provider_control default -provider default || default_status=$?
+run_provider_control minimal \
+  -provider-path "${minimal_provider_dir}" \
+  -provider provider-minimal \
+  || minimal_status=$?
+run_provider_control legacy -provider legacy || legacy_status=$?
+run_provider_control combined -provider default -provider legacy \
+  || combined_status=$?
+if [[ "${default_status}" -ne 0 \
+      || "${minimal_status}" -ne 0 \
+      || "${legacy_status}" -ne 0 \
+      || "${combined_status}" -ne 0 ]]; then
+  printf 'provider control failure: default=%s minimal=%s legacy=%s combined=%s\n' \
+    "${default_status}" "${minimal_status}" \
+    "${legacy_status}" "${combined_status}" >&2
+  exit 31
+fi
+grep -Eq '^[[:space:]]+default$' providers-default.out
+grep -Eq '^[[:space:]]+provider-minimal$' providers-minimal.out
+grep -Eq '^[[:space:]]+legacy$' providers-legacy.out
+grep -Eq '^[[:space:]]+default$' providers-combined.out
+grep -Eq '^[[:space:]]+legacy$' providers-combined.out
 
 printf 'native aarch64-pc-msys OpenSSL\n' > digest-input.txt
 expected=$(sha256sum digest-input.txt | cut -d' ' -f1)

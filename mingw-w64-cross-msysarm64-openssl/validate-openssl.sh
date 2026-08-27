@@ -22,6 +22,7 @@ runtime_release_tag=${RUNTIME_RELEASE_TAG:?RUNTIME_RELEASE_TAG is required}
 runtime_version=${RUNTIME_VERSION:?RUNTIME_VERSION is required}
 gcc_release_tag=${GCC_RELEASE_TAG:?GCC_RELEASE_TAG is required}
 gcc_version=${GCC_VERSION:?GCC_VERSION is required}
+smoke_sources_dir=${SMOKE_SOURCES_DIR:?SMOKE_SOURCES_DIR is required}
 pkgroot="${dest}/usr"
 cc="${target}-gcc"
 objdump="${tool_target}-objdump"
@@ -282,6 +283,67 @@ fi
   -Objdump "$(cygpath -w "$(command -v "${objdump}")")" \
   -Nm "$(cygpath -w "$(command -v "${nm}")")"
 
+"${cc}" -shared \
+  "${smoke_sources_dir}/dlopen-generic.c" \
+  -o "${report_dir}/smoke/dlopen-generic.dll"
+"${cc}" -shared \
+  -I"${pkgroot}/include" \
+  "${smoke_sources_dir}/dlopen-crypto.c" \
+  -L"${pkgroot}/lib" \
+  -lcrypto \
+  -o "${report_dir}/smoke/dlopen-crypto.dll"
+"${cc}" -shared \
+  -I"${pkgroot}/include" \
+  "${smoke_sources_dir}/provider-minimal.c" \
+  -L"${pkgroot}/lib" \
+  -lcrypto \
+  -o "${report_dir}/smoke/provider-minimal.dll"
+"${cc}" \
+  "${smoke_sources_dir}/dlopen-smoke.c" \
+  -ldl \
+  -o "${report_dir}/smoke/dlopen-smoke.exe"
+
+for name in \
+  dlopen-generic.dll \
+  dlopen-crypto.dll \
+  provider-minimal.dll \
+  dlopen-smoke.exe
+do
+  "${objdump}" -f "${report_dir}/smoke/${name}" \
+    > "${report_dir}/smoke/${name}.file.txt"
+  "${objdump}" -p "${report_dir}/smoke/${name}" \
+    > "${report_dir}/smoke/${name}.imports.txt"
+  grep -Fq 'file format pei-aarch64-little' \
+    "${report_dir}/smoke/${name}.file.txt"
+  grep -Fq 'architecture: aarch64' \
+    "${report_dir}/smoke/${name}.file.txt"
+  grep -Fiq 'DLL Name: msys-2.0.dll' \
+    "${report_dir}/smoke/${name}.imports.txt"
+  if grep -Eiq \
+      'DLL Name: (cygwin1|msvcrt|ucrtbase|libwinpthread-1|libgcc_s_seh-1)\.dll|x86_64' \
+      "${report_dir}/smoke/${name}.file.txt" \
+      "${report_dir}/smoke/${name}.imports.txt"; then
+    echo "foreign ABI in ${name}" >&2
+    exit 1
+  fi
+  "${pwsh}" -NoProfile -File "$(cygpath -w "${scanner}")" \
+    -PePath "$(cygpath -w "${report_dir}/smoke/${name}")" \
+    -OutputPath "$(
+      cygpath -w "${report_dir}/smoke/${name}.pseudo-relocs.json"
+    )" \
+    -Objdump "$(cygpath -w "$(command -v "${objdump}")")" \
+    -Nm "$(cygpath -w "$(command -v "${nm}")")"
+done
+grep -Fiq 'DLL Name: msys-crypto-3.dll' \
+  "${report_dir}/smoke/dlopen-crypto.dll.imports.txt"
+grep -Fiq 'DLL Name: msys-crypto-3.dll' \
+  "${report_dir}/smoke/provider-minimal.dll.imports.txt"
+if grep -Fiq 'DLL Name: msys-crypto-3.dll' \
+    "${report_dir}/smoke/dlopen-generic.dll.imports.txt"; then
+  echo "generic dlopen module unexpectedly links libcrypto" >&2
+  exit 1
+fi
+
 python - "${report_dir}" <<'PY'
 import json
 import pathlib
@@ -289,8 +351,8 @@ import sys
 
 report_dir = pathlib.Path(sys.argv[1])
 reports = sorted(report_dir.rglob("*.pseudo-relocs.json"))
-if len(reports) < 9:
-    raise SystemExit(f"expected at least 9 pseudo-reloc reports, found {len(reports)}")
+if len(reports) < 13:
+    raise SystemExit(f"expected at least 13 pseudo-reloc reports, found {len(reports)}")
 for path in reports:
     report = json.loads(path.read_text(encoding="utf-8-sig"))
     if report["result"] != "pass" or report["policy_violations"]:
