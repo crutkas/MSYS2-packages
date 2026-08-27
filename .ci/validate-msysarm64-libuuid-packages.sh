@@ -171,7 +171,7 @@ validate_install() {
     "${runtime_name} 2.40.2-1" ]]
   [[ "$(pacman_root -Q "${devel_name}")" == \
     "${devel_name} 2.40.2-1" ]]
-  pacman_root -Qkk "${runtime_name}" "${devel_name}"
+  pacman_root -Qk "${runtime_name}" "${devel_name}"
 
   [[ "$(pacman_root -Qoq "${transaction_root}${key_files[0]}")" == \
     "${runtime_name}" ]]
