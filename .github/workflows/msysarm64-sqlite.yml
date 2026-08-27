@@ -431,7 +431,7 @@ jobs:
             sqlite_compileoption_used('ENABLE_RTREE') || ':' ||
             sqlite_compileoption_used('ENABLE_SESSION') || ':' ||
             sqlite_compileoption_used('ENABLE_DBSTAT_VTAB');
-          PRAGMA integrity_check;
+          SELECT 'integrity:' || integrity_check FROM pragma_integrity_check;
           '@
           $version = & $sqlite --version 2>&1
           if ($LASTEXITCODE -ne 0) { throw "version smoke failed: $version" }
@@ -451,7 +451,7 @@ jobs:
             'committed:2:42',
             'rolled-back:2:42',
             'features:1:1:1:1',
-            'ok'
+            'integrity:ok'
           )) {
             if ($lines -notcontains $expected) {
               throw "missing SQL result '$expected': $($lines -join ', ')"
