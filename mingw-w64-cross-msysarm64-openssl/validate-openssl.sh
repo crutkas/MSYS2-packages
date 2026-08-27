@@ -283,31 +283,43 @@ fi
   -Objdump "$(cygpath -w "$(command -v "${objdump}")")" \
   -Nm "$(cygpath -w "$(command -v "${nm}")")"
 
-"${cc}" -shared \
+"${cc}" -O0 -g -shared \
   "${smoke_sources_dir}/dlopen-generic.c" \
   -o "${report_dir}/smoke/dlopen-generic.dll"
-"${cc}" -shared \
+"${cc}" -O0 -g -shared \
+  "${smoke_sources_dir}/dlopen-nodllmain.c" \
+  -o "${report_dir}/smoke/dlopen-nodllmain.dll"
+"${cc}" -O0 -g -shared -Wl,-e,0 \
+  "${smoke_sources_dir}/dlopen-nodllmain.c" \
+  -o "${report_dir}/smoke/dlopen-data-only.dll"
+"${cc}" -O0 -g -shared \
   -I"${pkgroot}/include" \
   "${smoke_sources_dir}/dlopen-crypto.c" \
   -L"${pkgroot}/lib" \
   -lcrypto \
   -o "${report_dir}/smoke/dlopen-crypto.dll"
-"${cc}" -shared \
+"${cc}" -O0 -g -shared \
   -I"${pkgroot}/include" \
   "${smoke_sources_dir}/provider-minimal.c" \
   -L"${pkgroot}/lib" \
   -lcrypto \
   -o "${report_dir}/smoke/provider-minimal.dll"
-"${cc}" \
+"${cc}" -O0 -g \
   "${smoke_sources_dir}/dlopen-smoke.c" \
   -ldl \
   -o "${report_dir}/smoke/dlopen-smoke.exe"
+"${cc}" -O0 -g \
+  "${smoke_sources_dir}/loadlibrary-smoke.c" \
+  -o "${report_dir}/smoke/loadlibrary-smoke.exe"
 
 for name in \
   dlopen-generic.dll \
+  dlopen-nodllmain.dll \
+  dlopen-data-only.dll \
   dlopen-crypto.dll \
   provider-minimal.dll \
-  dlopen-smoke.exe
+  dlopen-smoke.exe \
+  loadlibrary-smoke.exe
 do
   "${objdump}" -f "${report_dir}/smoke/${name}" \
     > "${report_dir}/smoke/${name}.file.txt"
@@ -343,6 +355,13 @@ if grep -Fiq 'DLL Name: msys-crypto-3.dll' \
   echo "generic dlopen module unexpectedly links libcrypto" >&2
   exit 1
 fi
+for name in dlopen-nodllmain.dll dlopen-data-only.dll; do
+  if grep -Fiq 'DLL Name: msys-crypto-3.dll' \
+      "${report_dir}/smoke/${name}.imports.txt"; then
+    echo "${name} unexpectedly links libcrypto" >&2
+    exit 1
+  fi
+done
 
 python - "${report_dir}" <<'PY'
 import json
@@ -351,8 +370,8 @@ import sys
 
 report_dir = pathlib.Path(sys.argv[1])
 reports = sorted(report_dir.rglob("*.pseudo-relocs.json"))
-if len(reports) < 13:
-    raise SystemExit(f"expected at least 13 pseudo-reloc reports, found {len(reports)}")
+if len(reports) < 16:
+    raise SystemExit(f"expected at least 16 pseudo-reloc reports, found {len(reports)}")
 for path in reports:
     report = json.loads(path.read_text(encoding="utf-8-sig"))
     if report["result"] != "pass" or report["policy_violations"]:

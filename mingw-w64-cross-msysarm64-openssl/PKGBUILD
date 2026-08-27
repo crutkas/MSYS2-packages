@@ -62,8 +62,10 @@ source=(
   '0007-Fix-AArch64-Cygwin-LP64-detection.patch'
   'check-aarch64-pseudo-relocs.ps1'
   'dlopen-generic.c'
+  'dlopen-nodllmain.c'
   'dlopen-crypto.c'
   'dlopen-smoke.c'
+  'loadlibrary-smoke.c'
   'provider-minimal.c'
   'openssl-smoke.c'
   'validate-openssl.sh'
@@ -81,14 +83,16 @@ sha256sums=(
   '04a695fe4b2d70ac8174c7312233c84aac353a7453bcf6d5b035d7cdf5f40930'
   '9553ece2fb6579c204282410378dfccb0314815281c3e67476fa6093a04b6237'
   '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9'
-  'eaa2a658a66f54f1a44269f2ac223b1fc4955779b86728ca8a5c521aa1d87494'
+  '3cc1a0908e027cc9da3f1375576567a42573354d66bad794ed5a2edc9277157e'
+  '244011144c0802428a057cd47a788f1bf94ddb6a39f7a0185479c3e2cddd389b'
   '2dbc21472019ec102225386bf9a98d295f862422ab37ed339de23415577eec27'
-  '24eb2bfcc81a36c5bae9984edbf3d51fedcf31f61067ca92d4e61d75d36ee4fb'
+  '251628f56bd361ed7e8617289cd0011b8f21d79ca5645fe24d1e4cd7508b8bb0'
+  '0598dd212a9c5e88175193e2d645cf7f38b6e7f11dcff1be1139468ccd4eb352'
   '209da461eed6715882e6dacd47d3ed0117b7d7f5ee9e1040ab199fc4b0a09790'
   '5a1e12688cbf045f5af572b2d695976564ded4675d075b3fe42e0cc0e949911b'
-  '0d49533d377d1bdd0d470ff95797f6393ed2701f4bda1a351cd3e4af86a69afd'
-  '94dbe12d0c494b445a5f33f95f27df7f24b8192f858a82953a5f745b10f155d1'
-  '9c761612dff0f3ac3f1768b1a4ce72dd4b51093398a738cf52c1b10e7019812d'
+  'a5fb15cf7304c67843587fce111e279e77d5e1e46c21ddf2412c7a500a1efc5f'
+  '36d5536fb0b18753e68b2bff11d837955e9e8f874817b5c532186b504cb9d404'
+  '461cd6c3bdb588a092780c52eb7f1693715309bba6f1221f5fce774a607d3dae'
   '9b6ee992136357adc72320cbf9723e22dc2f644ed42cb20f2c08753c372dd01b'
 )
 validpgpkeys=(
@@ -250,8 +254,12 @@ package_mingw-w64-cross-msysarm64-openssl-devel() {
   install -m644 "${srcdir}/openssl-smoke.c" "${_reportdir}/"
   install -m644 \
     "${srcdir}/dlopen-generic.c" \
+    "${srcdir}/dlopen-nodllmain.c" \
+    "${srcdir}/dlopen-nodllmain.c" \
     "${srcdir}/dlopen-crypto.c" \
     "${srcdir}/dlopen-smoke.c" \
+    "${srcdir}/loadlibrary-smoke.c" \
+    "${srcdir}/loadlibrary-smoke.c" \
     "${srcdir}/provider-minimal.c" \
     "${_reportdir}/"
   install -m644 "${srcdir}/README.md" "${_reportdir}/"

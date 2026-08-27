@@ -165,7 +165,10 @@ Copy-Item -Force (Join-Path $smokePayload 'openssl-smoke.exe') $dynamicSmoke
 Copy-Item -Force (Join-Path $smokePayload 'openssl-static-smoke.exe') $staticSmoke
 Copy-Item -Force (Join-Path $smokePayload 'dlopen-smoke.exe') $bin
 Copy-Item -Force (Join-Path $smokePayload 'dlopen-generic.dll') $bin
+Copy-Item -Force (Join-Path $smokePayload 'dlopen-nodllmain.dll') $bin
+Copy-Item -Force (Join-Path $smokePayload 'dlopen-data-only.dll') $bin
 Copy-Item -Force (Join-Path $smokePayload 'dlopen-crypto.dll') $bin
+Copy-Item -Force (Join-Path $smokePayload 'loadlibrary-smoke.exe') $bin
 Copy-Item -Force (Join-Path $smokePayload 'provider-minimal.dll') $bin
 
 $bash = Join-Path $HostMsysRoot 'usr\bin\bash.exe'
@@ -175,21 +178,46 @@ $evidenceMsys = (& $cygpath -u $evidence | Select-Object -Last 1).Trim()
 $harnessMsys = (& $cygpath -u $NativeHarnessPath | Select-Object -Last 1).Trim()
 $dumpDirectory = Join-Path $evidence 'dumps'
 New-Item -ItemType Directory -Force -Path $dumpDirectory | Out-Null
-$werKey = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\openssl.exe'
-New-Item -Path $werKey -Force | Out-Null
-New-ItemProperty -Path $werKey -Name DumpFolder -Value $dumpDirectory `
-    -PropertyType ExpandString -Force | Out-Null
-New-ItemProperty -Path $werKey -Name DumpType -Value 2 `
-    -PropertyType DWord -Force | Out-Null
+$cdbCandidates = @(
+    'C:\Program Files (x86)\Windows Kits\10\Debuggers\arm64\cdb.exe',
+    'C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe'
+)
+$cdb = $cdbCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+$procdump = @(
+    'C:\Sysinternals\procdump.exe',
+    (Get-Command procdump.exe -CommandType Application -ErrorAction SilentlyContinue).Source
+) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+@{
+    cdb = $cdb
+    procdump = $procdump
+} | ConvertTo-Json | Set-Content -Encoding utf8 `
+    (Join-Path $evidence 'debugger-tools.json')
+foreach ($imageName in @('openssl.exe', 'dlopen-smoke.exe', 'loadlibrary-smoke.exe')) {
+    $werKey = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\$imageName"
+    New-Item -Path $werKey -Force | Out-Null
+    New-ItemProperty -Path $werKey -Name DumpFolder -Value $dumpDirectory `
+        -PropertyType ExpandString -Force | Out-Null
+    New-ItemProperty -Path $werKey -Name DumpType -Value 2 `
+        -PropertyType DWord -Force | Out-Null
+}
 $nativeOutput = & $bash --noprofile --norc $harnessMsys $rootMsys $evidenceMsys 2>&1 |
     Out-String
 if ($LASTEXITCODE -ne 0 -or $nativeOutput -notmatch 'native-arm64-openssl=pass') {
     Start-Sleep -Seconds 3
     $dump = Get-ChildItem -File $dumpDirectory -Filter '*.dmp' |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1
-    $debugger = Get-Command cdb.exe -CommandType Application -ErrorAction SilentlyContinue
-    if ($null -ne $dump -and $null -ne $debugger) {
-        & $debugger.Source -z $dump.FullName `
+    if ($null -eq $dump -and $null -ne $procdump) {
+        $loader = Join-Path $bin 'dlopen-smoke.exe'
+        $module = Join-Path $bin 'dlopen-generic.dll'
+        & $procdump -accepteula -ma -e -x $dumpDirectory `
+            $loader $module *>&1 |
+            Set-Content -Encoding utf8 (Join-Path $evidence 'procdump.txt')
+        Start-Sleep -Seconds 3
+        $dump = Get-ChildItem -File $dumpDirectory -Filter '*.dmp' |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    }
+    if ($null -ne $dump -and $null -ne $cdb) {
+        & $cdb -z $dump.FullName `
             -c '!analyze -v; .ecxr; k; lm; q' *>&1 |
             Set-Content -Encoding utf8 (Join-Path $evidence 'crash-analysis.txt')
     }
