@@ -277,6 +277,16 @@ public static class NativeArchitecture {
                     Name = 'mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst'
                     Size = 4963824L
                     Sha256 = '990f163cacf9ffce1b58445be91fedc57f135cc26a88d7dba109806446b41438'
+                },
+                @{
+                    Name = 'mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst'
+                    Size = 1519710L
+                    Sha256 = '3c49988d2540c5dafb1aae8c8702b944c8c02171ceafdad65f4f2a8194d00087'
+                },
+                @{
+                    Name = 'mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst'
+                    Size = 2349635L
+                    Sha256 = '7727936f4212e5af04e9739eca60f157c0875796c1e82fcfb79fd4398b111e24'
                 }
             )
         }
@@ -290,8 +300,7 @@ public static class NativeArchitecture {
     }
     $downloadRoot = Join-Path $env:RUNNER_TEMP "native-arm64-gcc-$([guid]::NewGuid().ToString('N'))"
     $releaseRoot = Join-Path $downloadRoot 'release-assets'
-    $prerequisiteRoot = Join-Path $downloadRoot 'artifact-prerequisites'
-    New-Item -ItemType Directory -Path $releaseRoot, $prerequisiteRoot | Out-Null
+    New-Item -ItemType Directory -Path $releaseRoot | Out-Null
 
     $assetPaths = @{}
     $downloadEvidence = [System.Collections.Generic.List[object]]::new()
@@ -342,82 +351,6 @@ public static class NativeArchitecture {
                 url = $remote.browser_download_url
             })
         }
-    }
-
-    # The immutable five-asset runtime release deliberately excludes these two
-    # already-built prerequisites. Pin their successful PR artifact as tightly
-    # as the releases: artifact ID, run/head identity, archive digest, and files.
-    $artifactId = 9543264173L
-    $artifactDigest = '17d6e029e82a3a13d8c914bffc297ceb23a0a3e1f8b25ac974028caecd44701d'
-    $artifactSize = 19997545L
-    $artifactHead = '3f92608bfeea71102da9ee093c4db1d67f513a5c'
-    $artifactRun = 32787375431L
-    $artifactPackages = @(
-        @{
-            Name = 'mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst'
-            Size = 2349780L
-            Sha256 = '1b8418496c55958e4617ffa486ad1ba9037ee12ea62e42ecfea5b19f2763e161'
-        },
-        @{
-            Name = 'mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst'
-            Size = 1515491L
-            Sha256 = 'c18dcb080e71668e15eb35814004ef421f178536cea69b35408bd37f25178968'
-        }
-    )
-
-    $artifactUri =
-        "https://api.github.com/repos/crutkas/MSYS2-packages/actions/artifacts/$artifactId"
-    $artifact = Invoke-RestMethod -Uri $artifactUri -Headers $apiHeaders
-    if (
-        [long] $artifact.id -ne $artifactId -or
-        $artifact.name -ne 'MSYS-packages' -or
-        [long] $artifact.size_in_bytes -ne $artifactSize -or
-        $artifact.digest -ne "sha256:$artifactDigest" -or
-        $artifact.expired -or
-        [long] $artifact.workflow_run.id -ne $artifactRun -or
-        $artifact.workflow_run.head_sha -ne $artifactHead -or
-        $artifact.workflow_run.head_branch -ne 'crutkas-congenial-system'
-    ) {
-        throw "Pinned prerequisite artifact metadata changed: $($artifact | ConvertTo-Json -Depth 5)"
-    }
-
-    $artifactZip = Join-Path $downloadRoot 'runtime-prerequisites.zip'
-    Invoke-WebRequest -Uri "$artifactUri/zip" -Headers $apiHeaders -OutFile $artifactZip
-    Assert-FileIdentity `
-        -Path $artifactZip `
-        -Size $artifactSize `
-        -Sha256 $artifactDigest
-
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $archive = [System.IO.Compression.ZipFile]::OpenRead($artifactZip)
-    try {
-        foreach ($expected in $artifactPackages) {
-            $entries = @($archive.Entries | Where-Object { $_.FullName -eq $expected.Name })
-            if ($entries.Count -ne 1) {
-                throw "Expected one artifact entry named $($expected.Name), got $($entries.Count)"
-            }
-            $destination = Join-Path $prerequisiteRoot $expected.Name
-            [System.IO.Compression.ZipFileExtensions]::ExtractToFile(
-                $entries[0],
-                $destination,
-                $false
-            )
-            Assert-FileIdentity `
-                -Path $destination `
-                -Size $expected.Size `
-                -Sha256 $expected.Sha256
-            $assetPaths[$expected.Name] = $destination
-            $downloadEvidence.Add([ordered]@{
-                source = "artifact:$artifactId"
-                name = $expected.Name
-                bytes = [long] $expected.Size
-                sha256 = $expected.Sha256
-                url = "$artifactUri/zip"
-            })
-        }
-    }
-    finally {
-        $archive.Dispose()
     }
 
     $downloadEvidence |
