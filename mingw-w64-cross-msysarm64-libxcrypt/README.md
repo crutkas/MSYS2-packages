@@ -34,7 +34,7 @@ and reinstalls the pair in a fresh alternate pacman root to verify
 transactions, ownership, and preserved system symlinks. Before/after
 snapshots must also prove that the build host's pacman database and log were
 untouched. The alternate root has explicit private database, cache, log,
-configuration, and hook paths.
+configuration, hook, and GPG keyring paths.
 
 Cross checks cover AA64 PE/COFF identity, imports, exported symbols, import
 archive members, static archive members, headers, pkg-config metadata, and

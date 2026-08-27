@@ -447,7 +447,8 @@ jobs:
           devel_name=mingw-w64-cross-msysarm64-libxcrypt-devel
           audit_dir=artifacts/libxcrypt-audit
           transaction_root="$PWD/.ci-libxcrypt-transaction-root"
-          pacman_config="$audit_dir/isolated-pacman.conf"
+          pacman_config="$transaction_root/etc/pacman.conf"
+          pacman_gpg="$transaction_root/etc/pacman.d/gnupg"
           pacman_log="$transaction_root/var/log/pacman.log"
           pacman_hooks="$transaction_root/etc/pacman.d/hooks"
           target_root="${transaction_root}/opt/aarch64-pc-msys/usr"
@@ -457,6 +458,7 @@ jobs:
           mkdir -p "$audit_dir"
           rm -rf "$transaction_root"
           mkdir -p \
+            "$pacman_gpg" \
             "$pacman_hooks" \
             "$transaction_root/var/cache/pacman/pkg" \
             "$transaction_root/var/lib/pacman" \
@@ -474,7 +476,7 @@ jobs:
             --dbpath "$transaction_root/var/lib/pacman"
             --cachedir "$transaction_root/var/cache/pacman/pkg"
             --config "$pacman_config"
-            --gpgdir /etc/pacman.d/gnupg
+            --gpgdir "$pacman_gpg"
             --hookdir "$pacman_hooks"
             --logfile "$pacman_log"
           )
@@ -672,6 +674,7 @@ jobs:
             "$audit_dir/shared-log-before.sha256" \
             "$audit_dir/shared-log-after.sha256"
           test -f "$pacman_log"
+          cp "$pacman_config" "$audit_dir/isolated-pacman.conf"
           cp "$pacman_log" "$audit_dir/isolated-pacman.log"
           rm -rf "$transaction_root"
           '@
