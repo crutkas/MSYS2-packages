@@ -118,6 +118,7 @@ build() {
     -Dman1ext=1perl -Dman3ext=3perl \
     -Darchname=${ARCH}-cygwin-threads \
     -Dmyarchname=${ARCH}-cygwin \
+    -Dtargethost=aarch64-pc-msys \
     -Dlibperl=msys-perl"$(echo "${pkgver%.[0-9]*}" | tr . _)".dll \
     -Dcc="${perl_cc}" -Dld="${perl_ld}" \
     -Accflags="$CFLAGS -fwrapv" \

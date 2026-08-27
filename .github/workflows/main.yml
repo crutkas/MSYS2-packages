@@ -252,6 +252,7 @@ jobs:
           }
           if ('${{ matrix.msystem }}' -eq 'CLANGARM64') {
             $env:CI_PACKAGE_ARCH = 'aarch64'
+            $env:MSYS = 'winsymlinks:sys'
           }
           $env:MSYS2_PATH_TYPE = 'inherit'
           $env:PATH = $toolBin + ';' + (Join-Path $msys2Root 'usr\bin') + ';' + $env:PATH
