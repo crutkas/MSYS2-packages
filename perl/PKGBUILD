@@ -118,7 +118,12 @@ build() {
     cat > "${probe_dir}/probe.c" <<'EOF'
 #include <unistd.h>
 
-int main(void) { return (getpid() == 0); }
+int main(void)
+{
+  static const char probe_msg[] = "";
+
+  return (write(1, probe_msg, sizeof(probe_msg) - 1) < 0) || (getpid() == 0);
+}
 EOF
     "${perl_cc}" -std=c99 -c "${probe_dir}/probe.c" -o "${probe_dir}/probe.o"
     printf 'compiler-target=%s\n' "$("${perl_cc}" -dumpmachine)"
