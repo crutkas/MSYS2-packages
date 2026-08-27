@@ -274,7 +274,7 @@ jobs:
               throw "Bridge is not package-owned by fixed binutils: $msysPath"
             }
           }
-          $ld = Join-Path $binDir 'aarch64-pc-msys-ld.exe'
+          $ld = Join-Path $binDir 'aarch64-pc-cygwin-ld.exe'
           if ((Get-FileHash -Algorithm SHA256 $ld).Hash.ToLowerInvariant() -ne
               '075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f') {
             throw 'Canonical linker SHA-256 mismatch'
