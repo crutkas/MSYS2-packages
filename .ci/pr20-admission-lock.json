@@ -327,7 +327,9 @@
       "provides": [
         "mingw-w64-cross-msysarm64-libxcrypt=4.5.2-1"
       ],
-      "admitted": true
+      "admitted": false,
+      "denylisted": true,
+      "reason": "old pre-admission release; canonical publication is still under audit"
     },
     {
       "stage": "apr-stack",
@@ -343,7 +345,9 @@
       "provides": [
         "mingw-w64-cross-msysarm64-libexpat=2.7.1-1"
       ],
-      "admitted": true
+      "admitted": false,
+      "denylisted": true,
+      "reason": "historical lightweight-tag release; canonical publication remains under audit"
     },
     {
       "stage": "apr-stack",

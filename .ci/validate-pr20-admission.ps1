@@ -148,6 +148,14 @@ function Validate-Manifest {
             }
             Assert-NoSharedRoot -Value ([string]$asset.url) -Description $asset.package
         }
+        elseif ($asset.ContainsKey('denylisted') -and $asset.denylisted) {
+            foreach ($required in 'reason', 'version', 'archive', 'bytes', 'sha256', 'release_tag', 'release_asset_id', 'url') {
+                Assert-RequiredField -Item $asset -Name $required
+            }
+            if ($asset.bytes -le 0 -or -not $asset.sha256) {
+                throw "Denylisted input missing byte or hash metadata: $($asset.package)"
+            }
+        }
         else {
             foreach ($required in 'provisional', 'reason') {
                 Assert-RequiredField -Item $asset -Name $required
@@ -186,8 +194,11 @@ function Validate-Manifest {
     }
 
     foreach ($asset in $Lock.admitted_inputs) {
-        if (($asset.PSObject.Properties.Name -contains 'provisional') -and $asset.provisional -and $asset.admitted) {
+        if ($asset.ContainsKey('provisional') -and $asset.provisional -and $asset.admitted) {
             throw "Provisional input must not be admitted: $($asset.package)"
+        }
+        if ($asset.ContainsKey('denylisted') -and $asset.denylisted -and $asset.admitted) {
+            throw "Denylisted input must not be admitted: $($asset.package)"
         }
     }
 
