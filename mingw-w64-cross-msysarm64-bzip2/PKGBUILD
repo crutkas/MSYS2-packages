@@ -1,0 +1,301 @@
+# Maintainer: Chris Reddington <crutkas@microsoft.com>
+
+_realname=bzip2
+_target=aarch64-pc-msys
+_runtime_version=3.6.10.r0.ga527ace21
+_runtime_pkgrel=1
+_runtime_release_tag=msysarm64-runtime-pr10-a527-20260824
+_sysroot_version=3.6.10.r0.ga527ace21
+_sysroot_pkgrel=1
+_w32api_version=14.0.0.r0.g9b3dd0125
+_gcc_version=15.0.1dev
+_gcc_pkgrel=1
+_gcc_release_tag=msysarm64-gcc-pr13-20260826
+_support_release_tag=msysarm64-gcc-pr13-support-20260826
+_binutils_version=2.44.50
+_binutils_pkgrel=2
+_binutils_release_tag=cygwinarm64-binutils-pr21-3356eec-20260827
+_binutils_sha256=3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b
+_binutils_linker_sha256=075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f
+_binutils_producer_head=3356eec1411983cc252b04afac32bca5f3b8d824
+_binutils_producer_run=33044771291
+_pseudo_reloc_scanner_sha256=888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9
+
+pkgbase=mingw-w64-cross-msysarm64-bzip2
+pkgname=(
+  mingw-w64-cross-msysarm64-bzip2
+  mingw-w64-cross-msysarm64-libbz2
+  mingw-w64-cross-msysarm64-libbz2-devel
+)
+pkgver=1.0.8
+pkgrel=4
+pkgdesc="bzip2 compression tools and library for aarch64-pc-msys"
+arch=('x86_64')
+url="https://sourceware.org/bzip2/"
+msys2_repository_url="https://sourceware.org/git/bzip2.git"
+msys2_references=(
+  "cpe: cpe:/a:bzip:bzip2"
+)
+license=('spdx:bzip2-1.0.6')
+groups=('mingw-w64-cross-toolchain' 'mingw-w64-cross')
+makedepends=(
+  'make'
+  'patch'
+  "mingw-w64-cross-cygwinarm64-binutils=${_binutils_version}-${_binutils_pkgrel}"
+  "mingw-w64-cross-msysarm64-gcc=${_gcc_version}-${_gcc_pkgrel}"
+  "mingw-w64-cross-msysarm64-gcc-libs=${_gcc_version}-${_gcc_pkgrel}"
+  "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
+  "mingw-w64-cross-msysarm64-sysroot=${_sysroot_version}-${_sysroot_pkgrel}"
+  "mingw-w64-cross-msysarm64-w32api-runtime=${_w32api_version}-1"
+)
+options=('!strip' '!buildflags' '!emptydirs')
+source=(
+  "https://sourceware.org/pub/bzip2/${_realname}-${pkgver}.tar.gz"{,.sig}
+  "https://sourceware.org/pub/bzip2/gpgkey-5C1D1AA44BE649DE760A.gpg"
+  bzip2-1.0.6-msys-dll.patch
+  bzip2-1.0.6-msys2.patch
+  bzip2.pc
+  native-consumer.c
+  validate-bzip2.sh
+  README.md
+)
+sha256sums=(
+  'ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269'
+  'c667e2db9a3cd17bde492584263cb7c30d8050538678ece3078ae58230e6e5e1'
+  '3a189df1faa883973d80f1fc6d7450affddbf35989427692a6bf90e48b7466ad'
+  'a14e3ef3108fe843f5bd4bdf0943cc22c0a1581c382706dbd3f42ad7dc097c88'
+  'b499532b538ae1faa9b07933013671fd8f34431bfaa802f9099a96a6a4135e80'
+  'c326365ff8835fdf2d8c8b41f65b594879fa8d69ca869d813a8cba7288d8bc1f'
+  '9e4da2a8f477de3dfa761cd0921fcbaf7c0924699a01d30ffc7cdbba1fd54183'
+  'c4f4f3cdf438bb37c3f5cfbca4831b4f205610c4f8eb9c6e64f4b6f1082f93d8'
+  '0ca3b974bc47715ad3014adeb75d8a98d17182d4f9420624324d00f5f50ca5e0'
+)
+validpgpkeys=('EC3CFE88F6CA0788774F5C1D1AA44BE649DE760A')
+
+export SOURCE_DATE_EPOCH=1703203200
+export TZ=UTC
+
+prepare() {
+  cd "${srcdir}/${_realname}-${pkgver}"
+
+  patch -p1 -i "${srcdir}/bzip2-1.0.6-msys-dll.patch"
+  patch -p1 -i "${srcdir}/bzip2-1.0.6-msys2.patch"
+
+  sed "s|@VERSION@|${pkgver}|" "${srcdir}/bzip2.pc" > bzip2.pc
+  tr -d '\r' < "${srcdir}/validate-bzip2.sh" \
+    > "${srcdir}/validate-bzip2.lf.sh"
+  chmod 755 "${srcdir}/validate-bzip2.lf.sh"
+}
+
+build() {
+  local _source="${srcdir}/${_realname}-${pkgver}"
+  local _dest="${srcdir}/dest"
+  local _report="${srcdir}/bzip2-report"
+  local _sysroot="/opt/${_target}"
+  local _specs="${_sysroot}/lib/cygwin-compile-only.specs"
+  local _cc="/opt/bin/${_target}-gcc.exe"
+  local _binutils_root="/opt/bin"
+  local _tool_prefix="${_binutils_root}/aarch64-pc-cygwin"
+  local _ar="${_tool_prefix}-ar.exe"
+  local _ld="${_tool_prefix}-ld.exe"
+  local _nm="${_tool_prefix}-nm.exe"
+  local _objdump="${_tool_prefix}-objdump.exe"
+  local _ranlib="${_tool_prefix}-ranlib.exe"
+  local _strip="${_tool_prefix}-strip.exe"
+  local _scanner="${startdir}/../.ci/check-aarch64-pseudo-relocs.ps1"
+  local _prefix_map="-ffile-prefix-map=${srcdir}=. -fdebug-prefix-map=${srcdir}=. -fmacro-prefix-map=${srcdir}=."
+  local _target_cflags="-O2 -pipe -D__MSYS__ --sysroot=${_sysroot} -specs=${_specs} ${_prefix_map}"
+  local _target_ldflags="--sysroot=${_sysroot} -L${_sysroot}/lib -L${_sysroot}/usr/lib -Wl,--no-insert-timestamp"
+
+  export PATH="/opt/bin:/usr/bin:${PATH}"
+  test "$("${_cc}" -dumpmachine)" = "${_target}"
+  test "$(sha256sum "${_ld}" | cut -d' ' -f1)" = \
+    "${_binutils_linker_sha256}"
+  test "$(sha256sum "${_scanner}" | cut -d' ' -f1)" = \
+    "${_pseudo_reloc_scanner_sha256}"
+  test -f "${_sysroot}/bin/msys-2.0.dll"
+  test -f "${_sysroot}/lib/libmsys-2.0.a"
+  test -f "${_sysroot}/usr/lib/libkernel32.a"
+  test -f "${_specs}"
+
+  rm -rf "${_dest}" "${_report}"
+  mkdir -p "${_dest}/usr/lib/pkgconfig" "${_report}"
+  (
+    cd "${_source}"
+    CC="${_cc}" \
+    AR="${_ar}" \
+    RANLIB="${_ranlib}" \
+    NM="${_nm}" \
+    ARFLAGS='crsD' \
+    CFLAGS="${_target_cflags}" \
+    LDFLAGS="${_target_ldflags}" \
+      ./configure \
+        --build="${CHOST}" \
+        --host="${_target}" \
+        --prefix=/usr \
+        --enable-shared
+    sed \
+      -e 's,%DLLNAME%,msys-bz2,' \
+      -e 's,%DLLVER%,1,' \
+      libbz2.def.in > libbz2.def
+    make -j1 \
+      CC="${_cc}" \
+      AR="${_ar}" \
+      RANLIB="${_ranlib}" \
+      ARFLAGS='crsD' \
+      DLLNAME='msys-bz2' \
+      DLLVER='1' \
+      CFLAGS="${_target_cflags}" \
+      LDFLAGS="${_target_ldflags}"
+    "${_ranlib}" -D libbz2.a
+    "${_ranlib}" -D libbz2.dll.a
+
+    "${_cc}" ${_target_cflags} -DBZ_IMPORT -c bzip2.c -o bzip2-shared.o
+    "${_cc}" ${_target_cflags} ${_target_ldflags} \
+      -o bzip2.exe bzip2-shared.o ./libbz2.dll.a
+    cp -f bzip2.exe bunzip2.exe
+    cp -f bzip2.exe bzcat.exe
+
+    make \
+      PREFIX="${_dest}/usr" \
+      DLLNAME='msys-bz2' \
+      DLLVER='1' \
+      install
+    "${_ranlib}" -D \
+      "${_dest}/usr/lib/libbz2.a" \
+      "${_dest}/usr/lib/libbz2.dll.a"
+    install -Dm644 bzip2.pc "${_dest}/usr/lib/pkgconfig/bzip2.pc"
+    find "${_dest}/usr/bin" -type f \
+      \( -name '*.dll' -o -name '*.exe' \) -exec \
+      "${_strip}" --strip-debug {} +
+  )
+
+  TARGET="${_target}" \
+  TARGET_CC="${_cc}" \
+  TARGET_AR="${_ar}" \
+  TARGET_NM="${_nm}" \
+  TARGET_OBJDUMP="${_objdump}" \
+  TARGET_STRIP="${_strip}" \
+  TARGET_BINUTILS_ROOT="${_binutils_root}" \
+  TARGET_BUILD_DIR="${_source}" \
+  NATIVE_CONSUMER_SOURCE="${srcdir}/native-consumer.c" \
+  PSEUDO_RELOC_SCANNER="${_scanner}" \
+    "${srcdir}/validate-bzip2.lf.sh" "${_dest}/usr" "${_report}"
+
+  cat > "${_report}/source-identity.txt" <<EOF
+package-version	${pkgver}-${pkgrel}
+source-repository	${msys2_repository_url}
+source-release	${pkgver}
+source-archive-bytes	810029
+source-archive-sha256	ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269
+source-signature-bytes	310
+source-signature-sha256	c667e2db9a3cd17bde492584263cb7c30d8050538678ece3078ae58230e6e5e1
+source-signer	EC3CFE88F6CA0788774F5C1D1AA44BE649DE760A
+target	${_target}
+runtime-version	${_runtime_version}-${_runtime_pkgrel}
+sysroot-version	${_sysroot_version}-${_sysroot_pkgrel}
+w32api-version	${_w32api_version}-1
+gcc-version	${_gcc_version}-${_gcc_pkgrel}
+runtime-release	${_runtime_release_tag}
+gcc-release	${_gcc_release_tag}
+gcc-support-release	${_support_release_tag}
+binutils-release	${_binutils_release_tag}
+binutils-version	${_binutils_version}-${_binutils_pkgrel}
+binutils-package-sha256	${_binutils_sha256}
+binutils-linker-sha256	${_binutils_linker_sha256}
+binutils-producer-head	${_binutils_producer_head}
+binutils-producer-run	${_binutils_producer_run}
+pseudo-reloc-scanner-sha256	${_pseudo_reloc_scanner_sha256}
+EOF
+}
+
+check() {
+  grep -Fx $'shared-consumer\tpass' "${srcdir}/bzip2-report/validated.txt"
+  grep -Fx $'static-consumer\tpass' "${srcdir}/bzip2-report/validated.txt"
+}
+
+package_mingw-w64-cross-msysarm64-bzip2() {
+  local _dest="${srcdir}/dest/usr"
+  local _target_root="${pkgdir}/opt/${_target}/usr"
+  local _licensedir="${pkgdir}/usr/share/licenses/${pkgname}"
+
+  pkgdesc="bzip2 target CLI for aarch64-pc-msys"
+  depends=(
+    "mingw-w64-cross-msysarm64-libbz2=${pkgver}-${pkgrel}"
+    "mingw-w64-cross-msysarm64-runtime=${_runtime_version}-${_runtime_pkgrel}"
+  )
+  provides=("aarch64-pc-msys-bzip2=${pkgver}")
+  conflicts=('aarch64-pc-msys-bzip2')
+
+  install -d "${_target_root}/bin" "${_target_root}/share"
+  install -m755 \
+    "${_dest}/bin/bzip2.exe" \
+    "${_dest}/bin/bunzip2.exe" \
+    "${_dest}/bin/bzcat.exe" \
+    "${_dest}/bin/bzip2recover.exe" \
+    "${_target_root}/bin/"
+  for script in bzdiff bzgrep bzmore; do
+    install -m755 "${_dest}/bin/${script}" "${_target_root}/bin/${script}"
+  done
+  for alias in bzcmp bzegrep bzfgrep bzless; do
+    cp -a "${_dest}/bin/${alias}" "${_target_root}/bin/${alias}"
+  done
+  cp -a "${_dest}/share/man" "${_target_root}/share/"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE" \
+    "${_licensedir}/LICENSE"
+}
+
+package_mingw-w64-cross-msysarm64-libbz2() {
+  local _dest="${srcdir}/dest/usr"
+  local _docdir="${pkgdir}/opt/${_target}/usr/share/doc/${pkgbase}"
+  local _licensedir="${pkgdir}/usr/share/licenses/${pkgname}"
+
+  pkgdesc="libbz2 runtime for aarch64-pc-msys"
+  groups=('libraries')
+  depends=(
+    "mingw-w64-cross-msysarm64-runtime=${_runtime_version}-${_runtime_pkgrel}"
+  )
+  provides=("aarch64-pc-msys-libbz2=${pkgver}")
+  conflicts=('aarch64-pc-msys-libbz2')
+
+  install -Dm755 "${_dest}/bin/msys-bz2-1.dll" \
+    "${pkgdir}/opt/${_target}/usr/bin/msys-bz2-1.dll"
+  install -d "${_docdir}"
+  cp -a "${srcdir}/bzip2-report/." "${_docdir}/"
+  rm -f "${_docdir}/"*.exe
+  install -Dm755 "${srcdir}/validate-bzip2.lf.sh" \
+    "${_docdir}/validate-bzip2.sh"
+  install -Dm644 "${srcdir}/README.md" "${_docdir}/README.md"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE" \
+    "${_licensedir}/LICENSE"
+}
+
+package_mingw-w64-cross-msysarm64-libbz2-devel() {
+  local _dest="${srcdir}/dest/usr"
+  local _target_root="${pkgdir}/opt/${_target}/usr"
+  local _licensedir="${pkgdir}/usr/share/licenses/${pkgname}"
+
+  pkgdesc="libbz2 headers and libraries for aarch64-pc-msys"
+  groups=('development')
+  depends=(
+    "mingw-w64-cross-msysarm64-libbz2=${pkgver}-${pkgrel}"
+    "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
+    "mingw-w64-cross-msysarm64-sysroot=${_sysroot_version}-${_sysroot_pkgrel}"
+  )
+  provides=("aarch64-pc-msys-libbz2-devel=${pkgver}")
+  conflicts=('aarch64-pc-msys-libbz2-devel')
+  options=('!strip' 'staticlibs')
+
+  install -d "${_target_root}/include" "${_target_root}/lib/pkgconfig"
+  install -m644 "${_dest}/include/bzlib.h" "${_target_root}/include/bzlib.h"
+  install -m644 \
+    "${_dest}/lib/libbz2.a" \
+    "${_dest}/lib/libbz2.dll.a" \
+    "${_target_root}/lib/"
+  install -m644 "${_dest}/lib/pkgconfig/bzip2.pc" \
+    "${_target_root}/lib/pkgconfig/bzip2.pc"
+  aarch64-pc-cygwin-ranlib -D "${_target_root}/lib/libbz2.a"
+  aarch64-pc-cygwin-ranlib -D "${_target_root}/lib/libbz2.dll.a"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/LICENSE" \
+    "${_licensedir}/LICENSE"
+}

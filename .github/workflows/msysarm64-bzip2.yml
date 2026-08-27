@@ -1,0 +1,548 @@
+name: msysarm64-bzip2
+
+on:
+  push:
+    branches:
+      - crutkas-native-arm64-bzip2
+  pull_request:
+    branches:
+      - master
+    paths:
+      - .github/workflows/main.yml
+      - .github/workflows/msysarm64-bzip2.yml
+      - .ci/check-aarch64-pseudo-relocs.ps1
+      - mingw-w64-cross-msysarm64-bzip2/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: msysarm64-bzip2-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SOURCE_DATE_EPOCH: 1703203200
+
+jobs:
+  build:
+    if: >-
+      ${{
+        github.repository == 'crutkas/MSYS2-packages' &&
+        (github.ref_name == 'crutkas-native-arm64-bzip2' ||
+         github.head_ref == 'crutkas-native-arm64-bzip2')
+      }}
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [a, b]
+    name: private-build-${{ matrix.replica }}
+    runs-on: windows-2025
+
+    steps:
+      - name: Configure Git line endings
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+
+      - name: Capture shared-root sentinel
+        shell: pwsh
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP "shared-${{ matrix.replica }}"
+          & .\mingw-w64-cross-msysarm64-bzip2\shared-sentinel.ps1 `
+            -Action Capture `
+            -EvidenceDirectory $evidence
+
+      - name: Materialize private root and install pinned toolchain
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $destination = Join-Path `
+            $env:RUNNER_TEMP `
+            "msysarm64-bzip2-${{ matrix.replica }}"
+          & .\mingw-w64-cross-msysarm64-bzip2\bootstrap-toolchain.ps1 `
+            -Destination $destination `
+            -Install
+
+      - name: Build and validate package split
+        shell: pwsh
+        run: |
+          $destination = Join-Path `
+            $env:RUNNER_TEMP `
+            "msysarm64-bzip2-${{ matrix.replica }}"
+          $root = Join-Path $destination 'root'
+          $bash = Join-Path $root 'usr\bin\bash.exe'
+          $cygpath = Join-Path $root 'usr\bin\cygpath.exe'
+          $workspace = & $cygpath -u $env:GITHUB_WORKSPACE
+          $inputs = & $cygpath -u (Join-Path $destination 'primary')
+          $pwshPosix = & $cygpath -u (Join-Path $PSHOME 'pwsh.exe')
+          $pythonPosix = & $cygpath -u (Get-Command python.exe).Source
+          $homePath = Join-Path $root 'build-home'
+          New-Item -ItemType Directory -Path $homePath | Out-Null
+          $homePosix = & $cygpath -u $homePath
+          $script = @'
+          set -euo pipefail
+          export PATH=/usr/bin:/opt/bin
+          export HOME="$3"
+          export GNUPGHOME="$HOME/.gnupg"
+          export PSEUDO_RELOC_PWSH="$4"
+          export VALIDATION_PYTHON="$5"
+          mkdir -p "$GNUPGHOME"
+          chmod 700 "$GNUPGHOME"
+          cd "$1/mingw-w64-cross-msysarm64-bzip2"
+          bash -n \
+            PKGBUILD canonicalize-packages.sh \
+            validate-bzip2.sh validate-packages.sh
+          curl --fail --location --retry 3 --silent --show-error \
+            --output "$HOME/bzip2-release-key.gpg" \
+            https://sourceware.org/pub/bzip2/gpgkey-5C1D1AA44BE649DE760A.gpg
+          test "$(stat -c %s "$HOME/bzip2-release-key.gpg")" = 5236
+          test "$(sha256sum "$HOME/bzip2-release-key.gpg" | cut -d' ' -f1)" = \
+            3a189df1faa883973d80f1fc6d7450affddbf35989427692a6bf90e48b7466ad
+          gpg --batch --import "$HOME/bzip2-release-key.gpg"
+          test "$(
+            gpg --batch --with-colons --fingerprint \
+              EC3CFE88F6CA0788774F5C1D1AA44BE649DE760A \
+              | awk -F: '$1 == "fpr" { print $10; exit }'
+          )" = EC3CFE88F6CA0788774F5C1D1AA44BE649DE760A
+          makepkg --nodeps --noconfirm --noprogressbar --cleanbuild
+          bash ./canonicalize-packages.sh ./*.pkg.tar.zst
+          rm -rf ci-package-report
+          ./validate-packages.sh . ci-package-report "$2"
+          '@
+          $env:MSYS = 'winsymlinks:sys'
+          & $bash --noprofile --norc -c $script -- `
+            $workspace $inputs $homePosix $pwshPosix $pythonPosix
+          if ($LASTEXITCODE -ne 0) {
+            throw "private bzip2 build failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Verify shared-root sentinel
+        if: always()
+        shell: pwsh
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP "shared-${{ matrix.replica }}"
+          & .\mingw-w64-cross-msysarm64-bzip2\shared-sentinel.ps1 `
+            -Action Verify `
+            -EvidenceDirectory $evidence
+
+      - name: Collect candidate and native inputs
+        shell: pwsh
+        run: |
+          $recipe = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            'mingw-w64-cross-msysarm64-bzip2'
+          $candidate = Join-Path $env:GITHUB_WORKSPACE 'candidate'
+          $native = Join-Path $env:GITHUB_WORKSPACE 'native-inputs'
+          New-Item -ItemType Directory -Path $candidate, $native | Out-Null
+          Copy-Item (Join-Path $recipe '*.pkg.tar.zst') $candidate
+          Copy-Item `
+            (Join-Path $recipe 'ci-package-report\release-SHA256SUMS') `
+            $candidate
+          Copy-Item `
+            (Join-Path $recipe 'src\bzip2-report\dynamic-consumer.exe') `
+            $native
+          Copy-Item `
+            (Join-Path $recipe 'src\bzip2-report\static-consumer.exe') `
+            $native
+          $manifest = @(
+            Get-ChildItem -LiteralPath $native -File |
+              Sort-Object Name |
+              ForEach-Object {
+                $hash = (
+                  Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName
+                ).Hash.ToLowerInvariant()
+                "$hash  $($_.Name)"
+              }
+          )
+          [IO.File]::WriteAllText(
+            (Join-Path $native 'SHA256SUMS'),
+            (($manifest -join "`n") + "`n"),
+            [Text.UTF8Encoding]::new($false)
+          )
+
+      - name: Upload package candidates
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: msysarm64-bzip2-packages-${{ matrix.replica }}
+          if-no-files-found: error
+          retention-days: 14
+          path: candidate/*
+
+      - name: Upload validation evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: msysarm64-bzip2-evidence-${{ matrix.replica }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            .ci/check-aarch64-pseudo-relocs.ps1
+            mingw-w64-cross-msysarm64-bzip2/src/bzip2-report/*
+            mingw-w64-cross-msysarm64-bzip2/ci-package-report/*
+            ${{ runner.temp }}/msysarm64-bzip2-${{ matrix.replica }}/*.tsv
+            ${{ runner.temp }}/shared-${{ matrix.replica }}/*
+
+      - name: Upload native consumers
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: msysarm64-bzip2-native-inputs-${{ matrix.replica }}
+          if-no-files-found: error
+          retention-days: 14
+          path: native-inputs/*
+
+  reproducibility:
+    needs: build
+    runs-on: windows-2025
+
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: msysarm64-bzip2-packages-a
+          path: replica-a
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: msysarm64-bzip2-packages-b
+          path: replica-b
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: msysarm64-bzip2-native-inputs-a
+          path: native-a
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: msysarm64-bzip2-native-inputs-b
+          path: native-b
+
+      - name: Require byte-identical independent builds
+        shell: pwsh
+        run: |
+          function Compare-Sets([string]$Left, [string]$Right) {
+            $leftFiles = @(
+              Get-ChildItem -LiteralPath $Left -File |
+                Sort-Object Name
+            )
+            $rightFiles = @(
+              Get-ChildItem -LiteralPath $Right -File |
+                Sort-Object Name
+            )
+            if (Compare-Object `
+                ($leftFiles | ForEach-Object Name) `
+                ($rightFiles | ForEach-Object Name)) {
+              throw "file sets differ: $Left and $Right"
+            }
+            foreach ($leftFile in $leftFiles) {
+              $rightPath = Join-Path $Right $leftFile.Name
+              $leftHash = (
+                Get-FileHash -LiteralPath $leftFile.FullName -Algorithm SHA256
+              ).Hash.ToLowerInvariant()
+              $rightHash = (
+                Get-FileHash -LiteralPath $rightPath -Algorithm SHA256
+              ).Hash.ToLowerInvariant()
+              if ($leftFile.Length -ne (Get-Item $rightPath).Length -or
+                  $leftHash -ne $rightHash) {
+                throw "reproducibility mismatch: $($leftFile.Name)"
+              }
+            }
+          }
+          Compare-Sets replica-a replica-b
+          Compare-Sets native-a native-b
+
+          New-Item -ItemType Directory canonical-packages | Out-Null
+          Copy-Item replica-a\* canonical-packages
+          New-Item -ItemType Directory canonical-native-inputs | Out-Null
+          Copy-Item native-a\* canonical-native-inputs
+          @(
+            "head`t${{ github.event.pull_request.head.sha || github.sha }}"
+            "replica-a`tbyte-identical"
+            "replica-b`tbyte-identical"
+            "package-count`t3"
+            "release-created`tno"
+            "coordinator-admission`tpending"
+          ) | Set-Content reproducibility.tsv -Encoding utf8NoBOM
+
+      - name: Upload canonical candidate set
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: msysarm64-bzip2-canonical-candidates
+          if-no-files-found: error
+          retention-days: 14
+          path: canonical-packages/*
+
+      - name: Upload canonical native inputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: msysarm64-bzip2-canonical-native-inputs
+          if-no-files-found: error
+          retention-days: 14
+          path: canonical-native-inputs/*
+
+      - name: Upload reproducibility verdict
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: msysarm64-bzip2-reproducibility
+          if-no-files-found: error
+          retention-days: 14
+          path: reproducibility.tsv
+
+  native-smoke:
+    needs: reproducibility
+    runs-on: windows-11-arm
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+          architecture: 'arm64'
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: msysarm64-bzip2-canonical-candidates
+          path: packages
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: msysarm64-bzip2-canonical-native-inputs
+          path: native-inputs
+
+      - name: Capture native shared-root sentinel
+        shell: pwsh
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP 'native-shared'
+          & .\mingw-w64-cross-msysarm64-bzip2\shared-sentinel.ps1 `
+            -Action Capture `
+            -EvidenceDirectory $evidence
+
+      - name: Materialize private native test root
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $destination = Join-Path $env:RUNNER_TEMP 'msysarm64-bzip2-native'
+          & .\mingw-w64-cross-msysarm64-bzip2\bootstrap-toolchain.ps1 `
+            -Destination $destination `
+            -RuntimeOnly
+
+      - name: Install candidates with private ALPM client
+        shell: pwsh
+        run: |
+          $destination = Join-Path $env:RUNNER_TEMP 'msysarm64-bzip2-native'
+          $root = Join-Path $destination 'root'
+          $pacman = Join-Path $root 'usr\bin\pacman.exe'
+          $cygpath = Join-Path $root 'usr\bin\cygpath.exe'
+          $args = @(
+            '--root', '/'
+            '--dbpath', '/var/lib/pacman'
+            '--cachedir', '/var/cache/pacman/pkg'
+            '--logfile', '/var/log/pacman.log'
+            '--config', '/etc/pacman-local.conf'
+            '--hookdir', '/etc/pacman.d/hooks'
+            '--gpgdir', '/etc/pacman.d/gnupg'
+          )
+          $archives = @(
+            Get-ChildItem -LiteralPath packages -File -Filter '*.pkg.tar.zst' |
+              Sort-Object Name |
+              ForEach-Object { & $cygpath -u $_.FullName }
+          )
+          if ($archives.Count -ne 3) {
+            throw "expected three candidate packages, got $($archives.Count)"
+          }
+          $env:MSYS = 'winsymlinks:sys'
+          & $pacman @args -U --noconfirm -- @archives
+          if ($LASTEXITCODE -ne 0) {
+            throw "private native install failed with exit code $LASTEXITCODE"
+          }
+          & $pacman @args -Q `
+            mingw-w64-cross-msysarm64-bzip2 `
+            mingw-w64-cross-msysarm64-libbz2 `
+            mingw-w64-cross-msysarm64-libbz2-devel |
+              Set-Content `
+                (Join-Path $env:RUNNER_TEMP 'native-installed-packages.txt') `
+                -Encoding utf8NoBOM
+
+      - name: Execute native CLI and API gates
+        shell: pwsh
+        run: |
+          $os = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+          $process = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture
+          if ($os -ne [Runtime.InteropServices.Architecture]::Arm64 -or
+              $process -ne [Runtime.InteropServices.Architecture]::Arm64) {
+            throw "native gate requires ARM64 OS/process; os=$os process=$process"
+          }
+
+          $destination = Join-Path $env:RUNNER_TEMP 'msysarm64-bzip2-native'
+          $root = Join-Path $destination 'root'
+          $runtimeBin = Join-Path $root 'opt\aarch64-pc-msys\bin'
+          $bin = Join-Path $root 'opt\aarch64-pc-msys\usr\bin'
+          $evidence = Join-Path $env:RUNNER_TEMP 'native-evidence'
+          New-Item -ItemType Directory -Path $evidence | Out-Null
+          $env:PATH = "$bin;$runtimeBin;$env:PATH"
+
+          function Assert-AA64([string]$Path) {
+            $bytes = [IO.File]::ReadAllBytes($Path)
+            $offset = [BitConverter]::ToInt32($bytes, 0x3c)
+            $machine = [BitConverter]::ToUInt16($bytes, $offset + 4)
+            if ($machine -ne 0xaa64) {
+              throw "$Path is not AA64: 0x$($machine.ToString('x4'))"
+            }
+            $hash = (
+              Get-FileHash -LiteralPath $Path -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+            "$([IO.Path]::GetFileName($Path))`t0xaa64`t$hash"
+          }
+
+          $images = @(
+            (Join-Path $runtimeBin 'msys-2.0.dll')
+            (Join-Path $bin 'msys-bz2-1.dll')
+            (Join-Path $bin 'bzip2.exe')
+            (Join-Path $bin 'bunzip2.exe')
+            (Join-Path $bin 'bzcat.exe')
+            (Join-Path $bin 'bzip2recover.exe')
+            (Resolve-Path native-inputs\dynamic-consumer.exe).Path
+            (Resolve-Path native-inputs\static-consumer.exe).Path
+          )
+          @($images | ForEach-Object { Assert-AA64 $_ }) |
+            Set-Content (Join-Path $evidence 'image-machines.tsv') `
+              -Encoding utf8NoBOM
+
+          foreach ($kind in 'dynamic', 'static') {
+            $exe = (Resolve-Path "native-inputs\$kind-consumer.exe").Path
+            $output = @(& $exe 2>&1) | ForEach-Object ToString
+            $output | Set-Content `
+              (Join-Path $evidence "$kind-consumer.txt") `
+              -Encoding utf8NoBOM
+            if ($LASTEXITCODE -ne 0) {
+              throw "$kind consumer exited with $LASTEXITCODE"
+            }
+            $outputText = $output -join "`n"
+            if ($outputText -notmatch 'process_machine=0x0000\tnative_machine=0xaa64' -or
+                $outputText -notmatch 'threaded_roundtrip=ok' -or
+                $outputText -notmatch 'module=msys-2.0.dll') {
+              throw "$kind consumer omitted required native evidence"
+            }
+            if ($kind -eq 'dynamic' -and $outputText -notmatch 'module=msys-bz2-1.dll') {
+              throw 'dynamic consumer did not load msys-bz2-1.dll'
+            }
+            if ($kind -eq 'static' -and $outputText -match 'module=msys-bz2-1.dll') {
+              throw 'static consumer loaded msys-bz2-1.dll'
+            }
+            if ($outputText -match 'C:\\msys64') {
+              throw "$kind consumer loaded a shared-root module"
+            }
+          }
+
+          $input = Join-Path $evidence 'large-input.bin'
+          $bytes = [byte[]]::new(16MB)
+          [Random]::new(20260827).NextBytes($bytes)
+          [IO.File]::WriteAllBytes($input, $bytes)
+          $compressed = "$input.bz2"
+          $output = "$input.out"
+          $pipeline = "$input.pipeline"
+          Push-Location $evidence
+          try {
+            & $env:ComSpec /d /c `
+              "`"bzip2.exe`" -c < `"$input`" > `"$compressed`""
+            if ($LASTEXITCODE -ne 0) { throw 'stdin compression failed' }
+            & $env:ComSpec /d /c `
+              "`"bzip2.exe`" -dc < `"$compressed`" > `"$output`""
+            if ($LASTEXITCODE -ne 0) { throw 'stdin decompression failed' }
+            & $env:ComSpec /d /c `
+              "type `"$input`" | `"bzip2.exe`" -c | `"bzip2.exe`" -dc > `"$pipeline`""
+            if ($LASTEXITCODE -ne 0) { throw 'pipeline roundtrip failed' }
+
+            $fileModeName = 'file-mode.bin'
+            $fileMode = Join-Path $evidence $fileModeName
+            Copy-Item $input $fileMode
+            & $env:ComSpec /d /c 'bzip2.exe -k -f file-mode.bin'
+            if ($LASTEXITCODE -ne 0) { throw 'file compression failed' }
+            Remove-Item -LiteralPath $fileMode
+            & $env:ComSpec /d /c 'bunzip2.exe -k file-mode.bin.bz2'
+            if ($LASTEXITCODE -ne 0) { throw 'file decompression failed' }
+
+            $corruptName = 'corrupt.bz2'
+            $corrupt = Join-Path $evidence $corruptName
+            Copy-Item $compressed $corrupt
+            $corruptBytes = [IO.File]::ReadAllBytes($corrupt)
+            $corruptIndex = [int][Math]::Floor($corruptBytes.Length / 2)
+            $corruptBytes[$corruptIndex] =
+              $corruptBytes[$corruptIndex] -bxor 0x40
+            [IO.File]::WriteAllBytes($corrupt, $corruptBytes)
+            & $env:ComSpec /d /c 'bzip2.exe -t corrupt.bz2 >nul 2>&1'
+            if ($LASTEXITCODE -eq 0) {
+              throw 'CRC corruption was not rejected'
+            }
+            & $env:ComSpec /d /c 'bzip2.exe -dc missing.bz2 >nul 2>&1'
+            if ($LASTEXITCODE -eq 0) {
+              throw 'missing input was not rejected'
+            }
+            $global:LASTEXITCODE = 0
+          }
+          finally {
+            Pop-Location
+          }
+
+          $inputHash = (
+            Get-FileHash -LiteralPath $input -Algorithm SHA256
+          ).Hash.ToLowerInvariant()
+          foreach ($path in $output, $pipeline, (Join-Path $evidence 'file-mode.bin')) {
+            $hash = (
+              Get-FileHash -LiteralPath $path -Algorithm SHA256
+            ).Hash.ToLowerInvariant()
+            if ($hash -ne $inputHash) {
+              throw "native roundtrip mismatch: $path"
+            }
+          }
+          @(
+            "OSArchitecture`t$os"
+            "ProcessArchitecture`t$process"
+            "processor`t$((Get-CimInstance Win32_Processor | Select-Object -First 1).Name)"
+            "input-bytes`t$((Get-Item $input).Length)"
+            "input-sha256`t$inputHash"
+            "stdin-roundtrip`tpass"
+            "pipeline-roundtrip`tpass"
+            "file-roundtrip`tpass"
+            "crc-negative`tpass"
+            "missing-file-negative`tpass"
+            "threaded-dynamic`tpass"
+            "threaded-static`tpass"
+          ) | Set-Content (Join-Path $evidence 'native-verdict.tsv') `
+              -Encoding utf8NoBOM
+          Copy-Item `
+            (Join-Path $env:RUNNER_TEMP 'native-installed-packages.txt') `
+            $evidence
+
+      - name: Verify native shared-root sentinel
+        if: always()
+        shell: pwsh
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP 'native-shared'
+          & .\mingw-w64-cross-msysarm64-bzip2\shared-sentinel.ps1 `
+            -Action Verify `
+            -EvidenceDirectory $evidence
+
+      - name: Upload native execution evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: msysarm64-bzip2-native-smoke
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/native-evidence/*
+            ${{ runner.temp }}/native-shared/*
