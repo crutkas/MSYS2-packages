@@ -37,10 +37,19 @@ for path in \
   "${ar}" \
   "${smoke_source}"
 do
-  test -e "${path}"
+  if [[ ! -e "${path}" ]]; then
+    echo "missing validation input: ${path}" >&2
+    exit 1
+  fi
 done
-test ! -e "${root}/lib/libxcrypt.a"
-test -L "${root}/lib/pkgconfig/libcrypt.pc"
+if [[ -e "${root}/lib/libxcrypt.a" ]]; then
+  echo 'disabled libxcrypt.a compatibility alias was installed' >&2
+  exit 1
+fi
+if [[ ! -L "${root}/lib/pkgconfig/libcrypt.pc" ]]; then
+  echo 'libcrypt.pc is not a preserved system symlink' >&2
+  exit 1
+fi
 
 "${objdump}" -f -p "${dll}" > "${report}/runtime-pe.txt"
 grep -F 'file format pei-aarch64-little' "${report}/runtime-pe.txt"

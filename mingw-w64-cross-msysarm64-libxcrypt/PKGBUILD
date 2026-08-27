@@ -3,6 +3,8 @@
 _realname=libxcrypt
 _target=aarch64-pc-msys
 _tool_target=aarch64-pc-cygwin
+# MSYS2's patched libtool uses its Cygwin path to produce msys-*.dll names.
+_libtool_target=aarch64-pc-cygwin
 _runtime_release_tag=msysarm64-runtime-pr10-a527-20260824
 _runtime_version=3.6.10.r0.ga527ace21
 _runtime_pkgrel=1
@@ -48,7 +50,7 @@ sha256sums=(
   'SKIP'
   'd7fc862abcae33cf62c4c267e321ad02ac831d1897f0296cb96a0d8e528ab183'
   'bab215235696be1338184944f6956cea1fbf004c34ff50d2c729b77cc70357a0'
-  '4de11a1ff97fa27341620483a9c5710c531a65ad11ca84996573b70968bf34a8'
+  '63686199271fd84eb2f0e02be91bc5ed1a6f6a09bff0a9eefdd202f3bb22fe6a'
   '6bc162c026c56070a0155041564a35de28218e1e70302684b8bffd99e38aa46c'
 )
 validpgpkeys=('678CE3FEE430311596DB8C16F52E98007594C21D')
@@ -74,6 +76,7 @@ build() {
   export PATH="/opt/bin:${PATH}"
   export MSYSTEM=MSYS
   export MSYS=winsymlinks:sys
+  export lt_cv_deplibs_check_method=pass_all
   export CPPFLAGS="-isystem /opt/${_target}/include -idirafter /opt/${_target}/include/w32api"
   export CFLAGS="-O2 -pipe -D_WIN64 ${_prefix_map}"
   export LDFLAGS="-Wl,--dynamicbase,--nxcompat"
@@ -84,13 +87,15 @@ build() {
     CC_FOR_BUILD=gcc \
     AR="${_toolroot}/ar.exe" \
     AS="${_toolroot}/as.exe" \
+    DLLTOOL="${_toolroot}/dlltool.exe" \
     LD="${_toolroot}/ld.exe" \
     NM="${_toolroot}/nm.exe" \
     OBJDUMP="${_toolroot}/objdump.exe" \
     RANLIB="${_toolroot}/ranlib.exe" \
     STRIP="${_toolroot}/strip.exe" \
+    WINDRES="${_toolroot}/windres.exe" \
     --build="$(gcc -dumpmachine)" \
-    --host="${_target}" \
+    --host="${_libtool_target}" \
     --prefix=/usr \
     --enable-static \
     --disable-failure-tokens \

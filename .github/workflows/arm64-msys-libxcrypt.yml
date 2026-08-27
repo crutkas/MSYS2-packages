@@ -252,6 +252,7 @@ jobs:
           test "$(aarch64-pc-msys-gcc -dumpmachine)" = aarch64-pc-msys
           test "$(aarch64-pc-msys-gcc -dumpversion)" = 15.0.1
           test -x /opt/aarch64-pc-cygwin/bin/as.exe
+          test -x /opt/aarch64-pc-cygwin/bin/dlltool.exe
           test -x /opt/aarch64-pc-cygwin/bin/objdump.exe
           test -f /opt/aarch64-pc-msys/bin/msys-2.0.dll
           test -f /opt/aarch64-pc-msys/lib/libmsys-2.0.a
