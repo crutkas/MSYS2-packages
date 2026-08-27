@@ -12,6 +12,7 @@ on:
       - .github/workflows/main.yml
       - .ci/canonicalize-packages.sh
       - .ci/ci-build.sh
+      - .ci/ci-dont-install-list.txt
       - .ci/ci-get-build-order.py
       - mingw-w64-cross-msysarm64-libxcrypt/**
   workflow_dispatch:
@@ -319,14 +320,91 @@ jobs:
           $bash = 'C:\msys64\usr\bin\bash.exe'
           $buildRoot = '${{ steps.facts.outputs.drive }}\_'
           $buildRoot = & 'C:\msys64\usr\bin\cygpath.exe' -u $buildRoot
+          $inputRoot = Join-Path $env:RUNNER_TEMP 'msysarm64-inputs-primary'
+          $inputRoot = & 'C:\msys64\usr\bin\cygpath.exe' -u $inputRoot
           $script = @'
           set -euo pipefail
           cd "$1"
+          input_root=$2
           runtime_name=mingw-w64-cross-msysarm64-libxcrypt
           devel_name=mingw-w64-cross-msysarm64-libxcrypt-devel
-          target_root=/opt/aarch64-pc-msys/usr
           audit_dir=artifacts/libxcrypt-audit
+          transaction_root="$PWD/.ci-libxcrypt-transaction-root"
+          pacman_config="$audit_dir/isolated-pacman.conf"
+          target_root="${transaction_root}/opt/aarch64-pc-msys/usr"
+          logical_target_root=/opt/aarch64-pc-msys/usr
+          shared_db=/var/lib/pacman/local
           mkdir -p "$audit_dir"
+          rm -rf "$transaction_root"
+          mkdir -p \
+            "$transaction_root/var/cache/pacman/pkg" \
+            "$transaction_root/var/lib/pacman"
+          cat > "$pacman_config" <<'EOF'
+          [options]
+          Architecture = auto
+          SigLevel = Required DatabaseOptional
+          LocalFileSigLevel = Optional
+          EOF
+
+          pacman_root=(
+            pacman
+            --root "$transaction_root"
+            --dbpath "$transaction_root/var/lib/pacman"
+            --cachedir "$transaction_root/var/cache/pacman/pkg"
+            --config "$pacman_config"
+            --gpgdir /etc/pacman.d/gnupg
+          )
+
+          snapshot_shared_db() {
+            local output=$1
+            (
+              cd "$shared_db"
+              find . -type f -print0 |
+                LC_ALL=C sort -z |
+                xargs -0 sha256sum
+            ) > "$output"
+          }
+
+          snapshot_root() {
+            local output=$1
+            (
+              cd "$transaction_root"
+              find . -mindepth 1 \
+                -printf '%P\t%y\t%m\t%s\t%l\n' |
+                LC_ALL=C sort
+            ) > "$output"
+          }
+
+          snapshot_owned_payload() {
+            local output=$1
+            local hash listed logical physical
+            {
+              "${pacman_root[@]}" -Qlq "$runtime_name" "$devel_name" |
+                while IFS= read -r listed; do
+                  if [[ "$listed" == "${transaction_root}/"* ]]; then
+                    physical=$listed
+                    logical="/${listed#"${transaction_root}/"}"
+                  else
+                    logical=$listed
+                    physical="${transaction_root}${logical}"
+                  fi
+                  if [[ -L "$physical" ]]; then
+                    printf 'symlink\t%s\t%s\n' \
+                      "$logical" "$(readlink "$physical")"
+                  elif [[ -f "$physical" ]]; then
+                    hash=$(sha256sum "$physical")
+                    printf 'file\t%s\t%s\n' \
+                      "$logical" "${hash%% *}"
+                  elif [[ -d "$physical" ]]; then
+                    printf 'directory\t%s\n' "$logical"
+                  else
+                    printf 'missing package path: %s\n' \
+                      "$logical" >&2
+                    return 1
+                  fi
+                done
+            } | LC_ALL=C sort > "$output"
+          }
 
           shopt -s nullglob
           runtime_packages=(
@@ -338,14 +416,34 @@ jobs:
           test "${#runtime_packages[@]}" -eq 1
           test "${#devel_packages[@]}" -eq 1
 
-          MSYS=winsymlinks:sys pacman --noconfirm -U \
-            "${runtime_packages[0]}" "${devel_packages[0]}"
-          pacman -Q "$runtime_name" "$devel_name" |
+          runtime_inputs=(
+            "$input_root/mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst"
+            "$input_root/mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst"
+            "$input_root/mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst"
+            "$input_root/mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst"
+          )
+          for package in "${runtime_inputs[@]}"; do
+            test -f "$package"
+          done
+
+          snapshot_shared_db "$audit_dir/shared-db-before.sha256"
+          snapshot_root "$audit_dir/isolated-root-before.txt"
+
+          MSYS=winsymlinks:sys "${pacman_root[@]}" --noconfirm -U \
+            "${runtime_inputs[@]}" \
+            "${runtime_packages[0]}" \
+            "${devel_packages[0]}"
+          "${pacman_root[@]}" -Q "$runtime_name" "$devel_name" |
             tee "$audit_dir/installed-packages.txt"
-          pacman -Qk "$runtime_name" "$devel_name" |
+          "${pacman_root[@]}" -Qk "$runtime_name" "$devel_name" |
             tee "$audit_dir/package-integrity.txt"
-          pacman -Ql "$runtime_name" > "$audit_dir/runtime-ownership.txt"
-          pacman -Ql "$devel_name" > "$audit_dir/devel-ownership.txt"
+          "${pacman_root[@]}" -Ql "$runtime_name" \
+            > "$audit_dir/runtime-ownership.txt"
+          "${pacman_root[@]}" -Ql "$devel_name" \
+            > "$audit_dir/devel-ownership.txt"
+          snapshot_root "$audit_dir/isolated-root-after-install.txt"
+          snapshot_owned_payload \
+            "$audit_dir/owned-payload-after-install.txt"
 
           runtime_dll="$target_root/bin/msys-crypt-2.dll"
           test -f "$runtime_dll"
@@ -356,40 +454,44 @@ jobs:
           test -f "$target_root/lib/pkgconfig/libxcrypt.pc"
           test -L "$target_root/lib/pkgconfig/libcrypt.pc"
 
-          test "$(pacman -Qqo "$runtime_dll")" = "$runtime_name"
+          test "$("${pacman_root[@]}" -Qqo \
+            "$runtime_dll")" = "$runtime_name"
           for path in \
-            "$target_root/include/crypt.h" \
-            "$target_root/lib/libcrypt.a" \
-            "$target_root/lib/libcrypt.dll.a" \
-            "$target_root/lib/pkgconfig/libxcrypt.pc"
+            "$logical_target_root/include/crypt.h" \
+            "$logical_target_root/lib/libcrypt.a" \
+            "$logical_target_root/lib/libcrypt.dll.a" \
+            "$logical_target_root/lib/pkgconfig/libxcrypt.pc"
           do
-            test "$(pacman -Qqo "$path")" = "$devel_name"
+            test "$("${pacman_root[@]}" -Qqo \
+              "${transaction_root}${path}")" = "$devel_name"
           done
 
-          if pacman -Qlq "$runtime_name" |
+          if "${pacman_root[@]}" -Qlq "$runtime_name" |
               grep -E '\.(a|h|pc)$'; then
             echo 'runtime package crossed the devel ownership boundary' >&2
             exit 1
           fi
-          if pacman -Qlq "$devel_name" |
+          if "${pacman_root[@]}" -Qlq "$devel_name" |
               grep -E '/bin/.*\.dll$'; then
             echo 'devel package owns a runtime DLL' >&2
             exit 1
           fi
-          test -z "$(pacman -T \
-            mingw-w64-cross-msysarm64-gcc=15.0.1dev-1 \
-            mingw-w64-cross-msysarm64-gcc-libs=15.0.1dev-1 \
+          test -z "$("${pacman_root[@]}" -T \
             mingw-w64-cross-msysarm64-runtime=3.6.10.r0.ga527ace21-1 \
-            mingw-w64-cross-msysarm64-runtime-devel=3.6.10.r0.ga527ace21-1 \
-            mingw-w64-cross-msysarm64-sysroot=3.6.10.r0.ga527ace21-1 \
-            mingw-w64-cross-msysarm64-w32api-runtime=14.0.0.r0.g9b3dd0125-1)"
+            mingw-w64-cross-msysarm64-sysroot=3.6.10.r0.ga527ace21-1)"
 
           report=mingw-w64-cross-msysarm64-libxcrypt/src/libxcrypt-report
           test -f "$report/native-crypt-smoke.exe"
           cp -a "$report/." "$audit_dir/"
-          cp /opt/aarch64-pc-msys/bin/msys-2.0.dll "$audit_dir/"
+          cp \
+            "$transaction_root/opt/aarch64-pc-msys/bin/msys-2.0.dll" \
+            "$audit_dir/"
           cp "$runtime_dll" "$audit_dir/"
-          cp /opt/lib/gcc/aarch64-pc-msys/msys-gcc_s-seh-1.dll "$audit_dir/"
+          bsdtar -xOf \
+            "$input_root/mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst" \
+            opt/lib/gcc/aarch64-pc-msys/msys-gcc_s-seh-1.dll \
+            > "$audit_dir/msys-gcc_s-seh-1.dll"
+          chmod 755 "$audit_dir/msys-gcc_s-seh-1.dll"
           (
             cd "$audit_dir"
             sha256sum \
@@ -399,17 +501,33 @@ jobs:
               msys-gcc_s-seh-1.dll > native-smoke-sha256.txt
           )
 
-          pacman --noconfirm -R "$devel_name" "$runtime_name"
-          ! pacman -Q "$runtime_name"
-          ! pacman -Q "$devel_name"
+          "${pacman_root[@]}" --noconfirm -R \
+            "$devel_name" "$runtime_name"
+          ! "${pacman_root[@]}" -Q "$runtime_name" \
+            > /dev/null 2>&1
+          ! "${pacman_root[@]}" -Q "$devel_name" \
+            > /dev/null 2>&1
           test ! -e "$runtime_dll"
           test ! -e "$target_root/include/crypt.h"
+          snapshot_root "$audit_dir/isolated-root-after-remove.txt"
 
-          MSYS=winsymlinks:sys pacman --noconfirm -U \
+          MSYS=winsymlinks:sys "${pacman_root[@]}" --noconfirm -U \
             "${runtime_packages[0]}" "${devel_packages[0]}"
-          pacman -Qk "$runtime_name" "$devel_name"
+          "${pacman_root[@]}" -Qk "$runtime_name" "$devel_name"
+          snapshot_root "$audit_dir/isolated-root-after-reinstall.txt"
+          snapshot_owned_payload \
+            "$audit_dir/owned-payload-after-reinstall.txt"
+          cmp \
+            "$audit_dir/owned-payload-after-install.txt" \
+            "$audit_dir/owned-payload-after-reinstall.txt"
+
+          snapshot_shared_db "$audit_dir/shared-db-after.sha256"
+          cmp \
+            "$audit_dir/shared-db-before.sha256" \
+            "$audit_dir/shared-db-after.sha256"
+          rm -rf "$transaction_root"
           '@
-          & $bash --login -lc $script -- $buildRoot
+          & $bash --login -lc $script -- $buildRoot $inputRoot
           if ($LASTEXITCODE -ne 0) {
             throw 'package transaction or ownership audit failed'
           }

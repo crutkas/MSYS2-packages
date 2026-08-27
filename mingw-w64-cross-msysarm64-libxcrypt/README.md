@@ -25,8 +25,9 @@ and installs the complete bootstrap set in one pacman transaction under
 The runtime package owns only `msys-crypt-2.dll` and its license. The devel
 package owns `crypt.h`, the static and import libraries, pkg-config metadata,
 manuals, validation tooling, and its license. CI installs, audits, removes,
-and reinstalls the pair to verify transactions, ownership, and preserved
-system symlinks.
+and reinstalls the pair in a fresh alternate pacman root to verify
+transactions, ownership, and preserved system symlinks. Before/after
+snapshots must also prove that the build host's pacman database was untouched.
 
 Cross checks cover AA64 PE/COFF identity, imports, exported symbols, import
 archive members, static archive members, headers, pkg-config metadata, and
