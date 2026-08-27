@@ -247,17 +247,42 @@ public static class NativeArch {
         $machine=Get-PeMachine $file.FullName; if($machine-ne0xaa64){throw "Non-AA64 payload: $($file.Name)"}; [ordered]@{name=$file.Name;machine='0xaa64';sha256=(Get-Sha256 $file.FullName)}
     }
     $peEvidence | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $ReportRoot 'native-pe-evidence.json')
-    Push-Location $nativeRun
-    try {
-        foreach ($entry in $expectations.GetEnumerator()) {
-            $output=@(& (Join-Path $nativeRun $entry.Key) 2>&1); $code=$LASTEXITCODE
-            $output | ForEach-Object {$_.ToString()} | Set-Content (Join-Path $ReportRoot "$($entry.Key).stdout.txt")
-            $output | ForEach-Object {Write-Host $_}
-            if($code-ne0){throw "$($entry.Key) failed natively with exit code $code"}
-            if(@($output|ForEach-Object{$_.ToString()}) -notcontains $entry.Value){throw "$($entry.Key) missing marker $($entry.Value)"}
+    foreach ($entry in $expectations.GetEnumerator()) {
+        $startInfo = [Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = Join-Path $nativeRun $entry.Key
+        $startInfo.WorkingDirectory = $nativeRun
+        $startInfo.UseShellExecute = $false
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $process = [Diagnostics.Process]::new()
+        try {
+            $process.StartInfo = $startInfo
+            if (-not $process.Start()) {
+                throw "$($entry.Key) could not be started"
+            }
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+            $stderrTask = $process.StandardError.ReadToEndAsync()
+            $process.WaitForExit()
+            $stdout = $stdoutTask.GetAwaiter().GetResult()
+            $stderr = $stderrTask.GetAwaiter().GetResult()
+            $code = $process.ExitCode
+        }
+        finally {
+            $process.Dispose()
+        }
+        $stdoutLines = @($stdout -split '\r?\n' | Where-Object { $_ })
+        $stderrLines = @($stderr -split '\r?\n' | Where-Object { $_ })
+        $stdoutLines | Set-Content (Join-Path $ReportRoot "$($entry.Key).stdout.txt")
+        $stderrLines | Set-Content (Join-Path $ReportRoot "$($entry.Key).stderr.txt")
+        $stdoutLines | ForEach-Object { Write-Host $_ }
+        $stderrLines | ForEach-Object { Write-Host $_ }
+        if ($code -ne 0) {
+            throw "$($entry.Key) failed natively with exit code $code"
+        }
+        if ($stdoutLines -notcontains $entry.Value) {
+            throw "$($entry.Key) missing marker $($entry.Value)"
         }
     }
-    finally { Pop-Location }
     @('candidate-linker-installed-and-traced','zero-pseudo-flags-12-or-21','immutable-a527-runtime','immutable-gcc','dynamic-cxx-thread-constinit','far-map','process','lto','native-result=success') | Set-Content (Join-Path $ReportRoot 'candidate-result.txt')
   }
   catch { $primaryError = $_ }
