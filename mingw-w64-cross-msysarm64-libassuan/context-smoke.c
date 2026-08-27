@@ -29,7 +29,7 @@ main (void)
   err = assuan_new (&ctx);
   if (err)
     {
-      fprintf (stderr, "assuan_new: %s\n", gpg_strerror (err));
+      fprintf (stderr, "assuan_new failed: %u\n", (unsigned int) err);
       return 2;
     }
 

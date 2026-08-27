@@ -300,7 +300,9 @@ $cache = Join-Path $TransactionRoot 'var\cache\pacman\pkg'
 $log = Join-Path $TransactionRoot 'var\log\pacman.log'
 $config = Join-Path $TransactionRoot 'etc\pacman-local.conf'
 $hooks = Join-Path $TransactionRoot 'etc\pacman.d\hooks'
-New-Item -ItemType Directory -Force -Path $db, $cache, (Split-Path $log), $hooks | Out-Null
+$gpg = Join-Path $TransactionRoot 'etc\pacman.d\gnupg'
+New-Item -ItemType Directory -Force -Path `
+    $db, $cache, (Split-Path $log), $hooks, $gpg | Out-Null
 @'
 [options]
 Architecture = auto
@@ -316,6 +318,7 @@ $common = @(
     '--logfile', $log,
     '--config', $config,
     '--hookdir', $hooks,
+    '--gpgdir', $gpg,
     '--noconfirm'
 )
 Invoke-Pacman -Arguments ($common + @(

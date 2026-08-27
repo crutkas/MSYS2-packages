@@ -19,6 +19,8 @@ ar="${target}-ar"
 nm="${target}-nm"
 cc="${target}-gcc"
 strings="${target}-strings"
+objcopy="${target}-objcopy"
+path_auditor="$(cd "$(dirname "$0")" && pwd)/audit-path-leaks.sh"
 
 rm -rf "${report}"
 mkdir -p "${report}/archive-members" "${report}/smoke"
@@ -31,20 +33,10 @@ fail() {
 audit_source_paths() {
   local file=$1
   local name=$2
-  local safe=${name//\//_}
-  safe=${safe//:/_}
-  local strings_file="${report}/${safe}.strings.txt"
-  local leaks="${report}/${safe}.path-leaks.txt"
-
-  "${strings}" "${file}" > "${strings_file}"
-  if grep -Eiq '(^|[^[:alnum:]])(/[a-z]/Users/|[A-Za-z]:[/\\]Users[/\\])' \
-    "${strings_file}"; then
-    grep -Ei '(^|[^[:alnum:]])(/[a-z]/Users/|[A-Za-z]:[/\\]Users[/\\])' \
-      "${strings_file}" > "${leaks}"
-    fail "${name} leaks a user-profile build path"
-  fi
-  : > "${leaks}"
-  rm -f "${strings_file}"
+  local inspect_debug=${3:-no}
+  "${path_auditor}" "${file}" "${name}" "${report}" \
+    "${objdump}" "${objcopy}" "${strings}" "${inspect_debug}" ||
+    fail "${name} contains a forbidden nondeterministic path"
 }
 
 audit_pe() {
@@ -60,7 +52,7 @@ audit_pe() {
     fail "${name} is not PE/COFF ARM64"
   ! grep -Eiq 'i386|x86-64|pei-x86-64' "${format}" ||
     fail "${name} contains an x86 architecture marker"
-  audit_source_paths "${file}" "${name}"
+  audit_source_paths "${file}" "${name}" yes
   "${objdump}" -h "${file}" > "${sections}"
   awk '$2 == ".pdata" && $3 !~ /^0+$/ { found=1 } END { exit !found }' \
     "${sections}" || fail "${name} has no nonempty ARM64 SEH .pdata section"
@@ -109,6 +101,7 @@ for archive in "${archives[@]}"; do
   member_dir="${report}/archive-members/${archive_name}"
   armap="${report}/archive-members/${archive_name}.armap.txt"
   mkdir -p "${member_dir}"
+  audit_source_paths "${archive}" "${archive_name}"
   "${nm}" --print-armap "${archive}" > "${armap}"
   grep -Fq 'Archive index:' "${armap}" ||
     fail "${archive_name} has no archive symbol index"
@@ -139,7 +132,7 @@ for archive in "${archives[@]}"; do
     ! grep -Eiq 'i386|x86-64|pei-x86-64' "${member_format}" ||
       fail "${archive_name}:${member_name} contains an x86 marker"
     audit_source_paths "${preserved}" \
-      "${archive_name}:${member_count}-${member_name}"
+      "${archive_name}:${member_count}-${member_name}" yes
   done < <("${ar}" t "${archive}")
   rm -rf "${member_dir}/extract"
   (( member_count > 0 )) || fail "${archive_name} has no auditable members"
@@ -151,6 +144,8 @@ mapfile -d '' libassuan_dlls < <(
 (( ${#libassuan_dlls[@]} == 1 )) ||
   fail "expected exactly one dynamic libassuan DLL, found ${#libassuan_dlls[@]}"
 dll=${libassuan_dlls[0]}
+"${strings}" "${dll}" | grep -Fxq '3.0.2' ||
+  fail "dynamic library does not contain the signed release version"
 "${objdump}" -p "${dll}" > "${report}/libassuan.exports.txt"
 grep -Eiq 'DLL Name: msys-gpg-error-[0-9]+\.dll' \
   "${report}/libassuan.exports.txt" ||
@@ -181,73 +176,89 @@ fi
 
 pc="${prefix}/lib/pkgconfig/libassuan.pc"
 config="${prefix}/bin/libassuan-config"
+la="${prefix}/lib/libassuan.la"
 [[ -f "${pc}" ]] || fail "libassuan.pc is missing"
 [[ -x "${config}" ]] || fail "libassuan-config is missing"
+[[ -f "${la}" ]] || fail "libassuan.la is missing"
+grep -Fq '#define ASSUAN_VERSION "3.0.2"' "${prefix}/include/assuan.h" ||
+  fail "assuan.h does not expose the signed release version"
+grep -Fxq "libdir='/opt/${target}/usr/lib'" "${la}" ||
+  fail "libassuan.la does not identify the cross-target library directory"
+grep -Fxq "dependency_libs=' -L/opt/${target}/usr/lib -lgpg-error'" "${la}" ||
+  fail "libassuan.la does not identify the cross-target private dependency"
+! grep -Fq -- '-L/usr/lib' "${la}" ||
+  fail "libassuan.la contains an unscoped host library search path"
+[[ -f "${prefix}/lib/libassuan.a" ]] ||
+  fail "static libassuan archive is missing"
+"${strings}" "${prefix}/lib/libassuan.a" | grep -Fxq '3.0.2' ||
+  fail "static library does not contain the signed release version"
 grep -Fxq 'prefix=/usr' "${pc}" || fail "pkg-config prefix is not /usr"
+grep -Fxq 'Version: 3.0.2' "${pc}" ||
+  fail "pkg-config does not expose the signed release version"
 grep -Fxq 'Requires.private: gpg-error' "${pc}" ||
   fail "pkg-config private dependency is not gpg-error"
 grep -Eq '^Libs: .* -lassuan$' "${pc}" ||
   fail "pkg-config link flags do not expose libassuan"
-! grep -Eiq '(^|[^[:alnum:]])[A-Za-z]:[/\\]|/(mingw|ucrt|clang|opt|c|d)/' "${pc}" ||
-  fail "pkg-config metadata leaks a build or host path"
 while IFS= read -r -d '' metadata; do
-  ! grep -Eiq '(^|[^[:alnum:]])[A-Za-z]:[/\\]|/(mingw|ucrt|clang|opt|c|d)/' "${metadata}" ||
-    fail "${metadata#${dest}/} leaks a build or host path"
+  audit_source_paths "${metadata}" "${metadata#${dest}/}"
 done < <(
   find "${prefix}" -type f \
     \( -name '*.la' -o -name '*.pc' -o -name '*.m4' -o -name '*-config' \) \
     -print0
 )
 
+audit_sysroot="${report}/consumer-sysroot"
+rm -rf "${audit_sysroot}"
+mkdir -p "${audit_sysroot}/usr"
+cp -a "${target_root}/usr/." "${audit_sysroot}/usr/"
+cp -a "${prefix}/." "${audit_sysroot}/usr/"
+
+export LIBASSUAN_SYSROOT="${audit_sysroot}"
 config_version=$("${config}" --version)
-config_version_base=${config_version%%-*}
 config_host=$("${config}" --host)
 config_cflags=$("${config}" --cflags)
 config_libs=$("${config}" --libs)
-[[ "${config_version_base}" == '3.0.2' ]] ||
+[[ "${config_version}" == '3.0.2' ]] ||
   fail "libassuan-config reports ${config_version}"
 [[ "${config_host}" == "${target}" ]] ||
   fail "libassuan-config reports host ${config_host}"
+[[ "${config_cflags}" == *"-I${audit_sysroot}/usr/include"* ]] ||
+  fail "libassuan-config does not emit its target include directory"
 [[ "${config_libs}" == *'-lassuan'* && "${config_libs}" == *'-lgpg-error'* ]] ||
   fail "libassuan-config omits required libraries"
-! printf '%s\n' "${config_cflags}" "${config_libs}" |
-  grep -Eiq '(^|[^[:alnum:]])[A-Za-z]:[/\\]|/(mingw|ucrt|clang|opt|c|d)/' ||
-  fail "libassuan-config leaks a build or host path"
+[[ "${config_libs}" == *"-L${audit_sysroot}/usr/lib"* ]] ||
+  fail "libassuan-config does not emit its target library directory"
 
-export PKG_CONFIG_SYSROOT_DIR="${target_root}"
+export PKG_CONFIG_SYSROOT_DIR="${audit_sysroot}"
 export PKG_CONFIG_LIBDIR="${prefix}/lib/pkgconfig:${target_root}/usr/lib/pkgconfig"
 pkgconf_flags=$(pkg-config --cflags --libs libassuan)
 pkgconf_static_flags=$(pkg-config --static --cflags --libs libassuan)
 printf '%s\n' "${pkgconf_flags}" > "${report}/pkg-config.dynamic.txt"
 printf '%s\n' "${pkgconf_static_flags}" > "${report}/pkg-config.static.txt"
-[[ "${pkgconf_flags}" == *"${target_root}/usr/include"* ]] ||
+[[ "${pkgconf_flags}" == *"${audit_sysroot}/usr/include"* ]] ||
   fail "pkg-config did not sysroot include flags"
 [[ "${pkgconf_flags}" == *'-lassuan'* ]] ||
   fail "pkg-config omitted libassuan"
 
-common_flags=(
-  "--sysroot=${target_root}"
-  "-I${prefix}/include"
-  "-I${target_root}/usr/include"
-  "-L${prefix}/lib"
-  "-L${target_root}/usr/lib"
-)
-"${cc}" "${common_flags[@]}" -o "${report}/smoke/context-dynamic.exe" \
-  "${context_source}" -lassuan -lgpg-error
-"${cc}" "${common_flags[@]}" -o "${report}/smoke/pipe-dynamic.exe" \
-  "${pipe_source}" -lassuan -lgpg-error
-"${cc}" "--sysroot=${target_root}" \
-  "-I${prefix}/include" "-I${target_root}/usr/include" \
-  -o "${report}/smoke/context-static.exe" \
-  "${context_source}" \
-  "${prefix}/lib/libassuan.a" \
-  "${target_root}/usr/lib/libgpg-error.a"
+read -r -a pkgconf_dynamic_args <<< "${pkgconf_flags}"
+read -r -a pkgconf_static_args <<< "${pkgconf_static_flags}"
+read -r -a config_cflags_args <<< "${config_cflags}"
+read -r -a config_libs_args <<< "${config_libs}"
+"${cc}" -o "${report}/smoke/context-dynamic.exe" \
+  "${context_source}" "${pkgconf_dynamic_args[@]}"
+"${cc}" -o "${report}/smoke/pipe-dynamic.exe" \
+  "${pipe_source}" "${pkgconf_dynamic_args[@]}"
+"${cc}" -Wl,-Bstatic -o "${report}/smoke/context-static.exe" \
+  "${context_source}" "${pkgconf_static_args[@]}" -Wl,-Bdynamic
+"${cc}" -o "${report}/smoke/context-config.exe" \
+  "${context_source}" "${config_cflags_args[@]}" "${config_libs_args[@]}"
 
 for smoke in "${report}/smoke/"*.exe; do
   audit_pe "${smoke}"
 done
 for smoke in \
   "${report}/smoke/context-dynamic.exe" \
+  "${report}/smoke/context-config.exe" \
   "${report}/smoke/pipe-dynamic.exe"; do
   dynamic_imports="${smoke%.exe}.imports-full.txt"
   "${objdump}" -p "${smoke}" > "${dynamic_imports}"

@@ -34,7 +34,7 @@ run_server (void)
   assuan_release (ctx);
   if (err && gpg_err_code (err) != GPG_ERR_EOF)
     {
-      fprintf (stderr, "server: %s\n", gpg_strerror (err));
+      fprintf (stderr, "server failed: %u\n", (unsigned int) err);
       return 10;
     }
   return 0;
@@ -68,7 +68,7 @@ run_client (const char *self)
   assuan_release (ctx);
   if (err)
     {
-      fprintf (stderr, "client: %s\n", gpg_strerror (err));
+      fprintf (stderr, "client failed: %u\n", (unsigned int) err);
       return 20;
     }
   if (status)
@@ -89,7 +89,7 @@ main (int argc, char **argv)
   err = assuan_sock_init ();
   if (err)
     {
-      fprintf (stderr, "assuan_sock_init: %s\n", gpg_strerror (err));
+      fprintf (stderr, "assuan_sock_init failed: %u\n", (unsigned int) err);
       return 1;
     }
 

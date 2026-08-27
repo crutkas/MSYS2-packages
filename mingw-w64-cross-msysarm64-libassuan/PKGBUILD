@@ -28,7 +28,6 @@ msys2_repository_url="https://git.gnupg.org/cgi-bin/gitweb.cgi?p=libassuan.git"
 msys2_pgp_keys_url="https://gnupg.org/signature_key.html"
 license=('spdx:LGPL-2.1-or-later' 'spdx:GPL-3.0-or-later')
 makedepends=(
-  'autotools'
   'gcc'
   'perl'
   'pkgconf'
@@ -45,15 +44,17 @@ source=(
   "https://gnupg.org/ftp/gcrypt/${_realname}/${_realname}-${pkgver}.tar.bz2"{,.sig}
   funopen-size_t.patch
   audit-msysarm64.sh
+  audit-path-leaks.sh
   context-smoke.c
   pipe-smoke.c
 )
 sha256sums=('d2931cdad266e633510f9970e1a2f346055e351bb19f9b78912475b8074c36f6'
             'SKIP'
-            'dfd0c0346bd5962b567c73d7d4fd098e211f907c93902a849d22360bb9b0ccd7'
-            'c2121d6e240683155d2f68e3c16821a9b0174eb7e8f69c4071cf2c5d46c45095'
-            'a2851e6e30ce02a7ecce214006e6def5bc61689d51087ae6e59d4803fb86d400'
-            '2142faf66e8bc82dbb8ba08d52bc8a2a25f5844cdd5baa6e366ba2d8772625ae')
+            '9837396b27c840ae0dc100ec17e197600d63f6c2bf81a4c4dafd2aee26a0c08d'
+            'ab7595fe87c0d518864b25ea9268acd7d99e7f5f24fd078e3c3f5368c204e410'
+            '515f22d1eea6b408869ce6d599c6c5c1d65b5d00e7f8c7437ebcf093050587cf'
+            'e5821e9cb0da1fc74f07228364d4186c7ae09d06288a69f54c6483ada11fc8aa'
+            'a61bfd0aa142d658b3775247782f856b1c14a62f71ce93664c5db9e1810ae7ae')
 validpgpkeys=('6DAA6E64A76D2840571B4902528897B826403ADA'
               'AC8E115BF73E2D8D47FA9908E98E9B2D19C6C8BD')
 
@@ -61,22 +62,23 @@ prepare() {
   cd "${srcdir}/${_realname}-${pkgver}"
 
   patch -Np1 -i "${srcdir}/funopen-size_t.patch"
-  # MSYS uses the Cygwin libtool model while retaining its own target triplet.
-  perl -0pi -e 's/\*-\*-cygwin\*\)/\*-\*-cygwin* | *-*-msys*)/' configure.ac
-  autoreconf -fi
+  # Patch the signed release's generated build system directly. Regenerating it
+  # outside the signed release tag changes PACKAGE_VERSION to 3.0.2-unknown.
   perl -0pi -e 's/\*cygwin\*,\*lai,yes,no,\*\.dll/*cygwin*,*lai,yes,no,*.dll | *msys*,*lai,yes,no,*.dll/g; s/\*-\*-cygwin\*(?!\s*\|\s*\*-\*-msys\*)/*-*-cygwin* | *-*-msys*/g; s/(?<!-)cygwin\*(?!,|\s*\|\s*msys\*)/cygwin* | msys*/g' \
     m4/libtool.m4 configure build-aux/ltmain.sh
+  sed -i "s/${pkgver}-unknown/${pkgver}/g" configure
+  grep -Fq "PACKAGE_VERSION='${pkgver}'" configure
+  ! grep -Fq "${pkgver}-unknown" configure
 }
 
 build() {
   cd "${srcdir}/${_realname}-${pkgver}"
 
-  local _build_triplet
   local _target_usr="/opt/${_target}/usr"
+  local _cross_root="/opt/${_target}"
   local _dependency_version
   local _preflight="${srcdir}/dependency-preflight"
   local _debug_prefix="/usr/src/debug/${pkgbase}-${pkgver}"
-  _build_triplet="$(gcc -dumpmachine)"
 
   export PATH="/opt/${_target}/usr/bin:/opt/bin:${PATH}"
   export PKG_CONFIG_SYSROOT_DIR="/opt/${_target}"
@@ -123,7 +125,7 @@ build() {
     WINDRES="${_target}-windres" \
     CC_FOR_BUILD=gcc \
     --prefix=/usr \
-    --build="${_build_triplet}" \
+    --build=x86_64-pc-msys \
     --host="${_target}" \
     --with-libgpg-error-prefix="/opt/${_target}/usr" \
     --enable-shared \
@@ -141,9 +143,32 @@ build() {
     no_undefined="-no-undefined" \
     export_symbols="-export-symbols ${srcdir}/${_realname}-${pkgver}/src/libassuan.exports"
   make DESTDIR="${srcdir}/dest" install
-  sed -i "s|/opt/${_target}/usr|/usr|g" \
-    "${srcdir}/dest/usr/bin/libassuan-config" \
-    "${srcdir}/dest/usr/lib/libassuan.la"
+
+  local _config="${srcdir}/dest/usr/bin/libassuan-config"
+  local _la="${srcdir}/dest/usr/lib/libassuan.la"
+  local _metadata_root="\${LIBASSUAN_SYSROOT:-${_cross_root}}"
+  sed -i \
+    -e "s|^gpg_error_cflags=.*|gpg_error_cflags=\"-I${_metadata_root}/usr/include\"|" \
+    -e "s|^gpg_error_libs=.*|gpg_error_libs=\"-L${_metadata_root}/usr/lib -lgpg-error\"|" \
+    -e "s|^lib=.*|lib=\"-L${_metadata_root}/usr/lib -lassuan\"|" \
+    -e "s|^cflags=.*|cflags=\"-I${_metadata_root}/usr/include\"|" \
+    -e "s|^prefix=.*|prefix=${_metadata_root}/usr|" \
+    "${_config}"
+  sed -i \
+    -e "s|^dependency_libs=.*|dependency_libs=' -L${_target_usr}/lib -lgpg-error'|" \
+    -e "s|^libdir=.*|libdir='${_target_usr}/lib'|" \
+    "${_la}"
+
+  grep -Fq "#define ASSUAN_VERSION \"${pkgver}\"" \
+    "${srcdir}/dest/usr/include/assuan.h"
+  grep -Fxq "Version: ${pkgver}" \
+    "${srcdir}/dest/usr/lib/pkgconfig/libassuan.pc"
+  [[ "$(LIBASSUAN_SYSROOT="${_cross_root}" "${_config}" --version)" == "${pkgver}" ]]
+  [[ "$(LIBASSUAN_SYSROOT="${_cross_root}" "${_config}" --prefix)" == "${_target_usr}" ]]
+  ! grep -R -Fq "${pkgver}-unknown" \
+    "${srcdir}/dest/usr/include" \
+    "${srcdir}/dest/usr/lib/pkgconfig" \
+    "${_config}"
 }
 
 check() {

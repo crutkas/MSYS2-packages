@@ -2,140 +2,266 @@ name: Fork ARM64 MSYS libassuan
 
 on:
   workflow_dispatch:
-    inputs:
-      libgpg_error_release_tag:
-        description: Canonical release tag containing the sealed fixed-linker libgpg-error pair
-        required: true
-        type: string
-      libgpg_error_sha256:
-        description: SHA-256 of the libgpg-error runtime candidate
-        required: true
-        type: string
-      libgpg_error_devel_sha256:
-        description: SHA-256 of the libgpg-error devel candidate
-        required: true
-        type: string
-      libgpg_error_seal_filename:
-        description: Exact libgpg-error lifecycle seal filename
-        required: true
-        type: string
-      libgpg_error_seal_sha256:
-        description: Exact libgpg-error lifecycle seal SHA-256
-        required: true
-        type: string
+  push:
+    branches:
+      - crutkas-arm64-msys-libassuan
+    paths:
+      - .github/workflows/arm64-msys-libassuan.yml
+      - mingw-w64-cross-msysarm64-libassuan/**
 
 permissions:
-  actions: read
   contents: read
 
+env:
+  SOURCE_DATE_EPOCH: 1786817435
+
 jobs:
-  build:
+  static-policy:
     if: ${{ github.repository == 'crutkas/MSYS2-packages' }}
     runs-on: windows-2025
-    env:
-      SOURCE_DATE_EPOCH: 1786817435
-
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - uses: msys2/setup-msys2@v2
-        with:
-          msystem: MSYS
-          install: base base-devel autotools gcc pkgconf git
-          update: true
-
-      - name: Download and seal immutable inputs
+      - name: Exercise fail-closed dependency policy
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          LIBGPG_ERROR_RELEASE_TAG: ${{ inputs.libgpg_error_release_tag }}
-          LIBGPG_ERROR_SHA256: ${{ inputs.libgpg_error_sha256 }}
-          LIBGPG_ERROR_DEVEL_SHA256: ${{ inputs.libgpg_error_devel_sha256 }}
-          LIBGPG_ERROR_SEAL_FILENAME: ${{ inputs.libgpg_error_seal_filename }}
-          LIBGPG_ERROR_SEAL_SHA256: ${{ inputs.libgpg_error_seal_sha256 }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $inputsDir = Join-Path $env:RUNNER_TEMP 'libassuan-inputs'
-          $gpgDir = Join-Path $inputsDir 'libgpg-error'
-          New-Item -ItemType Directory -Force -Path $inputsDir, $gpgDir | Out-Null
+          & .\mingw-w64-cross-msysarm64-libassuan\test-dependency-lock.ps1
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Dependency lock policy fixtures failed'
+          }
 
-          $gpgRuntimeName = 'mingw-w64-cross-msysarm64-libgpg-error-1.56-1-x86_64.pkg.tar.zst'
-          $gpgDevelName = 'mingw-w64-cross-msysarm64-libgpg-error-devel-1.56-1-x86_64.pkg.tar.zst'
-          $forbiddenGpgHashes = @(
-            '5a3e2de75383e8d4a6c8431297f2740cf4a0976f1bc4da0fcb2a5271874a8d94',
-            '9f3eb872e514b6be3d78001b1f25b089e9c2378128992241cc759fc66c42c708',
-            '0b8a6c6fd865ca09858f8f5f130233910c17d58dddb41719cecf1722a3964645',
-            '3af7e6c7f9735554f39a601cd42b5a9cc379646318c63e613105908743ed6f2c',
-            '8921cee568ab0757e5211bce3a8c9ff49e27446c74a6940126f3ae778830aa2c',
-            'd6914993d2d2bb2c51a6d46c9dd9f2e5149a8da30736a01cbcfd57854c65fd1f'
-          )
-          foreach ($hash in @(
-              $env:LIBGPG_ERROR_SHA256,
-              $env:LIBGPG_ERROR_DEVEL_SHA256,
-              $env:LIBGPG_ERROR_SEAL_SHA256)) {
-            if ($hash.ToLowerInvariant() -in $forbiddenGpgHashes) {
-              throw "Refusing revoked or rehearsal-only libgpg-error input $hash"
+      - name: Reject shared-client and floating-action regressions
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $workflow = Get-Content -Raw .github\workflows\arm64-msys-libassuan.yml
+          $shared = 'C:' + '\msys64'
+          foreach ($forbidden in @(
+              ('msys2/' + 'setup-msys2@'),
+              ('actions/checkout@' + 'v'),
+              ('actions/upload-artifact@' + 'v'),
+              ('actions/download-artifact@' + 'v'),
+              ($shared + '\usr\bin\pacman'),
+              ($shared + '\usr\bin\bsdtar'),
+              ($shared + '\etc\pacman.d\gnupg'))) {
+            if ($workflow.Contains($forbidden)) {
+              throw "Workflow contains forbidden bootstrap reference: $forbidden"
             }
           }
-          gh release download $env:LIBGPG_ERROR_RELEASE_TAG `
-            --repo crutkas/MSYS2-packages `
-            --dir $gpgDir `
-            --pattern $gpgRuntimeName `
-            --pattern $gpgDevelName `
-            --pattern $env:LIBGPG_ERROR_SEAL_FILENAME
 
-          $fixedName = 'mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst'
-          gh release download cygwinarm64-binutils-pr21-3356eec-20260827 `
-            --repo crutkas/MSYS2-packages `
-            --dir $inputsDir `
-            --pattern $fixedName
-          $scanner = Join-Path $inputsDir 'check-aarch64-pseudo-relocs.ps1'
-          curl.exe -fsSL `
-            -o $scanner `
-            https://raw.githubusercontent.com/crutkas/MSYS2-packages/3356eec1411983cc252b04afac32bca5f3b8d824/.ci/check-aarch64-pseudo-relocs.ps1
-          curl.exe -fsSL `
-            -o (Join-Path $inputsDir 'signature_key.asc') `
-            https://gnupg.org/signature_key.asc
+  build:
+    needs: static-policy
+    if: ${{ github.repository == 'crutkas/MSYS2-packages' }}
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-          gh release download msysarm64-runtime-pr10-a527-20260824 `
-            --repo crutkas/MSYS2-packages `
-            --dir $inputsDir `
-            --pattern 'mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' `
-            --pattern 'mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' `
-            --pattern 'mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' `
-            --pattern 'mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' `
-            --pattern 'mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst'
-          gh release download msysarm64-gcc-pr13-20260826 `
-            --repo crutkas/MSYS2-packages `
-            --dir $inputsDir `
-            --pattern 'mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst' `
-            --pattern 'mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst'
-          gh release download msysarm64-gcc-pr13-support-20260826 `
-            --repo crutkas/MSYS2-packages `
-            --dir $inputsDir `
-            --pattern 'mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst' `
-            --pattern 'mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst'
-          gh release download cygwinarm64-gcc-static-runtime-20260815 `
-            --repo crutkas/MSYS2-packages `
-            --dir $inputsDir `
-            --pattern 'mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-2-x86_64.pkg.tar.zst' `
-            --pattern 'mingw-w64-cross-cygwinarm64-gcc-libs-stage1-15.0.1dev-2-x86_64.pkg.tar.zst'
+      - name: Admit dependency and materialize immutable private root
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version 3
+          $env:MSYS = 'winsymlinks:sys'
 
-          $fixed = Get-ChildItem -LiteralPath $inputsDir -File |
-            Where-Object Name -eq $fixedName
-          if ($fixed.Count -ne 1) {
-            throw 'The fixed binutils handoff did not resolve to one expected package'
+          $recipe = Join-Path $env:GITHUB_WORKSPACE 'mingw-w64-cross-msysarm64-libassuan'
+          $lockPath = Join-Path $recipe 'dependency-lock.json'
+          $validator = Join-Path $recipe 'validate-dependency-lock.ps1'
+          & $validator -LockPath $lockPath -RequireApproved
+          if ($LASTEXITCODE -ne 0) {
+            throw 'The fixed-linker libgpg-error pair is not coordinator-admitted'
           }
-          $pkgInfoPath = Join-Path $inputsDir 'fixed-binutils.PKGINFO'
+          $lock = Get-Content -Raw -LiteralPath $lockPath | ConvertFrom-Json
+
+          $inputs = Join-Path $env:RUNNER_TEMP 'libassuan-inputs'
+          $privateBase = Join-Path $env:RUNNER_TEMP 'libassuan-private-base'
+          New-Item -ItemType Directory -Force $inputs, $privateBase | Out-Null
+          $records = [Collections.Generic.List[object]]::new()
+
+          function Receive-PinnedFile {
+            param(
+              [Parameter(Mandatory)] [string] $Url,
+              [Parameter(Mandatory)] [string] $Filename,
+              [Parameter(Mandatory)] [string] $Sha256,
+              [long] $Bytes = -1
+            )
+            if ($Filename -cne [IO.Path]::GetFileName($Filename)) {
+              throw "Unsafe input filename: $Filename"
+            }
+            $destination = Join-Path $inputs $Filename
+            & 'C:\Windows\System32\curl.exe' --fail --location --retry 3 `
+              --output $destination $Url
+            if ($LASTEXITCODE -ne 0) {
+              throw "Unable to download $Url"
+            }
+            $item = Get-Item -LiteralPath $destination
+            $actualHash = (Get-FileHash -LiteralPath $destination -Algorithm SHA256).
+              Hash.ToLowerInvariant()
+            if ($actualHash -cne $Sha256) {
+              throw "SHA-256 mismatch for $Filename"
+            }
+            if ($Bytes -ge 0 -and $item.Length -ne $Bytes) {
+              throw "Byte-count mismatch for $Filename"
+            }
+            $records.Add([ordered]@{
+                filename = $Filename
+                bytes = $item.Length
+                sha256 = $actualHash
+                url = $Url
+              })
+            return $destination
+          }
+
+          # The lock itself binds this first download. No sibling package bytes
+          # are requested until the seal has matched the reviewed lock.
+          $sealSpec = $lock.admission.seal
+          $sealPath = Receive-PinnedFile `
+            -Url $sealSpec.url `
+            -Filename $sealSpec.filename `
+            -Sha256 $sealSpec.sha256 `
+            -Bytes $sealSpec.bytes
+          & $validator -LockPath $lockPath -SealPath $sealPath -RequireApproved
+
+          $baseName = 'msys2-base-x86_64-20260611.tar.zst'
+          $baseArchive = Receive-PinnedFile `
+            -Url 'https://github.com/msys2/msys2-installer/releases/download/2026-06-11/msys2-base-x86_64-20260611.tar.zst' `
+            -Filename $baseName `
+            -Sha256 'ace898d250d7302a24259a0288d69354649365af9cc64c8bcc2f219bc1e28374' `
+            -Bytes 54503668
+          & 'C:\Windows\System32\tar.exe' -xf $baseArchive -C $privateBase
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to extract the pinned MSYS2 base archive'
+          }
+          $root = Join-Path $privateBase 'msys64'
+          $pacman = Join-Path $root 'usr\bin\pacman.exe'
+          $bsdtar = Join-Path $root 'usr\bin\bsdtar.exe'
+          $bash = Join-Path $root 'usr\bin\bash.exe'
+          foreach ($tool in @($pacman, $bsdtar, $bash)) {
+            if (-not (Test-Path -LiteralPath $tool)) {
+              throw "Pinned base archive is missing $tool"
+            }
+          }
+
+          $hostPackages = @(
+            @('make-4.4.1-2-x86_64.pkg.tar.zst', 519783,
+              '2408af61717dae87b00c855b132769a125c708907fc94a46bb16dae076113e5c'),
+            @('patch-2.7.6-3-x86_64.pkg.tar.zst', 98395,
+              'dd75ca0f715dd9c71a43af6a0ff3d068faeee1d768e02282d319671201cd5d45'),
+            @('binutils-2.46.1-1-x86_64.pkg.tar.zst', 6186031,
+              '6b20ffd521c04ae4151ed3c92cdff02051cd2139ab07db5ce4f50974bf232736'),
+            @('isl-0.27-1-x86_64.pkg.tar.zst', 768472,
+              'cdd0a4ce0bf0d9e3f3eff2b770b8143e09e126a614de8b55bb5d30fc596b92d1'),
+            @('mpc-1.3.1-1-x86_64.pkg.tar.zst', 80415,
+              '904191df540722d4fa5e7380f83374f1ac078e32dbd85bf79c9a99ed66bd7a37'),
+            @('msys2-runtime-devel-3.6.9-2-x86_64.pkg.tar.zst', 5900068,
+              '5de8fd8930e166070c88667b69914418c04b571e34f065016ab40a7e9b4a76ef'),
+            @('msys2-w32api-headers-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst',
+              6203022, 'fcadf735fb214d33c64e145f82490c8693aeb6cb6a20ee8479e9f408aa832613'),
+            @('msys2-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst',
+              3042471, 'a9c5c922f5191f7e73333ea2d5392811282387986b9cb7f94a7c9156f717d4b3'),
+            @('windows-default-manifest-6.4-2-x86_64.pkg.tar.zst', 3073,
+              '865a33d80d4e88f9aee66a755c51fa4bb0d4241063fcf72e6d0738b7c90b6a33'),
+            @('gcc-15.2.0-1-x86_64.pkg.tar.zst', 53958994,
+              '1470497cced1a6b0ab23db0322474e668db470763b6353a545a749d5c5cff391'),
+            @('pkgconf-2.5.1-1-x86_64.pkg.tar.zst', 76390,
+              '38efd4928ac0cb06e9bd558baa533fc923c0592115bf9bd44970250f3ae2cb7e')
+          )
+          foreach ($package in $hostPackages) {
+            Receive-PinnedFile `
+              -Url "https://repo.msys2.org/msys/x86_64/$($package[0])" `
+              -Filename $package[0] `
+              -Bytes $package[1] `
+              -Sha256 $package[2] | Out-Null
+          }
+
+          $releasePackages = @(
+            @('cygwinarm64-binutils-pr21-3356eec-20260827',
+              'mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst',
+              '3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b'),
+            @('msysarm64-runtime-pr10-a527-20260824',
+              'mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+              '263f8f7e3614ac41337ce3a223f2bb26b6459aef6f34670525cdd4c03ec3ae21'),
+            @('msysarm64-runtime-pr10-a527-20260824',
+              'mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+              '158c505f45025a466950faa7c85c9fd85e9d32384dd27b53586ffc75d71ca78e'),
+            @('msysarm64-runtime-pr10-a527-20260824',
+              'mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+              'c18b51e483991770b8e06cc2d8f7002d06784d3071ac213a8fee24bb831267d1'),
+            @('msysarm64-runtime-pr10-a527-20260824',
+              'mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+              'e30609e09eab2fa07aba2e6196b05f34e5e9107abc4ab8832966684758c743ca'),
+            @('msysarm64-runtime-pr10-a527-20260824',
+              'mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+              '33861708e7f981b4eef5b93ef135ab3a43d2757533f64df6f61a146d823c355f'),
+            @('msysarm64-gcc-pr13-20260826',
+              'mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst',
+              'a74887c76a933ec424933bf662729d94975b83138af783bd93f2e7acd95c3a22'),
+            @('msysarm64-gcc-pr13-20260826',
+              'mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst',
+              '990f163cacf9ffce1b58445be91fedc57f135cc26a88d7dba109806446b41438'),
+            @('msysarm64-gcc-pr13-support-20260826',
+              'mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst',
+              '9715aab6894379bf5ab936a3a559f286fb4aedbb64f0774d7457182e00648e08'),
+            @('msysarm64-gcc-pr13-support-20260826',
+              'mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst',
+              '7727936f4212e5af04e9739eca60f157c0875796c1e82fcfb79fd4398b111e24'),
+            @('cygwinarm64-gcc-static-runtime-20260815',
+              'mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-2-x86_64.pkg.tar.zst',
+              '063579211851ed69370a6362f2795e39d9be0235a2bfe2f58da1bbd73a1d108e'),
+            @('cygwinarm64-gcc-static-runtime-20260815',
+              'mingw-w64-cross-cygwinarm64-gcc-libs-stage1-15.0.1dev-2-x86_64.pkg.tar.zst',
+              '17a8fbc22227c541ff3179179d307045302f6b18fbc6207cf9d863a9e4dad98c')
+          )
+          foreach ($package in $releasePackages) {
+            $url = "https://github.com/crutkas/MSYS2-packages/releases/download/$($package[0])/$($package[1])"
+            Receive-PinnedFile -Url $url -Filename $package[1] -Sha256 $package[2] |
+              Out-Null
+          }
+
+          foreach ($package in @($lock.admission.runtime, $lock.admission.devel)) {
+            Receive-PinnedFile `
+              -Url $package.url `
+              -Filename $package.filename `
+              -Bytes $package.bytes `
+              -Sha256 $package.sha256 | Out-Null
+          }
+          $gpgEvidence = Join-Path $inputs 'libgpg-error-admission'
+          New-Item -ItemType Directory -Force $gpgEvidence | Out-Null
+          Copy-Item -LiteralPath $sealPath -Destination $gpgEvidence
+          foreach ($package in @($lock.admission.runtime, $lock.admission.devel)) {
+            Copy-Item -LiteralPath (Join-Path $inputs $package.filename) `
+              -Destination $gpgEvidence
+          }
+          & $validator `
+            -LockPath $lockPath `
+            -SealPath $sealPath `
+            -PackageDirectory $inputs `
+            -Bsdtar $bsdtar `
+            -RequireApproved
+
+          Receive-PinnedFile `
+            -Url 'https://raw.githubusercontent.com/crutkas/MSYS2-packages/3356eec1411983cc252b04afac32bca5f3b8d824/.ci/check-aarch64-pseudo-relocs.ps1' `
+            -Filename 'check-aarch64-pseudo-relocs.ps1' `
+            -Sha256 '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9' |
+            Out-Null
+          Receive-PinnedFile `
+            -Url 'https://gnupg.org/signature_key.asc' `
+            -Filename 'signature_key.asc' `
+            -Sha256 '6f57d0e17fefd2238bd037aebf03efa960641629dd61dd9d47f122a829f6e375' |
+            Out-Null
+
+          $fixed = Join-Path $inputs `
+            'mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst'
+          $pkgInfo = Join-Path $inputs 'fixed-binutils.PKGINFO'
           $startInfo = [Diagnostics.ProcessStartInfo]::new()
-          $startInfo.FileName = 'C:\msys64\usr\bin\bsdtar.exe'
+          $startInfo.FileName = $bsdtar
           $startInfo.ArgumentList.Add('-xOf')
-          $startInfo.ArgumentList.Add($fixed.FullName)
+          $startInfo.ArgumentList.Add($fixed)
           $startInfo.ArgumentList.Add('.PKGINFO')
           $startInfo.RedirectStandardOutput = $true
           $startInfo.UseShellExecute = $false
           $process = [Diagnostics.Process]::Start($startInfo)
-          $stream = [IO.File]::Create($pkgInfoPath)
+          $stream = [IO.File]::Create($pkgInfo)
           try {
             $process.StandardOutput.BaseStream.CopyTo($stream)
           }
@@ -144,15 +270,22 @@ jobs:
           }
           $process.WaitForExit()
           if ($process.ExitCode -ne 0 -or
-              (Get-Item -LiteralPath $pkgInfoPath).Length -ne 950 -or
-              (Get-FileHash -Algorithm SHA256 $pkgInfoPath).Hash.ToLowerInvariant() -ne
+              (Get-Item -LiteralPath $pkgInfo).Length -ne 950 -or
+              (Get-FileHash -LiteralPath $pkgInfo -Algorithm SHA256).Hash.
+                ToLowerInvariant() -cne
                 'c49d9b366e4c5e5a564511cce75042a51629d2ef5887aa5a9256c5974eea3826') {
-            throw 'Fixed binutils .PKGINFO identity does not match the canonical release'
+            throw 'Fixed binutils .PKGINFO does not match the canonical handoff'
           }
-          $fixedProvenancePath = Join-Path $inputsDir 'fixed-binutils-provenance.json'
+          $records.Add([ordered]@{
+              filename = 'fixed-binutils.PKGINFO'
+              bytes = 950
+              sha256 = 'c49d9b366e4c5e5a564511cce75042a51629d2ef5887aa5a9256c5974eea3826'
+              source = 'extracted from canonical fixed-binutils package'
+            })
+
           [ordered]@{
             releaseTag = 'cygwinarm64-binutils-pr21-3356eec-20260827'
-            package = $fixedName
+            package = [IO.Path]::GetFileName($fixed)
             bytes = 6545114
             sha256 = '3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b'
             assetId = 532446043
@@ -160,146 +293,62 @@ jobs:
             producerRun = 33044771291
             producerArtifact = 9635492584
             linkerSha256 = '075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f'
-            scannerCommit = '3356eec1411983cc252b04afac32bca5f3b8d824'
             scannerSha256 = '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9'
             reviewedSourceCommit = '3f05fc4d3e0eeab265f2157e3257a7067b6e7223'
             reviewedSourceTree = 'ecca625d45883e13128283a8c1750dac7997f729'
             reviewedSourceArchiveBytes = 66204943
             reviewedSourceArchiveSha256 = 'd11c2b4453318a6168287fe74655c54aa15bf12f415f9ffe3f0ea32e30a3411e'
           } | ConvertTo-Json |
-            Set-Content -Encoding utf8 $fixedProvenancePath
+            Set-Content -Encoding utf8 (Join-Path $inputs 'fixed-binutils-provenance.json')
+          Copy-Item -LiteralPath $lockPath -Destination $inputs
+          $records | ConvertTo-Json -Depth 6 |
+            Set-Content -Encoding utf8 (Join-Path $inputs 'input-seal.json')
 
-          foreach ($name in @($gpgRuntimeName, $gpgDevelName)) {
-            $match = Get-ChildItem -LiteralPath $gpgDir -Recurse -File |
-              Where-Object Name -eq $name
-            if ($match.Count -ne 1) {
-              throw "The libgpg-error handoff did not contain exactly one $name"
-            }
-            Copy-Item -LiteralPath $match.FullName -Destination (Join-Path $inputsDir $name)
-          }
-          $gpgSeal = Get-ChildItem -LiteralPath $gpgDir -Recurse -File |
-            Where-Object Name -eq $env:LIBGPG_ERROR_SEAL_FILENAME
-          if ($gpgSeal.Count -ne 1) {
-            throw 'The libgpg-error handoff did not contain exactly one requested seal'
-          }
-          $gpgSealCopy = "libgpg-error-$($gpgSeal.Name)"
-          Copy-Item -LiteralPath $gpgSeal.FullName -Destination (Join-Path $inputsDir $gpgSealCopy)
-          $gpgProvenancePath = Join-Path $inputsDir 'libgpg-error-provenance.json'
-          [ordered]@{
-            releaseTag = $env:LIBGPG_ERROR_RELEASE_TAG
-            runtime = $gpgRuntimeName
-            runtimeSha256 = $env:LIBGPG_ERROR_SHA256.ToLowerInvariant()
-            devel = $gpgDevelName
-            develSha256 = $env:LIBGPG_ERROR_DEVEL_SHA256.ToLowerInvariant()
-            seal = $env:LIBGPG_ERROR_SEAL_FILENAME
-            sealSha256 = $env:LIBGPG_ERROR_SEAL_SHA256.ToLowerInvariant()
-          } | ConvertTo-Json |
-            Set-Content -Encoding utf8 $gpgProvenancePath
-
-          $expected = [ordered]@{
-            $fixedName = '3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b'
-            'fixed-binutils.PKGINFO' = 'c49d9b366e4c5e5a564511cce75042a51629d2ef5887aa5a9256c5974eea3826'
-            'check-aarch64-pseudo-relocs.ps1' = '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9'
-            'signature_key.asc' = '6f57d0e17fefd2238bd037aebf03efa960641629dd61dd9d47f122a829f6e375'
-            'fixed-binutils-provenance.json' = (Get-FileHash -Algorithm SHA256 $fixedProvenancePath).Hash.ToLowerInvariant()
-            'libgpg-error-provenance.json' = (Get-FileHash -Algorithm SHA256 $gpgProvenancePath).Hash.ToLowerInvariant()
-            'mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-2-x86_64.pkg.tar.zst' = '063579211851ed69370a6362f2795e39d9be0235a2bfe2f58da1bbd73a1d108e'
-            'mingw-w64-cross-cygwinarm64-gcc-libs-stage1-15.0.1dev-2-x86_64.pkg.tar.zst' = '17a8fbc22227c541ff3179179d307045302f6b18fbc6207cf9d863a9e4dad98c'
-            'mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' = '263f8f7e3614ac41337ce3a223f2bb26b6459aef6f34670525cdd4c03ec3ae21'
-            'mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' = '158c505f45025a466950faa7c85c9fd85e9d32384dd27b53586ffc75d71ca78e'
-            'mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' = 'c18b51e483991770b8e06cc2d8f7002d06784d3071ac213a8fee24bb831267d1'
-            'mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' = 'e30609e09eab2fa07aba2e6196b05f34e5e9107abc4ab8832966684758c743ca'
-            'mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' = '33861708e7f981b4eef5b93ef135ab3a43d2757533f64df6f61a146d823c355f'
-            'mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst' = '9715aab6894379bf5ab936a3a559f286fb4aedbb64f0774d7457182e00648e08'
-            'mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst' = '7727936f4212e5af04e9739eca60f157c0875796c1e82fcfb79fd4398b111e24'
-            'mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst' = 'a74887c76a933ec424933bf662729d94975b83138af783bd93f2e7acd95c3a22'
-            'mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst' = '990f163cacf9ffce1b58445be91fedc57f135cc26a88d7dba109806446b41438'
-            $gpgRuntimeName = $env:LIBGPG_ERROR_SHA256
-            $gpgDevelName = $env:LIBGPG_ERROR_DEVEL_SHA256
-            $gpgSealCopy = $env:LIBGPG_ERROR_SEAL_SHA256
-          }
-          $seal = foreach ($entry in $expected.GetEnumerator()) {
-            $path = Join-Path $inputsDir $entry.Key
-            $actual = (Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant()
-            if ($actual -ne $entry.Value.ToLowerInvariant()) {
-              throw "SHA-256 mismatch: $($entry.Key)"
-            }
-            [pscustomobject]@{
-              filename = $entry.Key
-              size = (Get-Item -LiteralPath $path).Length
-              sha256 = $actual
-            }
-          }
-          $seal | ConvertTo-Json |
-            Set-Content -Encoding utf8 (Join-Path $inputsDir 'input-seal.json')
-
-      - name: Create isolated build root
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $env:MSYS = 'winsymlinks:sys'
-          $root = Join-Path $env:RUNNER_TEMP 'libassuan-build-root'
           $db = Join-Path $root 'var\lib\pacman'
           $cache = Join-Path $root 'var\cache\pacman\pkg'
-          $log = Join-Path $root 'var\log\pacman.log'
-          $hooks = Join-Path $root 'etc\pacman.d\hooks'
-          New-Item -ItemType Directory -Force -Path $db, $cache, (Split-Path $log), $hooks | Out-Null
-          $bootstrapConfig = Join-Path $root 'etc\pacman-bootstrap.conf'
+          $log = Join-Path $root 'var\log\pacman-immutable.log'
+          $config = Join-Path $root 'etc\pacman-immutable.conf'
+          $hooks = Join-Path $root 'etc\pacman.d\hooks-private'
+          $gpg = Join-Path $root 'etc\pacman.d\gnupg-private'
+          New-Item -ItemType Directory -Force `
+            $db, $cache, (Split-Path $log), $hooks, $gpg | Out-Null
           @'
           [options]
           Architecture = x86_64
-          CheckSpace
-          SigLevel = Required
-          LocalFileSigLevel = Optional
-
-          [msys]
-          Server = https://repo.msys2.org/msys/$arch/
-          '@ | Set-Content -Encoding ascii $bootstrapConfig
-          & 'C:\msys64\usr\bin\pacman.exe' `
-            --root $root `
-            --dbpath $db `
-            --cachedir $cache `
-            --logfile $log `
-            --config $bootstrapConfig `
-            --hookdir $hooks `
-            --gpgdir 'C:\msys64\etc\pacman.d\gnupg' `
-            --noconfirm -Sy --needed base base-devel autotools gcc pkgconf
-          if ($LASTEXITCODE -ne 0) {
-            throw 'Unable to create isolated MSYS build root'
-          }
-
-          @'
-          [options]
-          Architecture = auto
-          CheckSpace
           SigLevel = Never
           LocalFileSigLevel = Never
-          '@ | Set-Content -Encoding ascii (Join-Path $root 'etc\pacman-local.conf')
-
-      - name: Install sealed target inputs in isolated root
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $env:MSYS = 'winsymlinks:sys'
-          $root = Join-Path $env:RUNNER_TEMP 'libassuan-build-root'
-          $inputsDir = Join-Path $env:RUNNER_TEMP 'libassuan-inputs'
-          $pacman = Join-Path $root 'usr\bin\pacman.exe'
-          $config = Join-Path $root 'etc\pacman-local.conf'
-          $hooks = Join-Path $root 'etc\pacman.d\hooks'
-          function Install-Local([string[]]$Names, [string[]]$Assume = @()) {
-            $arguments = @('--config', $config, '--hookdir', $hooks, '--noconfirm', '--needed')
+          '@ | Set-Content -Encoding ascii $config
+          $common = @(
+            '--root', $root,
+            '--dbpath', $db,
+            '--cachedir', $cache,
+            '--logfile', $log,
+            '--config', $config,
+            '--hookdir', $hooks,
+            '--gpgdir', $gpg,
+            '--noconfirm'
+          )
+          function Install-PrivatePackages {
+            param([string[]] $Filenames, [string[]] $Assume = @())
+            $arguments = [Collections.Generic.List[string]]::new()
+            $arguments.AddRange([string[]] $common)
             foreach ($virtual in $Assume) {
-              $arguments += @('--assume-installed', $virtual)
+              $arguments.Add('--assume-installed')
+              $arguments.Add($virtual)
             }
-            $arguments += '-U'
-            $arguments += $Names | ForEach-Object { Join-Path $inputsDir $_ }
+            $arguments.Add('--needed')
+            $arguments.Add('-U')
+            foreach ($filename in $Filenames) {
+              $arguments.Add((Join-Path $inputs $filename))
+            }
             & $pacman @arguments
             if ($LASTEXITCODE -ne 0) {
-              throw "Isolated package transaction failed: $($Names -join ', ')"
+              throw "Private package transaction failed: $($Filenames -join ', ')"
             }
           }
 
-          Install-Local @(
+          Install-PrivatePackages @($hostPackages | ForEach-Object { $_[0] })
+          Install-PrivatePackages @(
             'mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
             'mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
             'mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
@@ -310,59 +359,84 @@ jobs:
             'mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst',
             'mingw-w64-cross-cygwinarm64-gcc-libs-stage1-15.0.1dev-2-x86_64.pkg.tar.zst'
           )
-          Install-Local @(
+          Install-PrivatePackages @(
             'mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-2-x86_64.pkg.tar.zst'
           ) @('mingw-w64-cross-cygwinarm64-libstdc++-headers=15.0.1dev-1')
-          Install-Local @(
+          Install-PrivatePackages @(
             'mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst',
             'mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst'
           ) @('mingw-w64-cross-cygwinarm64-libstdc++-headers=15.0.1dev-1')
-          Install-Local @(
-            'mingw-w64-cross-msysarm64-libgpg-error-1.56-1-x86_64.pkg.tar.zst',
-            'mingw-w64-cross-msysarm64-libgpg-error-devel-1.56-1-x86_64.pkg.tar.zst'
+          Install-PrivatePackages @(
+            $lock.admission.runtime.filename,
+            $lock.admission.devel.filename
           )
 
-          $ownedBridges = & $pacman -Ql mingw-w64-cross-cygwinarm64-binutils |
-            Where-Object { $_ -match '^mingw-w64-cross-cygwinarm64-binutils /opt/bin/aarch64-pc-msys-[^/]+$' }
-          if ($ownedBridges.Count -ne 20) {
+          $queryArguments = $common + @(
+            '-Ql', 'mingw-w64-cross-cygwinarm64-binutils'
+          )
+          $ownedBridges = & $pacman @queryArguments |
+            Where-Object {
+              $_ -match '^mingw-w64-cross-cygwinarm64-binutils /opt/bin/aarch64-pc-msys-[^/]+$'
+            }
+          if ($LASTEXITCODE -ne 0 -or $ownedBridges.Count -ne 20) {
             throw "Expected 20 package-owned target bridges, found $($ownedBridges.Count)"
           }
-          $bash = Join-Path $root 'usr\bin\bash.exe'
-          $selectedLinker = (& $bash -lc `
-            'set -e; export PATH=/opt/aarch64-pc-msys/usr/bin:/opt/bin:/usr/bin; readlink -f "$(aarch64-pc-msys-gcc -print-prog-name=ld)"' |
-            Select-Object -Last 1).Trim()
-          if ($selectedLinker -ne '/opt/bin/aarch64-pc-cygwin-ld') {
+          $selectedLinker = (& $bash -c @'
+          export PATH=/opt/aarch64-pc-msys/usr/bin:/opt/bin:/usr/bin
+          readlink -f "$(aarch64-pc-msys-gcc -print-prog-name=ld)"
+          '@ | Select-Object -Last 1).Trim()
+          if ($LASTEXITCODE -ne 0 -or
+              $selectedLinker -cne '/opt/bin/aarch64-pc-cygwin-ld') {
             throw "GCC selected unexpected linker $selectedLinker"
           }
-          $selectedLinkerWindows = (& $bash -lc "cygpath -w '$selectedLinker'" |
+          $linkerWindows = (& $bash -c "/usr/bin/cygpath -w '$selectedLinker'" |
             Select-Object -Last 1).Trim()
-          $selectedLinkerHash = (Get-FileHash -Algorithm SHA256 $selectedLinkerWindows).Hash.ToLowerInvariant()
-          if ($selectedLinkerHash -ne '075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f') {
-            throw "GCC selected linker with unexpected SHA-256 $selectedLinkerHash"
+          if ((Get-FileHash -LiteralPath $linkerWindows -Algorithm SHA256).Hash.
+              ToLowerInvariant() -cne
+              '075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f') {
+            throw 'GCC-selected linker hash does not match the canonical handoff'
+          }
+          $repoPosix = (& $bash -c "/usr/bin/cygpath -u '$env:GITHUB_WORKSPACE'").Trim()
+          $fixtureReport = Join-Path $inputs 'path-leak-fixtures'
+          $fixtureReportPosix = (& $bash -c "/usr/bin/cygpath -u '$fixtureReport'").Trim()
+          & $bash -c @"
+          export PATH=/opt/aarch64-pc-msys/usr/bin:/opt/bin:/usr/bin
+          '$repoPosix/mingw-w64-cross-msysarm64-libassuan/test-path-leak-audit.sh' \
+            /opt/bin/aarch64-pc-cygwin-objdump \
+            /opt/bin/aarch64-pc-cygwin-objcopy \
+            /opt/bin/aarch64-pc-cygwin-strings \
+            '$fixtureReportPosix'
+          "@
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Path leak negative fixtures failed'
           }
 
       - name: Build and audit candidate packages
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $root = Join-Path $env:RUNNER_TEMP 'libassuan-build-root'
-          $inputsDir = Join-Path $env:RUNNER_TEMP 'libassuan-inputs'
+          $root = Join-Path $env:RUNNER_TEMP 'libassuan-private-base\msys64'
+          $inputs = Join-Path $env:RUNNER_TEMP 'libassuan-inputs'
           $candidateDir = Join-Path $env:RUNNER_TEMP 'libassuan-candidate'
           $logDir = Join-Path $env:RUNNER_TEMP 'libassuan-logs'
           $transactionRoot = Join-Path $env:RUNNER_TEMP 'libassuan-transaction-root'
           $transactionReport = Join-Path $env:RUNNER_TEMP 'libassuan-transaction-report'
           $candidatePayload = Join-Path $env:RUNNER_TEMP 'libassuan-candidate-payload'
-          New-Item -ItemType Directory -Force -Path $candidateDir, $logDir, $candidatePayload | Out-Null
+          New-Item -ItemType Directory -Force `
+            $candidateDir, $logDir, $candidatePayload | Out-Null
 
           $bash = Join-Path $root 'usr\bin\bash.exe'
-          $repo = & $bash -lc "cygpath -u '$env:GITHUB_WORKSPACE'"
-          $inputsPosix = & $bash -lc "cygpath -u '$inputsDir'"
-          $candidatePosix = & $bash -lc "cygpath -u '$candidateDir'"
-          $logsPosix = & $bash -lc "cygpath -u '$logDir'"
+          $repo = (& $bash -c "/usr/bin/cygpath -u '$env:GITHUB_WORKSPACE'").Trim()
+          $inputsPosix = (& $bash -c "/usr/bin/cygpath -u '$inputs'").Trim()
+          $candidatePosix = (& $bash -c "/usr/bin/cygpath -u '$candidateDir'").Trim()
+          $logsPosix = (& $bash -c "/usr/bin/cygpath -u '$logDir'").Trim()
+          $gpgHomePosix = "$inputsPosix/gnupg-build"
           $script = @"
           set -euo pipefail
-          mkdir -p /home/runneradmin/.gnupg
-          chmod 700 /home/runneradmin/.gnupg
+          export PATH=/opt/aarch64-pc-msys/usr/bin:/opt/bin:/usr/bin
+          export GNUPGHOME='$gpgHomePosix'
+          mkdir -p "`$GNUPGHOME"
+          chmod 700 "`$GNUPGHOME"
           gpg --batch --import '$inputsPosix/signature_key.asc'
           cd '$repo/mingw-w64-cross-msysarm64-libassuan'
           export SRCDEST='$inputsPosix'
@@ -371,24 +445,31 @@ jobs:
           export MAKEFLAGS='-j2'
           makepkg --cleanbuild --force --noconfirm --log --check
           "@
-          & $bash -lc $script
+          & $bash -c $script
           if ($LASTEXITCODE -ne 0) {
             throw 'libassuan build or binary audit failed'
           }
 
-          $runtimeInputs = @(
+          $runtimeNames = @(
             'mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
             'mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
             'mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
             'mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
             'mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
-            'mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst',
-            'mingw-w64-cross-msysarm64-libgpg-error-1.56-1-x86_64.pkg.tar.zst',
-            'mingw-w64-cross-msysarm64-libgpg-error-devel-1.56-1-x86_64.pkg.tar.zst'
-          ) | ForEach-Object { Join-Path $inputsDir $_ }
-          $candidates = Get-ChildItem -LiteralPath $candidateDir -File -Filter '*.pkg.tar.zst' |
-            Select-Object -ExpandProperty FullName
-          & "$env:GITHUB_WORKSPACE\mingw-w64-cross-msysarm64-libassuan\audit-package-transaction.ps1" `
+            'mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst'
+          )
+          $lock = Get-Content -Raw `
+            (Join-Path $inputs 'dependency-lock.json') | ConvertFrom-Json
+          $runtimeNames += @(
+            $lock.admission.runtime.filename,
+            $lock.admission.devel.filename
+          )
+          $runtimeInputs = $runtimeNames |
+            ForEach-Object { Join-Path $inputs $_ }
+          $candidates = Get-ChildItem -LiteralPath $candidateDir `
+            -File -Filter '*.pkg.tar.zst' | Select-Object -ExpandProperty FullName
+          & (Join-Path $env:GITHUB_WORKSPACE `
+              'mingw-w64-cross-msysarm64-libassuan\audit-package-transaction.ps1') `
             -Pacman (Join-Path $root 'usr\bin\pacman.exe') `
             -Bsdtar (Join-Path $root 'usr\bin\bsdtar.exe') `
             -TransactionRoot $transactionRoot `
@@ -402,35 +483,37 @@ jobs:
               throw "Unable to extract candidate payload $candidate"
             }
           }
-          $transactionPosix = & $bash -lc "cygpath -u '$transactionRoot'"
-          $candidatePayloadPosix = & $bash -lc "cygpath -u '$candidatePayload'"
-          $postPackageReport = Join-Path $env:RUNNER_TEMP 'libassuan-post-package-audit'
-          $postPackageReportPosix = & $bash -lc "cygpath -u '$postPackageReport'"
-          $postPackageAudit = @"
+          $transactionPosix = (& $bash -c "/usr/bin/cygpath -u '$transactionRoot'").Trim()
+          $payloadPosix = (& $bash -c "/usr/bin/cygpath -u '$candidatePayload'").Trim()
+          $postReport = Join-Path $env:RUNNER_TEMP 'libassuan-post-package-audit'
+          $postReportPosix = (& $bash -c "/usr/bin/cygpath -u '$postReport'").Trim()
+          $postAudit = @"
           set -euo pipefail
+          export PATH=/opt/aarch64-pc-msys/usr/bin:/opt/bin:/usr/bin
           '$repo/mingw-w64-cross-msysarm64-libassuan/audit-msysarm64.sh' \
-            '$candidatePayloadPosix/opt/aarch64-pc-msys' \
-            '$postPackageReportPosix' \
+            '$payloadPosix/opt/aarch64-pc-msys' \
+            '$postReportPosix' \
             '$repo/mingw-w64-cross-msysarm64-libassuan/context-smoke.c' \
             '$repo/mingw-w64-cross-msysarm64-libassuan/pipe-smoke.c' \
             '$transactionPosix/opt/aarch64-pc-msys' \
             '$repo/mingw-w64-cross-msysarm64-libassuan/src/libassuan-3.0.2/src/libassuan.vers'
           "@
-          & $bash -lc $postPackageAudit
+          & $bash -c $postAudit
           if ($LASTEXITCODE -ne 0) {
             throw 'Post-package payload audit failed'
           }
 
-          $scanner = Join-Path $inputsDir 'check-aarch64-pseudo-relocs.ps1'
+          $scanner = Join-Path $inputs 'check-aarch64-pseudo-relocs.ps1'
           $scannerReport = Join-Path $env:RUNNER_TEMP 'libassuan-scanner-report'
-          New-Item -ItemType Directory -Force -Path $scannerReport | Out-Null
-          $env:PATH = "$(Join-Path $root 'opt\bin');$(Join-Path $root 'usr\bin');$env:PATH"
+          New-Item -ItemType Directory -Force $scannerReport | Out-Null
           $peFiles = @(
             (Join-Path $candidatePayload 'opt\aarch64-pc-msys\usr\bin\msys-assuan-9.dll'),
-            (Join-Path $postPackageReport 'smoke\context-dynamic.exe'),
-            (Join-Path $postPackageReport 'smoke\context-static.exe'),
-            (Join-Path $postPackageReport 'smoke\pipe-dynamic.exe'),
-            (Join-Path $env:GITHUB_WORKSPACE 'mingw-w64-cross-msysarm64-libassuan\src\audit-report\dependency-preflight\gpg-error-link.exe')
+            (Join-Path $postReport 'smoke\context-dynamic.exe'),
+            (Join-Path $postReport 'smoke\context-static.exe'),
+            (Join-Path $postReport 'smoke\context-config.exe'),
+            (Join-Path $postReport 'smoke\pipe-dynamic.exe'),
+            (Join-Path $env:GITHUB_WORKSPACE `
+              'mingw-w64-cross-msysarm64-libassuan\src\audit-report\dependency-preflight\gpg-error-link.exe')
           )
           foreach ($pe in $peFiles) {
             $output = Join-Path $scannerReport "$([IO.Path]::GetFileName($pe)).json"
@@ -444,29 +527,31 @@ jobs:
             }
           }
 
-          $smokeSource = Join-Path $postPackageReport 'smoke'
           $bundle = Join-Path $env:RUNNER_TEMP 'libassuan-native-smoke'
-          New-Item -ItemType Directory -Force -Path $bundle | Out-Null
-          Copy-Item -Path (Join-Path $smokeSource '*.exe') -Destination $bundle
-          Copy-Item -LiteralPath (Join-Path $transactionRoot 'opt\aarch64-pc-msys\bin\msys-2.0.dll') `
+          New-Item -ItemType Directory -Force $bundle | Out-Null
+          Copy-Item -Path (Join-Path $postReport 'smoke\*.exe') -Destination $bundle
+          Copy-Item -LiteralPath `
+            (Join-Path $transactionRoot 'opt\aarch64-pc-msys\bin\msys-2.0.dll') `
             -Destination $bundle
-          Copy-Item -Path (Join-Path $transactionRoot 'opt\aarch64-pc-msys\usr\bin\msys-*.dll') `
+          Copy-Item -Path `
+            (Join-Path $transactionRoot 'opt\aarch64-pc-msys\usr\bin\msys-*.dll') `
             -Destination $bundle
 
       - name: Upload sealed candidate and evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: msysarm64-libassuan-candidate
           if-no-files-found: error
           path: |
             ${{ runner.temp }}/libassuan-candidate/*.pkg.tar.zst
             ${{ runner.temp }}/libassuan-inputs/input-seal.json
+            ${{ runner.temp }}/libassuan-inputs/dependency-lock.json
             ${{ runner.temp }}/libassuan-inputs/check-aarch64-pseudo-relocs.ps1
             ${{ runner.temp }}/libassuan-inputs/fixed-binutils.PKGINFO
             ${{ runner.temp }}/libassuan-inputs/fixed-binutils-provenance.json
-            ${{ runner.temp }}/libassuan-inputs/libgpg-error-provenance.json
             ${{ runner.temp }}/libassuan-inputs/mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst
-            ${{ runner.temp }}/libassuan-inputs/libgpg-error/*
+            ${{ runner.temp }}/libassuan-inputs/libgpg-error-admission/*
+            ${{ runner.temp }}/libassuan-inputs/path-leak-fixtures/*
             ${{ runner.temp }}/libassuan-logs/*
             ${{ runner.temp }}/libassuan-transaction-report/*
             ${{ runner.temp }}/libassuan-post-package-audit/*
@@ -474,7 +559,7 @@ jobs:
             ${{ github.workspace }}/mingw-w64-cross-msysarm64-libassuan/src/audit-report/*
 
       - name: Upload deterministic native smoke bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: msysarm64-libassuan-native-smoke
           if-no-files-found: error
@@ -483,9 +568,8 @@ jobs:
   native-arm64-smoke:
     needs: build
     runs-on: windows-11-arm
-
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: msysarm64-libassuan-native-smoke
           path: smoke
@@ -494,13 +578,14 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:PROCESSOR_ARCHITECTURE -ne 'ARM64') {
+          if ($env:PROCESSOR_ARCHITECTURE -cne 'ARM64') {
             throw "Native smoke requires ARM64, found $env:PROCESSOR_ARCHITECTURE"
           }
           $bundle = (Resolve-Path -LiteralPath smoke).Path
           foreach ($required in @(
               'context-dynamic.exe',
               'context-static.exe',
+              'context-config.exe',
               'pipe-dynamic.exe',
               'msys-2.0.dll')) {
             if (-not (Test-Path -LiteralPath (Join-Path $bundle $required))) {
@@ -511,6 +596,7 @@ jobs:
           foreach ($program in @(
               'context-dynamic.exe',
               'context-static.exe',
+              'context-config.exe',
               'pipe-dynamic.exe')) {
             & (Join-Path $bundle $program)
             if ($LASTEXITCODE -ne 0) {
