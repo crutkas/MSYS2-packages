@@ -255,10 +255,8 @@ package_mingw-w64-cross-msysarm64-openssl-devel() {
   install -m644 \
     "${srcdir}/dlopen-generic.c" \
     "${srcdir}/dlopen-nodllmain.c" \
-    "${srcdir}/dlopen-nodllmain.c" \
     "${srcdir}/dlopen-crypto.c" \
     "${srcdir}/dlopen-smoke.c" \
-    "${srcdir}/loadlibrary-smoke.c" \
     "${srcdir}/loadlibrary-smoke.c" \
     "${srcdir}/provider-minimal.c" \
     "${_reportdir}/"
