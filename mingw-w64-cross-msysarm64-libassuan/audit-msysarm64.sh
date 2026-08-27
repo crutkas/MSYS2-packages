@@ -249,6 +249,7 @@ consumer_debug_root="/usr/src/debug/mingw-w64-cross-msysarm64-libassuan-consumer
 consumer_flags=(
   -O2
   -g0
+  -Wl,--strip-debug
   "-ffile-prefix-map=${consumer_source_root}=${consumer_debug_root}"
   "-fdebug-prefix-map=${consumer_source_root}=${consumer_debug_root}"
   "-fmacro-prefix-map=${consumer_source_root}=${consumer_debug_root}"
