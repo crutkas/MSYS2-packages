@@ -272,13 +272,14 @@ jobs:
           $buildRoot = & 'C:\msys64\usr\bin\cygpath.exe' -u $buildRoot
           $script = @'
           set -euo pipefail
-          cd "$buildRoot/mingw-w64-cross-msysarm64-w32api-runtime"
+          cd '__BUILDROOT__/mingw-w64-cross-msysarm64-w32api-runtime'
           makepkg --noconfirm --noprogressbar --syncdeps --cleanbuild --nocheck
           package=( *.pkg.tar.* )
           pacman --noconfirm -U "${package[@]}"
           pacman --noconfirm -R --recursive --unneeded mingw-w64-cross-msysarm64-w32api-runtime
           pacman --noconfirm -U "${package[@]}"
           '@
+          $script = $script.Replace('__BUILDROOT__', $buildRoot)
           & $bash --login -lc $script
 
       - name: CI-Build
