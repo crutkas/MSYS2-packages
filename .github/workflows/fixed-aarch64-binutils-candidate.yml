@@ -1,34 +1,15 @@
 name: fixed-aarch64-binutils-candidate
 
 on:
+  push:
+    branches:
+      - crutkas-aarch64-binutils-lane
+    paths:
+      - .ci/**
+      - .github/workflows/fixed-aarch64-binutils-candidate.yml
+      - mingw-w64-cross-cygwinarm64-binutils/**
   workflow_dispatch:
     inputs:
-      source_commit:
-        description: Reviewed exact binutils source commit
-        required: true
-        type: string
-      source_archive_sha256:
-        description: Independently reviewed GitHub source archive SHA-256
-        required: true
-        type: string
-      source_archive_size:
-        description: Independently reviewed GitHub source archive size
-        required: true
-        type: string
-      source_tree:
-        description: Reviewed exact binutils source tree
-        required: true
-        type: string
-      package_version:
-        description: Source-derived package version (2.44.50 if unchanged)
-        required: true
-        default: 2.44.50
-        type: string
-      package_release:
-        description: Package release (2 when version remains 2.44.50)
-        required: true
-        default: '2'
-        type: string
       coordinator_admission:
         description: Exact admission phrase from the coordinator
         required: true
@@ -48,6 +29,12 @@ jobs:
     env:
       PACKAGE_DIR: mingw-w64-cross-cygwinarm64-binutils
       SOURCE_CI_RUN_ID: ${{ github.run_id }}
+      SOURCE_COMMIT: 3f05fc4d3e0eeab265f2157e3257a7067b6e7223
+      SOURCE_TREE: ecca625d45883e13128283a8c1750dac7997f729
+      SOURCE_ARCHIVE_SIZE: '66204943'
+      SOURCE_ARCHIVE_SHA256: d11c2b4453318a6168287fe74655c54aa15bf12f415f9ffe3f0ea32e30a3411e
+      PACKAGE_VERSION: 2.44.50
+      PACKAGE_RELEASE: '2'
 
     steps:
       - uses: actions/checkout@v4
@@ -79,16 +66,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if ('${{ inputs.coordinator_admission }}' -ne 'ADMIT_FIXED_AARCH64_BINUTILS') {
-            throw 'Coordinator admission phrase does not match.'
+          if ('${{ github.event_name }}' -eq 'workflow_dispatch') {
+            if ('${{ inputs.coordinator_admission }}' -ne 'ADMIT_FIXED_AARCH64_BINUTILS') {
+              throw 'Coordinator admission phrase does not match.'
+            }
+          }
+          elseif ('${{ github.ref }}' -ne 'refs/heads/crutkas-aarch64-binutils-lane') {
+            throw 'Automatic admission is restricted to the owning fork branch.'
           }
           $params = @{
-            SourceCommit = '${{ inputs.source_commit }}'
-            SourceArchiveSha256 = '${{ inputs.source_archive_sha256 }}'
-            SourceArchiveSize = [long] '${{ inputs.source_archive_size }}'
-            SourceTree = '${{ inputs.source_tree }}'
-            PackageVersion = '${{ inputs.package_version }}'
-            PackageRelease = [int] '${{ inputs.package_release }}'
+            SourceCommit = $env:SOURCE_COMMIT
+            SourceArchiveSha256 = $env:SOURCE_ARCHIVE_SHA256
+            SourceArchiveSize = [long] $env:SOURCE_ARCHIVE_SIZE
+            SourceTree = $env:SOURCE_TREE
+            PackageVersion = $env:PACKAGE_VERSION
+            PackageRelease = [int] $env:PACKAGE_RELEASE
             PackageExactHeadCiAuthority = $true
           }
           & ".\$env:PACKAGE_DIR\materialize-candidate.ps1" @params
@@ -149,10 +141,10 @@ jobs:
             -WorkflowRunId '${{ github.run_id }}' `
             -WorkflowRunUrl $runUrl `
             -WorkflowHeadSha '${{ github.sha }}' `
-            -SourceCommit '${{ inputs.source_commit }}' `
-            -SourceTree '${{ inputs.source_tree }}' `
-            -SourceArchiveSize '${{ inputs.source_archive_size }}' `
-            -SourceArchiveSha256 '${{ inputs.source_archive_sha256 }}'
+            -SourceCommit $env:SOURCE_COMMIT `
+            -SourceTree $env:SOURCE_TREE `
+            -SourceArchiveSize $env:SOURCE_ARCHIVE_SIZE `
+            -SourceArchiveSha256 $env:SOURCE_ARCHIVE_SHA256
 
       - uses: actions/upload-artifact@v4
         with:
