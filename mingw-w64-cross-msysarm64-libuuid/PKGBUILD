@@ -191,6 +191,8 @@ prepare() {
 }
 
 build() {
+  local _archive
+  local _archive_sha256
   local _build="${srcdir}/${_build_dir}"
   local _stage="${srcdir}/${_stage_dir}"
   local _report="${srcdir}/${_report_dir}"
@@ -265,6 +267,18 @@ build() {
     "${_stage}/opt/${_target}/usr/bin/msys-uuid-1.dll" \
     "${_stage}/opt/${_target}/bin/"
   rmdir "${_stage}/opt/${_target}/usr/bin"
+  for _archive in libuuid.a libuuid.dll.a; do
+    "${AR}" sD \
+      "${_stage}/opt/${_target}/usr/lib/${_archive}"
+    _archive_sha256="$(
+      sha256sum "${_stage}/opt/${_target}/usr/lib/${_archive}" \
+        | awk '{ print $1 }'
+    )"
+    "${AR}" sD \
+      "${_stage}/opt/${_target}/usr/lib/${_archive}"
+    [[ "$(sha256sum "${_stage}/opt/${_target}/usr/lib/${_archive}" \
+      | awk '{ print $1 }')" == "${_archive_sha256}" ]]
+  done
   rm -f "${_stage}/opt/${_target}/usr/lib/libuuid.la"
   rm -rf "${_stage}/opt/${_target}/usr/share"
 
