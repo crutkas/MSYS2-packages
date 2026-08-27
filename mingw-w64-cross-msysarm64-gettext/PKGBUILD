@@ -49,8 +49,8 @@ makedepends=(
 options=('!strip' '!buildflags' '!emptydirs')
 validpgpkeys=('9001B85AF9E1B83DF1BDA942F5BE8B267C6A406D')
 source=(
-  "https://ftp.gnu.org/pub/gnu/gettext/${_realname}-${pkgver}.tar.gz"
-  "https://ftp.gnu.org/pub/gnu/gettext/${_realname}-${pkgver}.tar.gz.sig"
+  "https://ftpmirror.gnu.org/gettext/${_realname}-${pkgver}.tar.gz"
+  "https://ftpmirror.gnu.org/gettext/${_realname}-${pkgver}.tar.gz.sig"
   "check-aarch64-pseudo-relocs.ps1::https://raw.githubusercontent.com/crutkas/MSYS2-packages/3356eec1411983cc252b04afac32bca5f3b8d824/.ci/check-aarch64-pseudo-relocs.ps1"
   "gettext-tools-tests-locale-ll-es.patch::https://raw.githubusercontent.com/crutkas/MSYS2-packages/${_recipe_commit}/gettext/gettext-tools-tests-locale-ll-es.patch"
   "gettext-0.21.1-autopoint-V.patch::https://raw.githubusercontent.com/crutkas/MSYS2-packages/${_recipe_commit}/gettext/gettext-0.21.1-autopoint-V.patch"
