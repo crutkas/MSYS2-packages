@@ -94,8 +94,10 @@ for split in "${evidence_dir}"/splits/*; do
   cp -a "${split}/." "${merged}/"
 done
 target_usr="${merged}/opt/${target}/usr"
+smoke_source="$(dirname "$0")/version-smoke.c"
+test -f "${smoke_source}" || fail "missing packaged consumer smoke source"
 TARGET_TRIPLET="${target}" \
-  "$(dirname "$0")/audit-libgcrypt.sh" "${target_usr}" '' \
+  "$(dirname "$0")/audit-libgcrypt.sh" "${target_usr}" "${smoke_source}" \
     "${evidence_dir}/tree-audit"
 
 root="${evidence_dir}/transaction-root"

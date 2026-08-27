@@ -1,0 +1,2 @@
+# Packages built only by dedicated sealed-input workflows.
+mingw-w64-cross-msysarm64-libgcrypt

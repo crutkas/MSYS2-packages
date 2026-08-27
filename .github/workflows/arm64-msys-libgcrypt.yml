@@ -188,11 +188,11 @@ jobs:
           $runtimeInfo = & $bsdtar -xOf $runtime .PKGINFO
           $develInfo = & $bsdtar -xOf $devel .PKGINFO
           $binutilsInfo = & $bsdtar -xOf $binutils .PKGINFO
-          if ($runtimeInfo -notcontains 'provides = aarch64-pc-msys-libgpg-error=1.55') {
-            throw 'Runtime candidate does not provide exact native ARM64 MSYS libgpg-error 1.55.'
+          if ($runtimeInfo -notcontains 'provides = aarch64-pc-msys-libgpg-error=1.56') {
+            throw 'Runtime candidate does not provide exact native ARM64 MSYS libgpg-error 1.56.'
           }
-          if ($develInfo -notcontains 'provides = aarch64-pc-msys-libgpg-error-devel=1.55') {
-            throw 'Devel candidate does not provide exact native ARM64 MSYS libgpg-error-devel 1.55.'
+          if ($develInfo -notcontains 'provides = aarch64-pc-msys-libgpg-error-devel=1.56') {
+            throw 'Devel candidate does not provide exact native ARM64 MSYS libgpg-error-devel 1.56.'
           }
           if ($binutilsInfo -notcontains 'pkgname = mingw-w64-cross-cygwinarm64-binutils') {
             throw 'Fixed binutils candidate has the wrong package identity.'
@@ -252,12 +252,33 @@ jobs:
           $evidenceMsys = (& $cygpath -u $evidence).Trim()
           $inputMsys = (& $cygpath -u $env:ARM64_INPUT_DIR).Trim()
           $pwsh = (& $cygpath -u (Get-Command pwsh.exe).Source).Trim()
+          $develPackages = Get-ChildItem -File $packageDir `
+            -Filter 'mingw-w64-cross-msysarm64-libgcrypt-devel-*.pkg.tar.*'
+          if ($develPackages.Count -ne 1) {
+            throw "Expected one libgcrypt devel package, found $($develPackages.Count)."
+          }
+          $bootstrap = Join-Path $env:RUNNER_TEMP 'libgcrypt-audit-bootstrap'
+          if (Test-Path $bootstrap) {
+            Remove-Item -Recurse -Force $bootstrap
+          }
+          New-Item -ItemType Directory -Path $bootstrap | Out-Null
+          $bsdtar = Join-Path $env:ISOLATED_MSYS 'usr\bin\bsdtar.exe'
+          & $bsdtar -xf $develPackages[0].FullName -C $bootstrap
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not extract the packaged audit harness.'
+          }
+          $packagedAudit = Join-Path $bootstrap `
+            'usr\share\doc\mingw-w64-cross-msysarm64-libgcrypt\audit-package-set.sh'
+          if (-not (Test-Path $packagedAudit)) {
+            throw 'Devel package is missing its audit harness.'
+          }
+          $packagedAuditMsys = (& $cygpath -u $packagedAudit).Trim()
           $script = @"
           set -euo pipefail
           export PATH=/usr/bin:/opt/bin
           export PWSH='${pwsh}'
           cd '${packageDirMsys}'
-          ./audit-package-set.sh '${packageDirMsys}' '${evidenceMsys}' \
+          '${packagedAuditMsys}' '${packageDirMsys}' '${evidenceMsys}' \
             '${inputMsys}/mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' \
             '${inputMsys}/libgpg-error-runtime.pkg.tar.zst' \
             '${inputMsys}/libgpg-error-devel.pkg.tar.zst'

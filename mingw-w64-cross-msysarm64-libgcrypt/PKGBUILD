@@ -2,14 +2,16 @@
 
 _realname=libgcrypt
 _target=aarch64-pc-msys
-_target_root="/opt/${_target}"
+_package_target_root="/opt/${_target}"
+_package_target_usr="${_package_target_root}/usr"
+_target_root="${MSYSARM64_TARGET_ROOT:-${_package_target_root}}"
 _target_usr="${_target_root}/usr"
 # Immutable a527 runtime identity. Final packages must be rebuilt with the
 # reviewed fixed binutils before publication.
 _runtime_version=3.6.10.r0.ga527ace21
 _runtime_pkgrel=1
 _gcc_version=15.0.1dev
-_libgpg_error_version=1.55
+_libgpg_error_version=1.56
 
 pkgbase=mingw-w64-cross-msysarm64-libgcrypt
 pkgname=(
@@ -56,8 +58,8 @@ source=(
 sha256sums=('7ce33c2492221a0436f96a8500215e9f3e3dcb5fd26a757cd415e7a843babd5e'
             'SKIP'
             '2c6ed2ec757eb0ce3cdabdafcdd8929a454cdb66bc43f6529c70fdea17eabd55'
-            'b0733df7acc2c8a3f4e833f42aaaaa4f28684c58ae36fc5ff80f2b6829e16d1b'
-            'd6156b5754b789bb25a42a089013e1375ebc572a8986d4b3f592cbd41a457caa'
+            '74bd695f4e621451483de448b731453c2f47d3541951c0efe10e378daa891dc3'
+            'a8104382918196f29d88f2cbbcd37186fae457402f598644221766a15221be2e'
             '59bbf47759a56001ec50edc694bcac9b23a095ce035c18f5c90cbcef0def4780'
             '9d086e655a8636e733c96a8c514942bc249dd60218fa496507c390110867d201'
             '6705e5c5f74ba7b5c219625edd3bb245df53b89569f18b4ff3d7352d4a30cc2a'
@@ -70,6 +72,16 @@ validpgpkeys=('5B80C5754298F0CB55D8ED6ABCEF7E294B092E28'
 
 prepare() {
   cd "${srcdir}/${_realname}-${pkgver}"
+
+  perl -0pi -e \
+    's/    else\n      ingit=no\n      beta=yes\n      tmp="-unknown"/    else\n      ingit=no\n      beta=no\n      tmp=""/' \
+    autogen.sh
+  perl -0pi -e \
+    's/\*-\*-mingw32\*\|\*-\*-cygwin\*/\*-\*-mingw32*|*-*-cygwin*|*-*-msys*/g' \
+    configure.ac
+  perl -0pi -e \
+    's/cygwin\* \| mingw\* \| windows\* \| pw32\* \| cegcc\*/cygwin* | msys* | mingw* | windows* | pw32* | cegcc*/g; s/cygwin\*\)/cygwin* | msys*)/g' \
+    m4/libtool.m4
   autoreconf -fi
 }
 
@@ -86,14 +98,19 @@ build() {
   mkdir -p "${srcdir}/build-${_target}" "${srcdir}/dest"
 
   export PATH="/opt/bin:${PATH}"
+  export lt_cv_deplibs_check_method=pass_all
+  export lt_cv_archive_cmds_need_lc=no
   export REAL_GPG_ERROR_CONFIG="${_target_usr}/bin/gpg-error-config"
   export TARGET_SYSROOT_USR="${_target_usr}"
   export GPG_ERROR_CONFIG="${srcdir}/cross-gpg-error-config.sh"
   export CPPFLAGS="-D__MSYS__ -isystem ${_target_usr}/include"
-  export CFLAGS="-O2 -pipe"
+  export CFLAGS="-O2 -pipe -ffile-prefix-map=${srcdir}=/usr/src/debug/${pkgbase}-${pkgver}"
   export LDFLAGS="-L${_target_usr}/lib"
 
   cd "${srcdir}/build-${_target}"
+  perl -0pi -e \
+    's/cygwin\* \| mingw\* \| windows\* \| pw32\* \| cegcc\*/cygwin* | msys* | mingw* | windows* | pw32* | cegcc*/g; s/\n    cygwin\*\)\n      # Cygwin DLLs use '\''cyg'\'' prefix rather than '\''lib'\''/\n    cygwin* | msys*)\n      # Cygwin DLLs use '\''cyg'\'' prefix rather than '\''lib'\''/g' \
+    "${srcdir}/${_realname}-${pkgver}/configure"
   "${srcdir}/${_realname}-${pkgver}/configure" \
     CC="${_target}-gcc" \
     AR="${_target}-ar" \
@@ -112,13 +129,23 @@ build() {
     --enable-static \
     --disable-asm
 
+  # GCC 15.0.1dev ICEs during final RTL for this source at -O2 on ARM64 MSYS.
+  # Keep SNTRUP enabled and lower optimization only for the affected object.
+  printf '\nsntrup761.lo: CFLAGS += -O1\n' \
+    >>"${srcdir}/build-${_target}/cipher/Makefile"
+
   make no_undefined=-no-undefined
   make DESTDIR="${srcdir}/dest" install
+
+  local _runtime_dlls=("${srcdir}/dest/usr/lib/"*.dll)
+  (( ${#_runtime_dlls[@]} == 1 ))
+  mv "${_runtime_dlls[0]}" "${srcdir}/dest/usr/bin/"
 
   # Cross-build search paths must not leak into target-facing libtool metadata.
   sed -i \
     -e "s|${_target_usr}/lib|/usr/lib|g" \
     -e "s|${_target_usr}/include|/usr/include|g" \
+    "${srcdir}/dest/usr/bin/libgcrypt-config" \
     "${srcdir}/dest/usr/lib/libgcrypt.la"
 }
 
@@ -142,8 +169,8 @@ package_mingw-w64-cross-msysarm64-libgcrypt() {
   provides=("aarch64-pc-msys-libgcrypt=${pkgver}")
   conflicts=('aarch64-pc-msys-libgcrypt')
 
-  install -d "${pkgdir}${_target_usr}/bin"
-  cp -a "${srcdir}/dest/usr/bin/"*.dll "${pkgdir}${_target_usr}/bin/"
+  install -d "${pkgdir}${_package_target_usr}/bin"
+  cp -a "${srcdir}/dest/usr/bin/"*.dll "${pkgdir}${_package_target_usr}/bin/"
   install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING.LIB" \
     "${pkgdir}/usr/share/licenses/${pkgname}/COPYING.LIB"
 }
@@ -157,13 +184,13 @@ package_mingw-w64-cross-msysarm64-libgcrypt-devel() {
   )
   provides=("aarch64-pc-msys-libgcrypt-devel=${pkgver}")
   conflicts=('aarch64-pc-msys-libgcrypt-devel')
-  options=('staticlibs')
+  options=('staticlibs' '!strip')
 
-  install -d "${pkgdir}${_target_usr}/bin" "${pkgdir}${_target_usr}/share"
-  cp -a "${srcdir}/dest/usr/bin/libgcrypt-config" "${pkgdir}${_target_usr}/bin/"
-  cp -a "${srcdir}/dest/usr/include" "${pkgdir}${_target_usr}/"
-  cp -a "${srcdir}/dest/usr/lib" "${pkgdir}${_target_usr}/"
-  cp -a "${srcdir}/dest/usr/share/aclocal" "${pkgdir}${_target_usr}/share/"
+  install -d "${pkgdir}${_package_target_usr}/bin" "${pkgdir}${_package_target_usr}/share"
+  cp -a "${srcdir}/dest/usr/bin/libgcrypt-config" "${pkgdir}${_package_target_usr}/bin/"
+  cp -a "${srcdir}/dest/usr/include" "${pkgdir}${_package_target_usr}/"
+  cp -a "${srcdir}/dest/usr/lib" "${pkgdir}${_package_target_usr}/"
+  cp -a "${srcdir}/dest/usr/share/aclocal" "${pkgdir}${_package_target_usr}/share/"
   install -Dm755 "${srcdir}/audit-libgcrypt.sh" \
     "${pkgdir}/usr/share/doc/${pkgbase}/audit-libgcrypt.sh"
   install -Dm755 "${srcdir}/audit-package-set.sh" \
@@ -187,10 +214,10 @@ package_mingw-w64-cross-msysarm64-libgcrypt-tools() {
   provides=("aarch64-pc-msys-libgcrypt-tools=${pkgver}")
   conflicts=('aarch64-pc-msys-libgcrypt-tools')
 
-  install -d "${pkgdir}${_target_usr}/bin" "${pkgdir}${_target_usr}/share"
+  install -d "${pkgdir}${_package_target_usr}/bin" "${pkgdir}${_package_target_usr}/share"
   find "${srcdir}/dest/usr/bin" -maxdepth 1 -type f -name '*.exe' \
-    -exec cp -a -t "${pkgdir}${_target_usr}/bin" {} +
-  cp -a "${srcdir}/dest/usr/share/info" "${pkgdir}${_target_usr}/share/"
+    -exec cp -a -t "${pkgdir}${_package_target_usr}/bin" {} +
+  cp -a "${srcdir}/dest/usr/share/info" "${pkgdir}${_package_target_usr}/share/"
   install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING" \
     "${pkgdir}/usr/share/licenses/${pkgname}/COPYING"
   install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING.LIB" \

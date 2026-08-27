@@ -16,6 +16,8 @@ validator="${PSEUDO_RELOC_VALIDATOR:-${script_dir}/audit-aarch64-pseudo-reloc.ps
 policy_validator="${PSEUDO_RELOC_POLICY_VALIDATOR:-${script_dir}/check-aarch64-pseudo-relocs.ps1}"
 objdump="${target}-objdump"
 ar="${target}-ar"
+nm="${target}-nm"
+strings="${target}-strings"
 cc="${target}-gcc"
 
 rm -rf "${report_dir}"
@@ -28,6 +30,17 @@ fail() {
 
 require_file() {
   test -f "$1" || fail "missing file: $1"
+}
+
+audit_host_paths() {
+  local binary="$1"
+  local name
+  name="$(basename "${binary}")"
+  "${strings}" -a "${binary}" >"${report_dir}/${name}.strings.txt"
+  if grep -Eqi 'mingw-w64-cross-msysarm64-libgcrypt[/\\](src|pkg)|libgcrypt-rehearsal' \
+      "${report_dir}/${name}.strings.txt"; then
+    fail "host or staging path embedded in ${binary}"
+  fi
 }
 
 audit_pseudo_reloc() {
@@ -107,6 +120,7 @@ audit_pe() {
       "${report_dir}/${name}.imports.txt"; then
     fail "forbidden runtime import: ${pe}"
   fi
+  audit_host_paths "${pe}"
   audit_pseudo_reloc "${pe}"
 }
 
@@ -119,6 +133,9 @@ audit_archive() {
   "${ar}" t "${archive}" >"${report_dir}/${name}.members.txt"
   members="$(grep -cve '^[[:space:]]*$' "${report_dir}/${name}.members.txt")"
   (( members > 0 )) || fail "empty archive: ${archive}"
+  "${nm}" -s "${archive}" >"${report_dir}/${name}.symbols.txt"
+  grep -Fq 'Archive index:' "${report_dir}/${name}.symbols.txt" ||
+    fail "archive is missing its symbol index: ${archive}"
 
   "${objdump}" -f "${archive}" >"${report_dir}/${name}.file.txt"
   formats="$(grep -c 'file format pe-aarch64-little' "${report_dir}/${name}.file.txt" || true)"
@@ -128,12 +145,12 @@ audit_archive() {
       "${report_dir}/${name}.file.txt"; then
     fail "x86 archive member: ${archive}"
   fi
+  audit_host_paths "${archive}"
 }
 
 require_file "${root}/include/gcrypt.h"
 require_file "${root}/lib/libgcrypt.dll.a"
 require_file "${root}/lib/libgcrypt.a"
-require_file "${root}/lib/libgcrypt.la"
 require_file "${root}/lib/pkgconfig/libgcrypt.pc"
 require_file "${root}/bin/libgcrypt-config"
 
@@ -173,11 +190,15 @@ grep -Fq 'prefix="/usr"' "${root}/bin/libgcrypt-config" ||
 test "$("${root}/bin/libgcrypt-config" --version)" = '1.12.2' ||
   fail "libgcrypt-config version mismatch"
 
-for metadata in \
-  "${root}/bin/libgcrypt-config" \
-  "${root}/lib/libgcrypt.la" \
-  "${root}/lib/pkgconfig/libgcrypt.pc"; do
-  if grep -Eqi 'C:/msys64|/mingw(32|64)|/ucrt64|x86_64-pc-msys|aarch64-pc-cygwin' \
+metadata_files=(
+  "${root}/bin/libgcrypt-config"
+  "${root}/lib/pkgconfig/libgcrypt.pc"
+)
+if [[ -f "${root}/lib/libgcrypt.la" ]]; then
+  metadata_files+=("${root}/lib/libgcrypt.la")
+fi
+for metadata in "${metadata_files[@]}"; do
+  if grep -Eqi 'C:/msys64|/cygdrive/[a-z]/|/opt/aarch64-pc-msys|/mingw(32|64)|/ucrt64|x86_64-pc-msys|aarch64-pc-cygwin' \
       "${metadata}"; then
     fail "host or non-MSYS target path leaked into ${metadata}"
   fi
