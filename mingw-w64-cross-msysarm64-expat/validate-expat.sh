@@ -172,17 +172,23 @@ if grep -Eiq 'cygexpat|x86_64|/cygdrive/|[A-Za-z]:\\' "${cmake_import}"; then
 fi
 
 pc_version=$(
+  PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1 \
+  PKG_CONFIG_ALLOW_SYSTEM_LIBS=1 \
   PKG_CONFIG_LIBDIR="${libdir}/pkgconfig" \
   PKG_CONFIG_SYSROOT_DIR="${root}" \
     "${pkg_config}" --modversion expat
 )
 test "${pc_version}" = "${expected_version}"
 pc_cflags=$(
+  PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1 \
+  PKG_CONFIG_ALLOW_SYSTEM_LIBS=1 \
   PKG_CONFIG_LIBDIR="${libdir}/pkgconfig" \
   PKG_CONFIG_SYSROOT_DIR="${root}" \
     "${pkg_config}" --cflags expat
 )
 pc_libs=$(
+  PKG_CONFIG_ALLOW_SYSTEM_CFLAGS=1 \
+  PKG_CONFIG_ALLOW_SYSTEM_LIBS=1 \
   PKG_CONFIG_LIBDIR="${libdir}/pkgconfig" \
   PKG_CONFIG_SYSROOT_DIR="${root}" \
     "${pkg_config}" --libs expat
