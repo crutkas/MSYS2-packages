@@ -200,6 +200,14 @@ check() {
     return 1
   fi
 
+  # Strip with the target tool before both packaging and staging. This removes
+  # debug paths inherited from the immutable runtime import archive while keeping
+  # the exact DLL bytes shared by the package and native test bundle.
+  "${_target}-strip" --strip-unneeded "${_dest}/bin/"msys-npth-*.dll
+  "${_target}-strip" --strip-unneeded \
+    "${_smoke}/npth-dynamic-smoke.exe" \
+    "${_smoke}/npth-static-smoke.exe"
+
   # Stage a self-contained bundle the native ARM64 job executes as-is.
   cp "${_dest}/bin/"msys-npth-*.dll "${_smoke}/"
 }
