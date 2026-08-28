@@ -134,7 +134,7 @@ build() {
   local target_build="${srcdir}/build-target"
   local source_prefix="/opt/${_target}"
   local helper_prefix="/usr"
-  local sysroot_root="$(_normalize_msys_path "${ALTROOT:-/opt}")"
+  local sysroot_root="$(_normalize_msys_path "${ALTROOT:-/}")"
   local target_prefix="${sysroot_root}/opt/${_target}"
   local target_specs="${target_prefix}/lib/cygwin-compile-only.specs"
 
@@ -190,7 +190,7 @@ build() {
 
 check() {
   local source_prefix="/opt/${_target}"
-  local sysroot_root="$(_normalize_msys_path "${ALTROOT:-/opt}")"
+  local sysroot_root="$(_normalize_msys_path "${ALTROOT:-/}")"
   local target_prefix="${sysroot_root}/opt/${_target}"
   local target_specs="${target_prefix}/lib/cygwin-compile-only.specs"
   local install_prefix="${srcdir}/dest/opt/${_target}"
