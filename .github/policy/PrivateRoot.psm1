@@ -564,6 +564,8 @@ function Get-PolicyGitImage {
     throw 'no canonical trusted git image is available.'
 }
 
+$script:PolicyInertConfigProven = @{}
+
 function Invoke-PolicyGit {
     <#
         Runs the trusted Git image through ProcessStartInfo/ArgumentList with a
@@ -579,17 +581,27 @@ function Invoke-PolicyGit {
         [string] $WorkingDirectory,
 
         [Parameter(Mandatory)]
-        [string[]] $Arguments
+        [string[]] $GitArguments
     )
 
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = Get-PolicyGitImage
+    # Commands that read the worktree may invoke a checkout-declared filter,
+    # diff driver, or fsmonitor, so they are gated on the local config having
+    # been proven inert. The gate is intrinsic to the command, not dependent on
+    # the caller getting the order right.
+    if ($GitArguments -contains 'status') {
+        $proofKey = $WorkingDirectory.ToLowerInvariant()
+        if (-not $script:PolicyInertConfigProven.ContainsKey($proofKey)) {
+            Assert-PolicyInertLocalConfig -Workspace $WorkingDirectory
+        }
+    }
     $startInfo.WorkingDirectory = $WorkingDirectory
     $startInfo.UseShellExecute = $false
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
     $startInfo.CreateNoWindow = $true
-    foreach ($argument in $Arguments) {
+    foreach ($argument in $GitArguments) {
         [void] $startInfo.ArgumentList.Add($argument)
     }
 
@@ -630,11 +642,17 @@ function Invoke-PolicyGit {
         'core.pager=cat',
         'core.sshCommand=',
         'core.alternateRefsCommand=',
+        'core.attributesFile=',
+        'core.gitProxy=',
         'core.symlinks=false',
+        'sequence.editor=false',
         'diff.external=',
         'protocol.allow=never',
         'uploadpack.packObjectsHook=',
         'credential.helper=',
+        'gpg.program=false',
+        'ssh.variant=simple',
+        'init.templateDir=',
         'safe.directory=*',
         'gc.auto=0'
     )
@@ -647,19 +665,74 @@ function Invoke-PolicyGit {
 
     $process = [Diagnostics.Process]::Start($startInfo)
     try {
-        $stdout = $process.StandardOutput.ReadToEnd()
-        [void] $process.StandardError.ReadToEnd()
+        # Both pipes must be drained concurrently. Reading stdout to EOF first
+        # deadlocks whenever the child fills the stderr pipe, and in that state
+        # WaitForExit is never reached, so the timeout cannot fire.
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
         if (-not $process.WaitForExit(30000)) {
+            try { $process.Kill($true) } catch { }
             throw 'git did not exit within the timeout.'
         }
+        [void] [Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), 5000)
         if ($process.ExitCode -ne 0) {
             throw "git exited with code $($process.ExitCode)."
         }
+        $stdout = $stdoutTask.Result
     }
     finally {
         $process.Dispose()
     }
     return $stdout.Trim()
+}
+
+$script:PolicyConfigKeyAllowList = @(
+    'core\.(repositoryformatversion|filemode|bare|logallrefupdates|symlinks|ignorecase|precomposeunicode|autocrlf|eol|hidedotfiles|longpaths|fscache|untrackedcache|checkstat|trustctime|quotepath|commitgraph|multipackindex)',
+    'remote\.origin\.(url|fetch|tagopt|partialclonefilter|promisor)',
+    'branch\.[^.]+\.(remote|merge|rebase)',
+    'extensions\.(objectformat|worktreeconfig|refstorage|compatobjectformat|preciousobjects|partialclone)',
+    'gc\.auto',
+    'fetch\.(recursesubmodules|prune|prunetags|parallel)',
+    'pull\.(rebase|ff)',
+    'push\.default',
+    'init\.defaultbranch',
+    'user\.(name|email)',
+    'advice\.[^.]+',
+    'index\.(version|threads|skiphash)',
+    'pack\.[^.]+',
+    'feature\.[^.]+'
+)
+
+function Assert-PolicyInertLocalConfig {
+    <#
+        The repository-local .git/config is always read and cannot be switched
+        off by any environment variable, so a checkout-controlled key can make
+        Git execute a process -- filter.<n>.clean, diff.<n>.textconv,
+        merge.<n>.driver, core.fsmonitor, core.pager, core.sshCommand,
+        credential.helper, alias.*, include/includeIf, url.*.insteadOf -- before
+        this policy reaches a verdict. Driver names are arbitrary, so they
+        cannot be pre-cleared by name. The control is an allow-list, and it must
+        run before any command that reads the worktree.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string] $Workspace
+    )
+
+    $listing = Invoke-PolicyGit -WorkingDirectory $Workspace `
+        -GitArguments @('-C', $Workspace, '--no-pager', 'config', '--local', '--list', '-z')
+    foreach ($entry in $listing.Split([char]0)) {
+        if ([string]::IsNullOrWhiteSpace($entry)) { continue }
+        $key = $entry.Split("`n")[0].Trim()
+        if ([string]::IsNullOrWhiteSpace($key)) { continue }
+        $allowed = $false
+        foreach ($pattern in $script:PolicyConfigKeyAllowList) {
+            if ($key -imatch "^$pattern$") { $allowed = $true; break }
+        }
+        if (-not $allowed) {
+            throw "protected base checkout declares the unmodelled git configuration key '$key'."
+        }
+    }
 }
 
 function Assert-PolicyBaseCheckout {
@@ -682,18 +755,21 @@ function Assert-PolicyBaseCheckout {
     }
     $canonicalWorkspace = Assert-PolicyExistingDirectory -Path $Workspace -Label 'protected base checkout'
 
+    # FIRST: prove the checkout cannot make git execute a process.
+    Assert-PolicyInertLocalConfig -Workspace $canonicalWorkspace
+
     $actualCommit = Invoke-PolicyGit -WorkingDirectory $canonicalWorkspace `
-        -Arguments @('-C', $canonicalWorkspace, 'rev-parse', '--verify', 'HEAD')
+        -GitArguments @('-C', $canonicalWorkspace, '--no-pager', 'rev-parse', '--verify', '--end-of-options', 'HEAD')
     if ($actualCommit -cne $ExpectedCommit) {
         throw 'protected base checkout HEAD does not match the event base.'
     }
     $actualTree = Invoke-PolicyGit -WorkingDirectory $canonicalWorkspace `
-        -Arguments @('-C', $canonicalWorkspace, 'rev-parse', '--verify', 'HEAD^{tree}')
+        -GitArguments @('-C', $canonicalWorkspace, '--no-pager', 'rev-parse', '--verify', '--end-of-options', 'HEAD^{tree}')
     if ($actualTree -cnotmatch '^[0-9a-f]{40}$') {
         throw 'protected base checkout tree is invalid.'
     }
     $origin = Invoke-PolicyGit -WorkingDirectory $canonicalWorkspace `
-        -Arguments @('-C', $canonicalWorkspace, 'remote', 'get-url', 'origin')
+        -GitArguments @('-C', $canonicalWorkspace, '--no-pager', 'config', '--local', '--get', 'remote.origin.url')
     $allowedOrigins = @(
         "https://github.com/$Repository",
         "https://github.com/$Repository.git"
@@ -702,7 +778,7 @@ function Assert-PolicyBaseCheckout {
         throw 'protected base checkout origin is not the bound repository.'
     }
     $porcelain = Invoke-PolicyGit -WorkingDirectory $canonicalWorkspace `
-        -Arguments @('-C', $canonicalWorkspace, 'status', '--porcelain=v2', '--untracked-files=all')
+        -GitArguments @('-C', $canonicalWorkspace, '--no-pager', '--literal-pathspecs', 'status', '--porcelain=v2', '--untracked-files=all')
     if ($porcelain) {
         throw 'protected base checkout is not clean.'
     }
@@ -714,6 +790,7 @@ Export-ModuleMember -Function @(
     'Assert-PolicyExistingDirectory',
     'Assert-PolicyPrivateAcl',
     'Assert-PolicyPrivateDacl',
+    'Assert-PolicyInertLocalConfig',
     'Get-PolicyDirectoryIdentity',
     'Get-PolicyGitImage',
     'Invoke-PolicyGit',

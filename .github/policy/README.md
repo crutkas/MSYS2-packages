@@ -89,18 +89,26 @@ Every temp and root operation uses literal path APIs. The root stores only an
 ephemeral local decision report. It is never uploaded or accepted as a payload
 lock; the required check conclusion is the admission signal.
 
+The private root is **not** owner-only. Its DACL grants full control to exactly
+three principals: the runner identity, `NT AUTHORITY\SYSTEM` (`S-1-5-18`), and
+`BUILTIN\Administrators` (`S-1-5-32-544`). An earlier version of this document
+described it as owner-only, which was inaccurate.
+
 Object identity binds the NTFS volume serial number read from the storage layer
-plus a 256-bit secret nonce written inside the root at creation under the
-owner-only DACL. **Residual, stated plainly:** a true 128-bit NTFS file id would
-need `CreateFile` with `FILE_FLAG_BACKUP_SEMANTICS` and
-`GetFileInformationByHandle`, which .NET does not surface without P/Invoke, and
-the only route to it from PowerShell is runtime type compilation — precisely the
-dynamic surface this policy forbids elsewhere. The nonce is used instead and is
-strictly stronger against the replacement threat, since NTFS file ids can be
-reused after deletion whereas a 256-bit secret cannot be reproduced by an
-attacker who never read it. What the nonce does not detect is a volume-level
-object substitution that preserves the nonce file, which already requires write
-access inside an owner-only DACL on a single-tenant runner.
+plus a 256-bit secret nonce written inside the root at creation. **Residual,
+stated accurately:** a true 128-bit NTFS file id would need `CreateFile` with
+`FILE_FLAG_BACKUP_SEMANTICS` and `GetFileInformationByHandle`, which .NET does
+not surface without P/Invoke, and the only route to it from PowerShell is
+runtime type compilation — precisely the dynamic surface this policy forbids
+elsewhere. The nonce is a *different* control, not a strictly stronger one. An
+earlier version of this document claimed it was strictly stronger than a file
+id; that was wrong, and a real file id would catch substitutions the nonce does
+not. Specifically, the nonce detects a directory replaced by one that does not
+carry the secret, but it does **not** detect a substitution that preserves or
+copies the claim file, whereas a file id would. The nonce is harder to forge
+blind, since file ids can be reused after deletion; a file id is harder to
+launder, since copying content does not copy identity. Both would be better than
+either.
 
 Branch rules are read paginated. A duplicate or conflicting rule hiding on the
 second page is still authoritative to GitHub, so it must be visible to the
@@ -128,29 +136,61 @@ The argument vector is a fixed literal drawn from a closed command table, and
 the child environment is rebuilt from scratch rather than filtered, so `GIT_DIR`,
 `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_CONFIG*`, `GIT_SSH*`,
 `GIT_PROXY_COMMAND`, `GIT_EXTERNAL_DIFF`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`,
-and the rest cannot survive from the caller. Forced configuration supplied
-through that scrubbed environment neutralises every remaining
-command-execution vector — `core.fsmonitor`, `core.hooksPath`,
-`core.sshCommand`, `core.askPass`, `core.pager`, `core.editor`,
-`diff.external`, `uploadpack.packObjectsHook`, `credential.helper` — and
-disables system and per-user config entirely. The PowerShell guard uses the same
-allowlisted image through `ProcessStartInfo`/`ArgumentList` with a cleared
-environment dictionary, so no unqualified invocation, `PATH`, `PATHEXT`,
-PowerShell alias, or ambient config can reach it.
+and the rest cannot survive from the caller.
+
+**The repository-local `.git/config` is a separate problem, and forced
+configuration does not solve it.** That file is always read and cannot be
+switched off by any environment variable, so a checkout-controlled key can make
+Git execute a process — `filter.<n>.clean`, `diff.<n>.textconv`,
+`merge.<n>.driver`, `core.fsmonitor`, `core.pager`, `core.sshCommand`,
+`credential.helper`, `alias.*`, `include`/`includeIf`, `url.*.insteadOf` and
+more — *before* this policy reaches a verdict. Clearing keys by name cannot be
+made complete, because filter, diff, and merge driver names are arbitrary and
+therefore cannot be pre-cleared by `-c` or `GIT_CONFIG_KEY_n`. An earlier
+version of this document claimed that forced configuration neutralised "every
+remaining command-execution vector"; that claim was false and is withdrawn.
+
+The actual control is an **allow-list scan of the local configuration** that runs
+before any command that reads the worktree. The protected base checkout is
+produced by the pinned `actions/checkout` step from a trusted SHA, so its config
+is predictable, and any key outside the modelled set denies. The scan is
+intrinsic to the command — `status` is gated on the scan having passed in both
+languages — so the protection cannot be lost by calling things in the wrong
+order. Reading configuration does not run filters, drivers, or hooks, so it is
+safe to do first. Forced configuration is retained as defence in depth for the
+keys that do have fixed names.
 
 Helper capabilities are a closed vocabulary (`github-api-read`,
 `git-read-local`, `dotnet-filesystem`, `dotnet-acl`, `dotnet-reflection`,
 `legacy-disabled`). Each helper is parsed — Python by AST, PowerShell by
 surface scan — and the surfaces it actually exercises must equal the surfaces
-it declares: an undeclared surface denies, and a declared-but-unused surface
-denies as dormant authority. Python helpers may not import or call the
-forbidden module and builtin sets, may not reach through dunder attributes, and
-may only spawn a subprocess whose `argv[0]` is either the literal `git` or a
-call to a modelled trusted-image resolver. Splatted arguments, splatted
-keywords, empty commands, computed images, `executable=`, `preexec_fn`,
-`start_new_session`, `creationflags`, `startupinfo`, `pass_fds`, and `user` are
-all refused, as is `shell=True`, an ambient environment, or no environment at
-all. Aliased and `from`-imported entry points resolve to the same rules.
+it declares.
+
+Process launchers are identified by **resolved binding, never by spelling**, and
+anything that cannot be resolved is denied rather than assumed benign. A launcher
+may only appear as the callee of a direct qualified call: taking a reference to
+one (`f = subprocess.run`, `functools.partial`, a dispatch table, subclassing
+`Popen`), aliasing the module, importing from it, star-importing, or rebinding a
+name are all refused. The trusted image resolver is likewise checked by binding:
+it must be a single, module-level, undecorated, parameterless `FunctionDef` that
+is never rebound, never imported, and whose every return is a literal or a
+module-level literal constant **whose values are images this policy trusts** —
+so a helper cannot define, import, decorate, or shadow its own resolver and
+choose the binary that runs.
+
+The argument vector must resolve to literals. `argv[0]` is either the literal
+`git` or a call to the modelled resolver; every other operand must be a literal
+except the directory operand, which may be `str(<name>)`. That closes
+`['git', sub, 'x']` and `'cl' + 'one'`. Splatted arguments, splatted keywords,
+empty commands, `executable=`, `preexec_fn`, `start_new_session`,
+`creationflags`, `startupinfo`, `pass_fds`, `user`, and the redirecting Git
+global options (`-c`, `--exec-path`, `--git-dir`, `--work-tree`, `--namespace`,
+`--upload-pack`, `--receive-pack`, `--config-env`) are all refused. `shell` must
+be literal `False` — `shell=1` and `shell=flag` are not accepted. `cwd` must be
+literal. `env` must be a literal mapping or a call to a modelled builder, so
+`env=environ`, `env=dict(os.environ)`, and `AMB = os.environ; env=AMB` are all
+refused.
+
 PowerShell helpers may not reference network, package, dynamic-execution, or
 acquisition surfaces at all; comments are scanned too, so helper authors must
 avoid spelling the forbidden tokens even in prose.

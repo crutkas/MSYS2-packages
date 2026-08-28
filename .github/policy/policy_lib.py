@@ -267,6 +267,58 @@ SUBPROCESS_ENTRYPOINTS = {
     "subprocess.check_output",
     "subprocess.Popen",
 }
+# Modules and exact targets that launch a process. Identification is by resolved
+# binding, never by spelling, and a reference to any of these may only appear as
+# the callee of a direct call.
+LAUNCHER_MODULES = {"subprocess", "multiprocessing", "asyncio", "pty", "popen2"}
+LAUNCHER_TARGETS = {
+    "subprocess.run",
+    "subprocess.call",
+    "subprocess.check_call",
+    "subprocess.check_output",
+    "subprocess.Popen",
+    "subprocess.getoutput",
+    "subprocess.getstatusoutput",
+    "os.system",
+    "os.popen",
+    "os.execv",
+    "os.execve",
+    "os.execvp",
+    "os.execvpe",
+    "os.spawnv",
+    "os.spawnve",
+    "os.spawnl",
+    "os.posix_spawn",
+    "os.posix_spawnp",
+    "os.startfile",
+    "platform.popen",
+}
+# Names that may supply the env= argument of a governed launch.
+ENVIRONMENT_BUILDERS = {"_git_environment"}
+# Git global options that redirect the repository, the executable search, or the
+# transport, and therefore must never appear in a modelled argument vector.
+FORBIDDEN_GIT_OPTIONS = {
+    "-c",
+    "--config-env",
+    "--exec-path",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--upload-pack",
+    "--receive-pack",
+    "--ext",
+    "-u",
+}
+FORBIDDEN_GIT_OPTION_PREFIXES = (
+    "--exec-path=",
+    "--git-dir=",
+    "--work-tree=",
+    "--namespace=",
+    "--upload-pack=",
+    "--receive-pack=",
+    "--config-env=",
+    "-c=",
+)
 FORBIDDEN_PYTHON_BUILTINS = {
     "eval",
     "exec",

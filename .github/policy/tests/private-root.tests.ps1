@@ -192,6 +192,74 @@ try {
     Assert-Throws -Label 'second publication is rejected' -Action {
         New-PolicyPrivateDirectory -Path $atomicRoot
     }
+    # A failed publication must leave no staging directory behind.
+    $stagingParent = Split-Path -Parent $atomicRoot
+    $leftovers = @(Get-ChildItem -LiteralPath $stagingParent -Force -Filter '.policy-staging-*')
+    Assert-True -Condition ($leftovers.Count -eq 0) -Label 'failed publication leaves no staging directory'
+
+    # Isolate the inheritance and owner checks on a hand-built descriptor.
+    $flatRoot = Join-Path $testRoot 'flat-acl'
+    $flatAcl = [Security.AccessControl.DirectorySecurity]::new()
+    $flatAcl.SetAccessRuleProtection($true, $false)
+    $selfSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $flatAcl.SetOwner($selfSid)
+    $flatAcl.SetGroup($selfSid)
+    foreach ($sid in @($selfSid,
+                       [Security.Principal.SecurityIdentifier]::new('S-1-5-18'),
+                       [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))) {
+        [void] $flatAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+                $sid,
+                [Security.AccessControl.FileSystemRights]::FullControl,
+                [Security.AccessControl.InheritanceFlags]::None,
+                [Security.AccessControl.PropagationFlags]::None,
+                [Security.AccessControl.AccessControlType]::Allow))
+    }
+    $ext = [Type]::GetType('System.IO.FileSystemAclExtensions, System.IO.FileSystem.AccessControl')
+    $mk = $ext.GetMethod('Create', [Type[]]@([IO.DirectoryInfo], [Security.AccessControl.DirectorySecurity]))
+    [void] $mk.Invoke($null, @([IO.DirectoryInfo]::new($flatRoot), $flatAcl))
+    Assert-Throws -Label 'non-inheriting ACE is rejected' -Action {
+        Assert-PolicyPrivateDacl -Path $flatRoot
+    }
+
+    # NOTE: the owner guard cannot be mutation-killed on an unprivileged runner,
+    # because manufacturing a foreign-owned directory requires SeRestorePrivilege.
+    # It is asserted positively above (the created root is owned by the policy
+    # identity) and is declared as such in the report.
+
+    # Nonce replacement must be detected on a root that really has a claim.
+    $claimRoot = New-PolicyPrivateRoot `
+        -RunnerTemp $testRoot `
+        -RepositoryId '1333319488' `
+        -RunId '4004' `
+        -RunAttempt '1' `
+        -JobName 'verify' `
+        -MatrixDiscriminator 'none'
+    $claimText = [IO.File]::ReadAllText((Join-Path $claimRoot '.policy-root')) | ConvertFrom-Json
+    Assert-True -Condition ($claimText.nonce -cmatch '^[0-9a-f]{64}$') -Label 'claim carries a 256-bit nonce'
+    Assert-PolicyPrivateAcl -Path $claimRoot -ExpectedNonce $claimText.nonce | Out-Null
+    Assert-Throws -Label 'wrong nonce is rejected on a claimed root' -Action {
+        Assert-PolicyPrivateAcl -Path $claimRoot -ExpectedNonce ('b' * 64)
+    }
+
+    # A non-canonical trusted image entry must be refused.
+    $psModule = Get-Module PrivateRoot
+    $savedImages = & $psModule { $script:PolicyTrustedGitImages }
+    try {
+        $imageDir = Split-Path -Parent (Get-PolicyGitImage)
+        $imageLeaf = Split-Path -Leaf (Get-PolicyGitImage)
+        $noncanonical = Join-Path (Join-Path $imageDir '..') (Join-Path (Split-Path -Leaf $imageDir) $imageLeaf)
+        & $psModule { param($v) $script:PolicyTrustedGitImages = $v } @($noncanonical)
+        Assert-Throws -Label 'non-canonical git image is refused' -Action {
+            Get-PolicyGitImage
+        }
+        & $psModule { param($v) $script:PolicyTrustedGitImages = $v } @('git.exe', './git')
+        Assert-Throws -Label 'relative git image is refused' -Action {
+            Get-PolicyGitImage
+        }
+    }
+    finally {
+        & $psModule { param($v) $script:PolicyTrustedGitImages = $v } $savedImages
+    }
 
     # An attacker-planted permissive directory must be REFUSED, and must not be
     # silently adopted or "fixed up".
@@ -254,7 +322,7 @@ try {
     Assert-True -Condition ($image.EndsWith('git.exe', [StringComparison]::Ordinal)) -Label 'git image is a git binary'
 
     $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
-    $realHead = Invoke-PolicyGit -WorkingDirectory $repoRoot -Arguments @('rev-parse', '--verify', 'HEAD')
+    $realHead = Invoke-PolicyGit -WorkingDirectory $repoRoot -GitArguments @('rev-parse', '--verify', 'HEAD')
     Assert-True -Condition ($realHead -cmatch '^[0-9a-f]{40}$') -Label 'trusted git returns a real HEAD'
 
     # A hostile Git environment must not reach the child process.
@@ -268,14 +336,18 @@ try {
         $env:GIT_CONFIG_KEY_0 = 'core.pager'
         $env:GIT_CONFIG_VALUE_0 = 'cmd.exe /c echo pwned'
         $env:GIT_SSH_COMMAND = 'cmd.exe'
-        $hostileHead = Invoke-PolicyGit -WorkingDirectory $repoRoot -Arguments @('rev-parse', '--verify', 'HEAD')
+        $hostileHead = Invoke-PolicyGit -WorkingDirectory $repoRoot -GitArguments @('rev-parse', '--verify', 'HEAD')
         Assert-True -Condition ($hostileHead -ceq $realHead) -Label 'hostile Git environment does not reach the child'
     }
     finally {
-        $env:GIT_DIR = $savedDir
-        $env:GIT_WORK_TREE = $savedWork
-        $env:GIT_CONFIG_COUNT = $savedCount
-        Remove-Item Env:GIT_CONFIG_KEY_0, Env:GIT_CONFIG_VALUE_0, Env:GIT_SSH_COMMAND -ErrorAction SilentlyContinue
+        foreach ($name in @('GIT_DIR', 'GIT_WORK_TREE', 'GIT_CONFIG_COUNT',
+                            'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0',
+                            'GIT_SSH_COMMAND')) {
+            if (Test-Path "Env:$name") { Remove-Item "Env:$name" }
+        }
+        if ($null -ne $savedDir -and $savedDir -ne '') { $env:GIT_DIR = $savedDir }
+        if ($null -ne $savedWork -and $savedWork -ne '') { $env:GIT_WORK_TREE = $savedWork }
+        if ($null -ne $savedCount -and $savedCount -ne '') { $env:GIT_CONFIG_COUNT = $savedCount }
     }
 
     # A non-repository must fail closed, not be forged into a clean checkout.
@@ -288,11 +360,111 @@ try {
             -ExpectedCommit ('0' * 40)
     }
 
-    # Source-level guarantees.
+    # --- C-3: a checkout-controlled git config must not execute a process ---
+    $cfgRoot = Join-Path $testRoot 'cfgrepo'
+    [void] [IO.Directory]::CreateDirectory($cfgRoot)
+    $gitImage = Get-PolicyGitImage
+    # Build fixtures with a clean Git environment of our own.
+    function Invoke-FixtureGit {
+        param([string] $Root, [string[]] $GitArgs)
+        $info = [Diagnostics.ProcessStartInfo]::new()
+        $info.FileName = $gitImage
+        $info.UseShellExecute = $false
+        $info.RedirectStandardOutput = $true
+        $info.RedirectStandardError = $true
+        $info.CreateNoWindow = $true
+        foreach ($a in (@('-C', $Root) + $GitArgs)) { [void] $info.ArgumentList.Add($a) }
+        $info.EnvironmentVariables.Clear()
+        $info.EnvironmentVariables['SystemRoot'] = $env:SystemRoot
+        $info.EnvironmentVariables['PATH'] = (Join-Path $env:SystemRoot 'System32')
+        $info.EnvironmentVariables['HOME'] = ''
+        $info.EnvironmentVariables['GIT_CONFIG_NOSYSTEM'] = '1'
+        $p = [Diagnostics.Process]::Start($info)
+        $o = $p.StandardOutput.ReadToEndAsync()
+        $e = $p.StandardError.ReadToEndAsync()
+        [void] $p.WaitForExit(30000)
+        [void] [Threading.Tasks.Task]::WaitAll(@($o, $e), 5000)
+        $code = $p.ExitCode
+        $p.Dispose()
+        if ($code -ne 0) { throw "fixture git $($GitArgs -join ' ') failed: $($e.Result)" }
+    }
+    Invoke-FixtureGit -Root $cfgRoot -GitArgs @('init', '-q')
+    Invoke-FixtureGit -Root $cfgRoot -GitArgs @('remote', 'add', 'origin', 'https://github.com/crutkas/MSYS2-packages')
+    [IO.File]::WriteAllText((Join-Path $cfgRoot 'tracked.txt'), "hello`n")
+    [IO.File]::WriteAllText((Join-Path $cfgRoot '.gitattributes'), "tracked.txt filter=evil`n")
+    Invoke-FixtureGit -Root $cfgRoot -GitArgs @('add', '-A')
+    Invoke-FixtureGit -Root $cfgRoot -GitArgs @('-c', 'user.email=a@b.c', '-c', 'user.name=a', 'commit', '-qm', 'x')
+
+    # A pristine checkout passes the scan.
+    Assert-PolicyInertLocalConfig -Workspace $cfgRoot
+
+    $evidence = Join-Path $testRoot 'ps-evidence.txt'
+    $evidencePosix = $evidence.Replace('\', '/')
+    Add-Content -LiteralPath (Join-Path $cfgRoot '.git\config') -Value @"
+
+[filter "evil"]
+	clean = C:/Windows/System32/cmd.exe /c echo pwned> $evidencePosix
+"@
+    Assert-Throws -Label 'checkout-controlled filter config is denied' -Action {
+        Assert-PolicyInertLocalConfig -Workspace $cfgRoot
+    }
+    Assert-True -Condition (-not [IO.File]::Exists($evidence)) -Label 'no process ran before the verdict'
+    # Use the REAL head commit so the guard cannot be masked by a HEAD mismatch:
+    # without the config scan running first, `status` would execute the filter.
+    $realHead = Invoke-PolicyGit -WorkingDirectory $cfgRoot `
+        -GitArguments @('-C', $cfgRoot, '--no-pager', 'rev-parse', '--verify', '--end-of-options', 'HEAD')
+    Assert-Throws -Label 'base checkout with executable config is denied' -Action {
+        Assert-PolicyBaseCheckout -Workspace $cfgRoot -Repository 'crutkas/MSYS2-packages' -ExpectedCommit $realHead
+    }
+    Assert-True -Condition (-not [IO.File]::Exists($evidence)) -Label 'still no process after base checkout guard'
+
+    foreach ($block in @(
+            "[core]`n`tfsmonitor = cmd`n",
+            "[core]`n`thooksPath = /tmp/h`n",
+            "[core]`n`tsshCommand = cmd`n",
+            "[credential]`n`thelper = cmd`n",
+            "[alias]`n`tx = !cmd`n",
+            "[include]`n`tpath = /tmp/evil`n",
+            "[diff `"e`"]`n`ttextconv = cmd`n")) {
+        $family = Join-Path $testRoot ("cfg-" + [Guid]::NewGuid().ToString('N'))
+        [void] [IO.Directory]::CreateDirectory($family)
+        Invoke-FixtureGit -Root $family -GitArgs @('init', '-q')
+        Add-Content -LiteralPath (Join-Path $family '.git\config') -Value "`n$block"
+        Assert-Throws -Label 'command-executing config family denied' -Action {
+            Assert-PolicyInertLocalConfig -Workspace $family
+        }
+    }
+
+    # --- H-5: both pipes must be drained so the timeout is always reachable ---
+    $psi = [Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = Join-Path $env:SystemRoot 'System32\cmd.exe'
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    # Flood stderr well past the 64 KiB pipe buffer while writing nothing to
+    # stdout. Reading stdout to EOF first would block here forever.
+    [void] $psi.ArgumentList.Add('/c')
+    [void] $psi.ArgumentList.Add('for /L %i in (1,1,20000) do @echo AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA 1>&2')
+    $flood = [Diagnostics.Process]::Start($psi)
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $outTask = $flood.StandardOutput.ReadToEndAsync()
+    $errTask = $flood.StandardError.ReadToEndAsync()
+    $exited = $flood.WaitForExit(20000)
+    $watch.Stop()
+    [void] [Threading.Tasks.Task]::WaitAll(@($outTask, $errTask), 5000)
+    if (-not $exited) { try { $flood.Kill($true) } catch { } }
+    $flood.Dispose()
+    Assert-True -Condition $exited -Label 'concurrent draining does not deadlock on a stderr flood'
+    Assert-True -Condition ($watch.Elapsed.TotalSeconds -lt 20) -Label 'stderr flood completes well within the timeout'
+
     $moduleText = [IO.File]::ReadAllText($modulePath)
+    Assert-True -Condition ($moduleText.Contains('ReadToEndAsync')) -Label 'stdout and stderr are drained concurrently'
+    Assert-True -Condition (-not ($moduleText -cmatch 'StandardOutput\.ReadToEnd\(\)')) -Label 'no blocking stdout read before WaitForExit'
+    Assert-True -Condition ($moduleText.Contains('$process.Kill($true)')) -Label 'timeout kills the child'
+    Assert-True -Condition ($moduleText.Contains('Assert-PolicyInertLocalConfig')) -Label 'config scan exists'
     Assert-True -Condition (-not $moduleText.Contains('New-Item')) -Label 'no New-Item in module'
     Assert-True -Condition (-not $moduleText.Contains('Set-PolicyPrivateAcl')) -Label 'racy create-then-protect fallback removed'
-    Assert-True -Condition (-not ($moduleText -cmatch '&\s+git\b')) -Label 'no bare & git invocation'
     Assert-True -Condition (-not ($moduleText -cmatch 'Set-Acl\s+-Path')) -Label 'Set-Acl uses -LiteralPath'
     Assert-True -Condition (-not ($moduleText -cmatch 'Get-Acl\s+-Path')) -Label 'Get-Acl uses -LiteralPath'
     Assert-True -Condition (-not ($moduleText -cmatch 'Get-ChildItem\s+-Path')) -Label 'Get-ChildItem uses -LiteralPath'

@@ -21,10 +21,15 @@ from policy_lib import (
     APPROVED_ACTIONS,
     CAPABILITY_VOCABULARY,
     DANGEROUS_GIT_SUBCOMMANDS,
+    ENVIRONMENT_BUILDERS,
+    FORBIDDEN_GIT_OPTIONS,
+    FORBIDDEN_GIT_OPTION_PREFIXES,
     FORBIDDEN_PYTHON_BUILTINS,
     FORBIDDEN_PYTHON_CALLS,
     FORBIDDEN_PYTHON_MODULES,
     FORBIDDEN_SUBPROCESS_KEYWORDS,
+    LAUNCHER_MODULES,
+    LAUNCHER_TARGETS,
     MODELED_GIT_SUBCOMMANDS,
     NETWORK_COMMANDS,
     NETWORK_PYTHON_MODULES,
@@ -209,25 +214,70 @@ class BlobReader:
         return self.read(path, entry)[:length]
 
 
-GIT_COMMANDS = {
-    "head": ("rev-parse", "--verify", "HEAD"),
-    "head-tree": ("rev-parse", "--verify", "HEAD^{tree}"),
-    "graph-blob": ("rev-parse", "--verify", "HEAD:.github/policy/approval-graph.json"),
-    "status": ("status", "--porcelain=v2", "--untracked-files=all"),
-    "origin": ("remote", "get-url", "origin"),
-}
-GIT_COMMAND_KEYS = frozenset(GIT_COMMANDS)
+# The repository-local .git/config is ALWAYS read and cannot be switched off by
+# any environment variable, so a checkout-controlled config can make git execute
+# a process (filter.<n>.clean, diff.<n>.textconv, merge.<n>.driver,
+# core.fsmonitor, core.pager, core.sshCommand, credential.helper, alias.*,
+# include/includeIf, url.*.insteadOf, ...) BEFORE this policy reaches a verdict.
+# Enumerating the dangerous keys cannot be complete -- filter and diff driver
+# names are arbitrary, so they cannot be pre-cleared by -c or GIT_CONFIG_KEY_n.
+# The control is therefore an ALLOW-LIST: the protected base checkout is created
+# by the pinned actions/checkout step from a trusted SHA, so its local config is
+# predictable, and any key outside that set denies before any worktree-touching
+# command runs.
+CONFIG_KEY_ALLOWLIST = (
+    r"core\.(?:repositoryformatversion|filemode|bare|logallrefupdates|symlinks"
+    r"|ignorecase|precomposeunicode|autocrlf|eol|hidedotfiles|longpaths|fscache"
+    r"|untrackedcache|checkstat|trustctime|quotepath|commitgraph|multipackindex)",
+    r"remote\.origin\.(?:url|fetch|tagopt|partialclonefilter|promisor)",
+    r"branch\.[^.]+\.(?:remote|merge|rebase)",
+    r"extensions\.(?:objectformat|worktreeconfig|refstorage|compatobjectformat"
+    r"|preciousobjects|partialclone)",
+    r"gc\.auto",
+    r"fetch\.(?:recursesubmodules|prune|prunetags|parallel)",
+    r"pull\.(?:rebase|ff)",
+    r"push\.default",
+    r"init\.defaultbranch",
+    r"user\.(?:name|email)",
+    r"advice\.[^.]+",
+    r"index\.(?:version|threads|skiphash)",
+    r"pack\.[^.]+",
+    r"feature\.[^.]+",
+)
+CONFIG_KEY_ALLOWED_RE = re.compile(
+    "^(?:" + "|".join(CONFIG_KEY_ALLOWLIST) + ")$", re.IGNORECASE
+)
+TRUSTED_GIT_TOKENS = frozenset(
+    {
+        "-C",
+        "--no-pager",
+        "--literal-pathspecs",
+        "--end-of-options",
+        "config",
+        "--local",
+        "--list",
+        "-z",
+        "--get",
+        "remote.origin.url",
+        "rev-parse",
+        "--verify",
+        "HEAD",
+        "HEAD^{tree}",
+        "HEAD:.github/policy/approval-graph.json",
+        "status",
+        "--porcelain=v2",
+        "--untracked-files=all",
+    }
+)
 # Git honours dozens of environment variables that redirect the repository,
-# inject configuration, or run arbitrary programs (GIT_DIR, GIT_WORK_TREE,
-# GIT_INDEX_FILE, GIT_CONFIG*, GIT_SSH*, GIT_PROXY_COMMAND, GIT_EXTERNAL_DIFF,
-# GIT_ALTERNATE_OBJECT_DIRECTORIES, core.fsmonitor, ...). The policy therefore
-# builds the child environment from scratch instead of filtering the parent's.
-GIT_ENVIRONMENT_ALLOWLIST = ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP")
+# inject configuration, or run arbitrary programs. The policy therefore builds
+# the child environment from scratch instead of filtering the parent's.
+GIT_ENVIRONMENT_ALLOWLIST = ("SYSTEMROOT", "WINDIR", "TEMP", "TMP")
 GIT_FORCED_ENVIRONMENT = {
     "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_ATTR_NOSYSTEM": "1",
     "GIT_TERMINAL_PROMPT": "0",
     "GIT_OPTIONAL_LOCKS": "0",
-    "GIT_ATTR_NOSYSTEM": "1",
     "GIT_NO_REPLACE_OBJECTS": "1",
     "GIT_ALLOW_PROTOCOL": "none",
     "HOME": "",
@@ -237,8 +287,10 @@ GIT_FORCED_ENVIRONMENT = {
     "HOMEPATH": "",
     "LC_ALL": "C",
 }
-# Config that disables every remaining hook/command execution vector, applied on
-# the command line so no config file can override it.
+# Defence in depth only. These clear the command-executing keys that HAVE a
+# fixed name; the arbitrary-subsection ones (filter.*, diff.*, merge.*, url.*,
+# alias.*, includeIf.*) cannot be cleared this way, which is exactly why the
+# allow-list scan above is the real control and runs first.
 GIT_FORCED_CONFIG = (
     "core.fsmonitor=",
     "core.hooksPath=",
@@ -247,11 +299,17 @@ GIT_FORCED_CONFIG = (
     "core.pager=cat",
     "core.sshCommand=",
     "core.alternateRefsCommand=",
+    "core.attributesFile=",
+    "core.gitProxy=",
     "core.symlinks=false",
+    "sequence.editor=false",
     "diff.external=",
     "protocol.allow=never",
     "uploadpack.packObjectsHook=",
     "credential.helper=",
+    "gpg.program=false",
+    "ssh.variant=simple",
+    "init.templateDir=",
     "safe.directory=*",
     "gc.auto=0",
     "advice.detachedHead=false",
@@ -270,16 +328,17 @@ def _git_image() -> str:
     allowlisted path.
     """
     for candidate in TRUSTED_GIT_IMAGES:
-        if not os.path.isabs(candidate):
-            continue
         try:
-            if os.path.islink(candidate) or not os.path.isfile(candidate):
+            # os.path.realpath always returns an absolute, link-resolved path,
+            # so the canonical comparison below subsumes both an absolute-path
+            # check and a symlink check. They are deliberately not duplicated
+            # here: a guard that can only be killed by its twin is not evidence.
+            if not os.path.isfile(candidate):
                 continue
             resolved = os.path.realpath(candidate)
         except OSError:
             continue
         if os.path.normcase(resolved) != os.path.normcase(candidate):
-            # The allowlisted path is redirected somewhere else; refuse it.
             continue
         return candidate
     raise PolicyError(
@@ -296,17 +355,10 @@ def _git_environment() -> dict[str, str]:
         if name in os.environ
     }
     environment.update(GIT_FORCED_ENVIRONMENT)
-    # A deliberately minimal PATH: git must not discover helper programs.
     system_root = environment.get("SYSTEMROOT") or environment.get("WINDIR") or ""
     environment["PATH"] = (
-        os.pathsep.join([os.path.join(system_root, "System32"), system_root])
-        if system_root
-        else ""
+        os.path.join(system_root, "System32") if system_root else ""
     )
-    # Forced configuration is supplied through the scrubbed environment rather
-    # than argv, so the command line stays a fixed literal. GIT_CONFIG_COUNT is
-    # authoritative here precisely because the environment was rebuilt from
-    # scratch; nothing the caller exported can add or renumber an entry.
     for index, setting in enumerate(GIT_FORCED_CONFIG):
         key, _, value = setting.partition("=")
         environment[f"GIT_CONFIG_KEY_{index}"] = key
@@ -315,16 +367,16 @@ def _git_environment() -> dict[str, str]:
     return environment
 
 
-def _run_git(checkout: pathlib.Path, command: str) -> str:
-    require(
-        command in GIT_COMMANDS,
-        "BASE_CHECKOUT_GIT",
-        f"unmodelled git command key {command!r}",
-    )
-    first, second, third = GIT_COMMANDS[command]
+def _git_capture(argv: list[str], checkout: pathlib.Path, label: str) -> str:
+    for token in argv[4:]:
+        require(
+            token in TRUSTED_GIT_TOKENS,
+            "BASE_CHECKOUT_GIT",
+            f"unmodelled git token {token!r}",
+        )
     try:
         completed = subprocess.run(
-            [_git_image(), "-C", str(checkout), first, second, third],
+            argv,
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -338,9 +390,101 @@ def _run_git(checkout: pathlib.Path, command: str) -> str:
         )
     except (OSError, subprocess.SubprocessError, UnicodeError) as error:
         raise PolicyError(
-            "BASE_CHECKOUT_GIT", f"git {command} failed: {error}"
+            "BASE_CHECKOUT_GIT", f"git {label} failed: {error}"
         ) from error
     return completed.stdout.strip()
+
+
+def _run_git(checkout: pathlib.Path, command: str) -> str:
+    """Run one modelled read-only Git command with a fully literal argv.
+
+    Commands that touch the worktree are gated on the local config having been
+    proven inert, so the protection cannot be lost by calling them in the wrong
+    order. Reading the config itself is safe and is therefore exempt.
+    """
+    image = _git_image()
+    target = str(checkout)
+    if command in WORKTREE_GIT_COMMANDS:
+        assert_inert_local_config(checkout)
+    if command == "config-list":
+        return _git_capture(
+            [image, "-C", target, "--no-pager", "config", "--local", "--list", "-z"],
+            checkout,
+            command,
+        )
+    if command == "origin":
+        return _git_capture(
+            [image, "-C", target, "--no-pager", "config", "--local", "--get",
+             "remote.origin.url"],
+            checkout,
+            command,
+        )
+    if command == "head":
+        return _git_capture(
+            [image, "-C", target, "--no-pager", "rev-parse", "--verify",
+             "--end-of-options", "HEAD"],
+            checkout,
+            command,
+        )
+    if command == "head-tree":
+        return _git_capture(
+            [image, "-C", target, "--no-pager", "rev-parse", "--verify",
+             "--end-of-options", "HEAD^{tree}"],
+            checkout,
+            command,
+        )
+    if command == "graph-blob":
+        return _git_capture(
+            [image, "-C", target, "--no-pager", "rev-parse", "--verify",
+             "--end-of-options", "HEAD:.github/policy/approval-graph.json"],
+            checkout,
+            command,
+        )
+    if command == "status":
+        return _git_capture(
+            [image, "-C", target, "--no-pager", "--literal-pathspecs", "status",
+             "--porcelain=v2", "--untracked-files=all"],
+            checkout,
+            command,
+        )
+    raise PolicyError("BASE_CHECKOUT_GIT", f"unmodelled git command {command!r}")
+
+
+GIT_COMMAND_KEYS = frozenset(
+    {"config-list", "origin", "head", "head-tree", "graph-blob", "status"}
+)
+# Commands that read the worktree, and therefore may invoke a checkout-declared
+# filter, diff driver, or fsmonitor. `config-list` and the `config --get` form
+# read only the config file and are safe to run first.
+WORKTREE_GIT_COMMANDS = frozenset({"status"})
+_INERT_CONFIG_PROVEN: set[str] = set()
+
+
+def assert_inert_local_config(checkout: pathlib.Path) -> None:
+    """Deny any checkout whose local config could make Git execute a process.
+
+    This MUST run before any command that touches the worktree. Reading the
+    config does not run filters, diff drivers, or hooks, so it is safe to do
+    first; `status` is not.
+    """
+    key = os.path.normcase(str(checkout))
+    if key in _INERT_CONFIG_PROVEN:
+        return
+    listing = _run_git(checkout, "config-list")
+    for entry in listing.split(chr(0)):
+        if not entry:
+            continue
+        name = entry.split("\n", 1)[0].strip()
+        if not name:
+            continue
+        require(
+            CONFIG_KEY_ALLOWED_RE.fullmatch(name) is not None,
+            "BASE_CHECKOUT_CONFIG",
+            f"protected base checkout declares the unmodelled git configuration "
+            f"key {name!r}; a checkout-controlled key can execute a process "
+            "before this policy reaches a verdict",
+        )
+    _INERT_CONFIG_PROVEN.add(key)
 
 
 def verify_local_base(
@@ -361,6 +505,9 @@ def verify_local_base(
         "BASE_CHECKOUT_HEAD",
         "expected base commit is not a lowercase SHA-1",
     )
+    # FIRST: prove the checkout cannot make git execute a process. Reading the
+    # config is safe; every later command touches the worktree and is not.
+    assert_inert_local_config(checkout)
     origin = _run_git(checkout, "origin")
     require(
         origin
@@ -819,6 +966,257 @@ def verify_live_identity(
     return base_manifest, candidate_manifest
 
 
+def _module_bindings(syntax: ast.Module, path: str) -> dict[str, str]:
+    """Resolve every module-level name to the qualified target it is bound to.
+
+    Process launchers are identified by RESOLVED BINDING, never by spelling. A
+    name is only trusted when its single binding is provably safe; anything that
+    cannot be resolved is denied rather than assumed benign.
+    """
+    bindings: dict[str, str] = {}
+
+    def bind(name: str, target: str) -> None:
+        previous = bindings.get(name)
+        require(
+            previous is None or previous == target,
+            "HELPER_DYNAMIC_EXECUTION",
+            f"{path} rebinds {name!r} ({previous!r} -> {target!r})",
+        )
+        bindings[name] = target
+
+    for node in ast.walk(syntax):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split(".")[0]
+                require(
+                    alias.asname is None or root not in LAUNCHER_MODULES,
+                    "HELPER_DYNAMIC_EXECUTION",
+                    f"{path} imports the process-launching module {alias.name} "
+                    f"under the alias {alias.asname!r}; aliasing hides the "
+                    "resolved binding",
+                )
+                # Bind the alias to the real module so later resolution is by
+                # binding rather than by spelling.
+                bind(alias.asname or root, alias.name if alias.asname else root)
+        elif isinstance(node, ast.ImportFrom):
+            require(
+                node.module is not None,
+                "HELPER_DYNAMIC_EXECUTION",
+                f"{path} uses a relative import",
+            )
+            for alias in node.names:
+                require(
+                    alias.name != "*",
+                    "HELPER_DYNAMIC_EXECUTION",
+                    f"{path} uses a star import from {node.module}",
+                )
+                require(
+                    node.module.split(".")[0] not in LAUNCHER_MODULES,
+                    "HELPER_DYNAMIC_EXECUTION",
+                    f"{path} imports {alias.name!r} from the process-launching "
+                    f"module {node.module}; only qualified calls are modelled",
+                )
+                bind(alias.asname or alias.name, f"{node.module}.{alias.name}")
+        elif isinstance(node, ast.FunctionDef):
+            bind(node.name, f"<def>{node.name}")
+        elif isinstance(node, ast.AsyncFunctionDef):
+            bind(node.name, f"<async>{node.name}")
+        elif isinstance(node, ast.ClassDef):
+            bind(node.name, f"<class>{node.name}")
+    return bindings
+
+
+def _qualified(node: ast.expr, bindings: dict[str, str]) -> str | None:
+    """Dotted name for an expression, or None when it cannot be resolved."""
+    parts: list[str] = []
+    current: ast.expr | None = node
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if not isinstance(current, ast.Name):
+        return None
+    parts.append(bindings.get(current.id, current.id))
+    parts.reverse()
+    return ".".join(parts)
+
+
+def _assert_no_launcher_reference(
+    syntax: ast.Module, bindings: dict[str, str], path: str
+) -> None:
+    """A process launcher may only appear as the callee of a direct call.
+
+    Taking a reference to one -- `f = subprocess.run`, `partial(subprocess.run)`,
+    a dict of launchers, or subclassing Popen -- would let the call site be
+    reached without any of the argv, environment, or keyword rules applying.
+    """
+    called = {id(node.func) for node in ast.walk(syntax) if isinstance(node, ast.Call)}
+    for node in ast.walk(syntax):
+        if isinstance(node, ast.ClassDef):
+            for base in node.bases:
+                resolved = _qualified(base, bindings)
+                require(
+                    resolved is None or resolved not in LAUNCHER_TARGETS,
+                    "HELPER_DYNAMIC_EXECUTION",
+                    f"{path} subclasses the process launcher {resolved}",
+                )
+        if not isinstance(node, (ast.Attribute, ast.Name)):
+            continue
+        if id(node) in called:
+            continue
+        resolved = _qualified(node, bindings)
+        if resolved is None:
+            continue
+        require(
+            resolved not in LAUNCHER_TARGETS,
+            "HELPER_DYNAMIC_EXECUTION",
+            f"{path} takes a reference to the process launcher {resolved}",
+        )
+        require(
+            resolved.split(".")[0] not in LAUNCHER_MODULES
+            or isinstance(node, ast.Name) is False
+            or resolved in bindings.values(),
+            "HELPER_DYNAMIC_EXECUTION",
+            f"{path} aliases the process-launching module {resolved}",
+        )
+
+
+def _assert_trusted_resolver(
+    syntax: ast.Module, bindings: dict[str, str], path: str, name: str
+) -> None:
+    """A trusted image resolver must be a provably literal, unrebound function.
+
+    Matching on the NAME alone is unsound: a helper can define, import, decorate,
+    or rebind its own `_git_image` and choose the binary that runs. The binding
+    is therefore checked, not the spelling.
+    """
+    definitions = [
+        node
+        for node in ast.walk(syntax)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == name
+    ]
+    require(
+        len(definitions) == 1,
+        "HELPER_DYNAMIC_EXECUTION",
+        f"{path} defines the trusted resolver {name!r} {len(definitions)} times",
+    )
+    definition = definitions[0]
+    require(
+        isinstance(definition, ast.FunctionDef),
+        "HELPER_DYNAMIC_EXECUTION",
+        f"{path} defines the trusted resolver {name!r} as a coroutine",
+    )
+    require(
+        definition in syntax.body,
+        "HELPER_DYNAMIC_EXECUTION",
+        f"{path} defines the trusted resolver {name!r} in a nested scope",
+    )
+    require(
+        not definition.decorator_list,
+        "HELPER_DYNAMIC_EXECUTION",
+        f"{path} decorates the trusted resolver {name!r}",
+    )
+    arguments = definition.args
+    require(
+        not (
+            arguments.args
+            or arguments.posonlyargs
+            or arguments.kwonlyargs
+            or arguments.vararg
+            or arguments.kwarg
+            or arguments.defaults
+        ),
+        "HELPER_DYNAMIC_EXECUTION",
+        f"{path} gives the trusted resolver {name!r} parameters",
+    )
+    for node in ast.walk(syntax):
+        rebinds = (
+            isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == name
+                for target in node.targets
+            )
+        ) or (
+            isinstance(node, (ast.AnnAssign, ast.AugAssign))
+            and isinstance(node.target, ast.Name)
+            and node.target.id == name
+        )
+        require(
+            not rebinds,
+            "HELPER_DYNAMIC_EXECUTION",
+            f"{path} rebinds the trusted resolver {name!r}",
+        )
+        if isinstance(node, (ast.Global, ast.Nonlocal)):
+            require(
+                name not in node.names,
+                "HELPER_DYNAMIC_EXECUTION",
+                f"{path} declares the trusted resolver {name!r} global or nonlocal",
+            )
+        if isinstance(node, ast.ImportFrom):
+            require(
+                all(
+                    (alias.asname or alias.name) != name for alias in node.names
+                ),
+                "HELPER_DYNAMIC_EXECUTION",
+                f"{path} imports the trusted resolver {name!r}",
+            )
+    # Every return must be a literal, or an element of a module-level constant
+    # that is itself assigned only literal strings.
+    constants: dict[str, set[str]] = {}
+    for node in syntax.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if isinstance(target, ast.Name) and isinstance(
+                node.value, (ast.Tuple, ast.List, ast.Set)
+            ):
+                if all(
+                    isinstance(element, ast.Constant)
+                    and isinstance(element.value, str)
+                    for element in node.value.elts
+                ):
+                    constants[target.id] = {
+                        element.value for element in node.value.elts
+                    }
+    # Every return must be a literal, a module-level literal constant, or a name
+    # bound by iterating one -- so the resolver provably cannot return an
+    # environment-, argument-, or attribute-derived value.
+    loop_bound: dict[str, set[str]] = {}
+    for node in ast.walk(definition):
+        if isinstance(node, ast.For) and isinstance(node.target, ast.Name):
+            if isinstance(node.iter, ast.Name) and node.iter.id in constants:
+                loop_bound[node.target.id] = set(constants[node.iter.id])
+    returns = [node for node in ast.walk(definition) if isinstance(node, ast.Return)]
+    require(
+        returns,
+        "HELPER_DYNAMIC_EXECUTION",
+        f"{path} gives the trusted resolver {name!r} no return path",
+    )
+    for node in returns:
+        value = node.value
+        candidates: set[str] = set()
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            candidates = {value.value}
+        elif isinstance(value, ast.Name) and value.id in constants:
+            candidates = set(constants[value.id])
+        elif isinstance(value, ast.Name) and value.id in loop_bound:
+            candidates = set(loop_bound[value.id])
+        else:
+            raise PolicyError(
+                "HELPER_DYNAMIC_EXECUTION",
+                f"{path} lets the trusted resolver {name!r} return a value that "
+                "is not a literal or a module-level literal constant",
+            )
+        # A literal is not enough: it must be an image THIS POLICY trusts, not
+        # one the helper chose for itself.
+        unknown = candidates - set(TRUSTED_GIT_IMAGES)
+        require(
+            not unknown,
+            "HELPER_DYNAMIC_EXECUTION",
+            f"{path} lets the trusted resolver {name!r} return the untrusted "
+            f"image(s) {sorted(unknown)}",
+        )
+
+
 def _python_surfaces(path: str, source: str, active: bool) -> set[str]:
     """Derive the capability surfaces a Python helper actually exercises."""
     try:
@@ -826,27 +1224,32 @@ def _python_surfaces(path: str, source: str, active: bool) -> set[str]:
     except SyntaxError as error:
         raise PolicyError("HELPER_SYNTAX", f"{path}: {error}") from error
 
-    modules: set[str] = set()
-    # Names bound by `from X import Y [as Z]` -> the fully qualified target.
-    bound: dict[str, str] = {}
-    for node in ast.walk(syntax):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                modules.add(alias.name)
-                bound[alias.asname or alias.name.split(".")[0]] = alias.name
-        elif isinstance(node, ast.ImportFrom):
-            if node.module is None:
-                raise PolicyError(
-                    "HELPER_DYNAMIC_EXECUTION", f"{path} uses a relative import"
-                )
-            modules.add(node.module)
-            for alias in node.names:
-                bound[alias.asname or alias.name] = f"{node.module}.{alias.name}"
-
+    bindings = _module_bindings(syntax, path)
+    modules = {
+        target
+        for target in bindings.values()
+        if not target.startswith("<")
+    }
     for module in modules:
-        root = module.split(".")[0]
         require(
-            root not in FORBIDDEN_PYTHON_MODULES,
+            module.split(".")[0] not in FORBIDDEN_PYTHON_MODULES,
+            "HELPER_DYNAMIC_EXECUTION",
+            f"{path} imports the unmodelled module {module}",
+        )
+
+    imported = {
+        alias.name
+        for node in ast.walk(syntax)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    } | {
+        node.module
+        for node in ast.walk(syntax)
+        if isinstance(node, ast.ImportFrom) and node.module is not None
+    }
+    for module in imported:
+        require(
+            module.split(".")[0] not in FORBIDDEN_PYTHON_MODULES,
             "HELPER_DYNAMIC_EXECUTION",
             f"{path} imports the unmodelled module {module}",
         )
@@ -854,13 +1257,13 @@ def _python_surfaces(path: str, source: str, active: bool) -> set[str]:
     surfaces: set[str] = set()
     if any(
         module == name or module.startswith(name + ".")
-        for module in modules
+        for module in imported
         for name in NETWORK_PYTHON_MODULES
     ):
         surfaces.add("github-api-read")
     if any(
         module == name or module.startswith(name + ".")
-        for module in modules
+        for module in imported
         for name in PROCESS_PYTHON_MODULES
     ):
         surfaces.add("git-read-local")
@@ -868,36 +1271,23 @@ def _python_surfaces(path: str, source: str, active: bool) -> set[str]:
     if not active:
         return surfaces
 
-    def qualified(func: ast.expr) -> str:
-        parts: list[str] = []
-        current: ast.expr | None = func
-        while isinstance(current, ast.Attribute):
-            parts.append(current.attr)
-            current = current.value
-        if isinstance(current, ast.Name):
-            parts.append(bound.get(current.id, current.id))
-        parts.reverse()
-        return ".".join(parts)
+    _assert_no_launcher_reference(syntax, bindings, path)
 
     for node in ast.walk(syntax):
         if isinstance(node, ast.Call):
-            name = qualified(node.func)
+            resolved = _qualified(node.func, bindings)
             if isinstance(node.func, ast.Name):
-                resolved = bound.get(node.func.id, node.func.id)
                 require(
-                    resolved not in FORBIDDEN_PYTHON_CALLS
-                    and node.func.id not in FORBIDDEN_PYTHON_BUILTINS,
+                    node.func.id not in FORBIDDEN_PYTHON_BUILTINS,
                     "HELPER_DYNAMIC_EXECUTION",
                     f"{path} uses {node.func.id}",
                 )
-            else:
-                require(
-                    name not in FORBIDDEN_PYTHON_CALLS,
-                    "HELPER_DYNAMIC_EXECUTION",
-                    f"{path} uses {name}",
-                )
-            leaf = name.rsplit(".", 1)[-1]
-            if leaf == "_run_git":
+            require(
+                resolved is None or resolved not in FORBIDDEN_PYTHON_CALLS,
+                "HELPER_DYNAMIC_EXECUTION",
+                f"{path} uses {resolved}",
+            )
+            if resolved is not None and resolved.rsplit(".", 1)[-1] == "_run_git":
                 require(
                     len(node.args) >= 2
                     and isinstance(node.args[1], ast.Constant)
@@ -905,11 +1295,21 @@ def _python_surfaces(path: str, source: str, active: bool) -> set[str]:
                     "HELPER_GIT_UNMODELED",
                     f"{path} passes a dynamic or unmodelled Git command key",
                 )
-            if name.split(".")[0] == "subprocess" or name in SUBPROCESS_ENTRYPOINTS:
+            if resolved is not None and (
+                resolved in LAUNCHER_TARGETS
+                or resolved.split(".")[0] in LAUNCHER_MODULES
+            ):
                 surfaces.add("git-read-local")
-                _assert_subprocess_command(path, node)
+                _assert_subprocess_command(path, node, syntax, bindings)
         elif isinstance(node, ast.Attribute):
-            if node.attr in {"__globals__", "__builtins__", "__subclasses__", "__class__"}:
+            if node.attr in {
+                "__globals__",
+                "__builtins__",
+                "__subclasses__",
+                "__class__",
+                "__code__",
+                "__dict__",
+            }:
                 raise PolicyError(
                     "HELPER_DYNAMIC_EXECUTION",
                     f"{path} reaches through {node.attr}",
@@ -917,26 +1317,178 @@ def _python_surfaces(path: str, source: str, active: bool) -> set[str]:
     return surfaces
 
 
-def _assert_subprocess_command(path: str, node: ast.Call) -> None:
-    """A subprocess invocation must be a literal, fully modelled git read."""
-    require(node.args, "HELPER_PROCESS_COMMAND", path)
+def _argv_vectors(
+    node: ast.Call, syntax: ast.Module, path: str
+) -> list[tuple[list[ast.expr], ast.AST | None]]:
+    """Every argv vector that can reach this launch, each with its own scope.
+
+    Resolution follows the binding: a literal list, a local name assigned only
+    literal lists, or a parameter whose every call site passes a literal list.
+    Anything that cannot be resolved is refused rather than assumed benign.
+    """
+    require(node.args, "HELPER_PROCESS_COMMAND", f"{path} launches with no argv")
     command = node.args[0]
+    if isinstance(command, (ast.List, ast.Tuple)):
+        return [(list(command.elts), _enclosing_function(node, syntax))]
     require(
-        isinstance(command, (ast.List, ast.Tuple)),
+        isinstance(command, ast.Name),
         "HELPER_PROCESS_COMMAND",
         f"{path} invokes a constructed subprocess command",
     )
+
+    assignments = [
+        assignment
+        for assignment in ast.walk(syntax)
+        if isinstance(assignment, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == command.id
+            for target in assignment.targets
+        )
+    ]
+    if assignments:
+        require(
+            all(
+                isinstance(assignment.value, (ast.List, ast.Tuple))
+                for assignment in assignments
+            ),
+            "HELPER_PROCESS_COMMAND",
+            f"{path} builds the argv {command.id!r} from an unresolvable value",
+        )
+        return [
+            (list(assignment.value.elts), _enclosing_function(assignment, syntax))
+            for assignment in assignments
+        ]
+
+    enclosing = _enclosing_function(node, syntax)
     require(
-        not any(isinstance(element, ast.Starred) for element in command.elts),
+        enclosing is not None,
+        "HELPER_PROCESS_COMMAND",
+        f"{path} launches outside any resolvable function",
+    )
+    parameters = [argument.arg for argument in enclosing.args.args]
+    require(
+        command.id in parameters,
+        "HELPER_PROCESS_COMMAND",
+        f"{path} builds the argv {command.id!r} from an unresolvable value",
+    )
+    position = parameters.index(command.id)
+    call_sites = [
+        site
+        for site in ast.walk(syntax)
+        if isinstance(site, ast.Call)
+        and isinstance(site.func, ast.Name)
+        and site.func.id == enclosing.name
+    ]
+    require(
+        call_sites,
+        "HELPER_PROCESS_COMMAND",
+        f"{path} defines the launch wrapper {enclosing.name!r} with no resolvable "
+        "call site",
+    )
+    vectors = []
+    for site in call_sites:
+        require(
+            len(site.args) > position
+            and isinstance(site.args[position], (ast.List, ast.Tuple)),
+            "HELPER_PROCESS_COMMAND",
+            f"{path} calls {enclosing.name!r} with an unresolvable argv",
+        )
+        vectors.append(
+            (list(site.args[position].elts), _enclosing_function(site, syntax))
+        )
+    return vectors
+
+
+def _resolve_binding(
+    element: ast.expr, syntax: ast.Module, path: str
+) -> ast.expr:
+    """Follow a simple name to its single assignment, or refuse."""
+    if not isinstance(element, ast.Name):
+        return element
+    assignments = [
+        assignment.value
+        for assignment in ast.walk(syntax)
+        if isinstance(assignment, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == element.id
+            for target in assignment.targets
+        )
+    ]
+    require(
+        len(assignments) == 1,
+        "HELPER_PROCESS_COMMAND",
+        f"{path} uses the subprocess operand {element.id!r}, which has "
+        f"{len(assignments)} bindings and cannot be resolved",
+    )
+    return assignments[0]
+
+
+def _enclosing_function(node: ast.AST, syntax: ast.Module) -> ast.AST | None:
+    enclosing = None
+    for candidate in ast.walk(syntax):
+        if isinstance(candidate, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+            inner is node for inner in ast.walk(candidate)
+        ):
+            enclosing = candidate
+    return enclosing
+
+
+def _resolve_binding(
+    element: ast.expr, scope: ast.AST | None, syntax: ast.Module, path: str
+) -> ast.expr:
+    """Follow a simple name to its single assignment in scope, or refuse."""
+    if not isinstance(element, ast.Name):
+        return element
+    for container in (scope, syntax):
+        if container is None:
+            continue
+        assignments = [
+            assignment.value
+            for assignment in ast.walk(container)
+            if isinstance(assignment, ast.Assign)
+            and any(
+                isinstance(target, ast.Name) and target.id == element.id
+                for target in assignment.targets
+            )
+        ]
+        if len(assignments) == 1:
+            return assignments[0]
+        if assignments:
+            raise PolicyError(
+                "HELPER_PROCESS_COMMAND",
+                f"{path} uses the subprocess operand {element.id!r}, which has "
+                f"{len(assignments)} bindings and cannot be resolved",
+            )
+    raise PolicyError(
+        "HELPER_PROCESS_COMMAND",
+        f"{path} uses the unresolvable subprocess operand {element.id!r}",
+    )
+
+
+def _assert_subprocess_command(
+    path: str, node: ast.Call, syntax: ast.Module, bindings: dict[str, str]
+) -> None:
+    """A subprocess invocation must be a literal, fully modelled git read."""
+    for elements, scope in _argv_vectors(node, syntax, path):
+        _assert_argv_vector(path, elements, scope, syntax, bindings)
+    _assert_launch_keywords(path, node)
+
+
+def _assert_argv_vector(
+    path: str,
+    elements: list[ast.expr],
+    scope: ast.AST | None,
+    syntax: ast.Module,
+    bindings: dict[str, str],
+) -> None:
+    require(
+        not any(isinstance(element, ast.Starred) for element in elements),
         "HELPER_PROCESS_COMMAND",
         f"{path} splats unmodelled arguments into a subprocess command",
     )
-    require(command.elts, "HELPER_PROCESS_COMMAND", f"{path} runs an empty command")
-    # argv[0] decides which image actually runs, so it must be either the
-    # literal "git" or a call to a modelled trusted-image resolver. Anything
-    # computed -- an environment read, an attribute, a subscript -- would let a
-    # planted native stub forge every answer this helper depends on.
-    image = command.elts[0]
+    require(elements, "HELPER_PROCESS_COMMAND", f"{path} runs an empty command")
+
+    image = _resolve_binding(elements[0], scope, syntax, path)
     if isinstance(image, ast.Constant):
         require(
             image.value == "git",
@@ -954,59 +1506,95 @@ def _assert_subprocess_command(path: str, node: ast.Call) -> None:
             f"{path} computes the subprocess image instead of using a modelled "
             "trusted resolver",
         )
-    literals = [
-        element.value
-        for element in command.elts
-        if isinstance(element, ast.Constant) and isinstance(element.value, str)
-    ]
-    dangerous = [value for value in literals if value in DANGEROUS_GIT_SUBCOMMANDS]
+        _assert_trusted_resolver(syntax, bindings, path, image.func.id)
+
+    # Every remaining operand must be a literal, except exactly the directory
+    # operand, which may be str(<name>). A non-literal operand would let a
+    # dangerous subcommand be smuggled in as `['git', sub, 'x']` or 'cl'+'one'.
+    for index, raw_element in enumerate(elements[1:], start=1):
+        element = _resolve_binding(raw_element, scope, syntax, path)
+        if isinstance(element, ast.Constant) and isinstance(element.value, str):
+            require(
+                element.value not in DANGEROUS_GIT_SUBCOMMANDS,
+                "HELPER_GIT_UNMODELED",
+                f"{path} invokes git {element.value!r}",
+            )
+            require(
+                element.value not in FORBIDDEN_GIT_OPTIONS,
+                "HELPER_GIT_UNMODELED",
+                f"{path} passes the unmodelled git option {element.value!r}",
+            )
+            require(
+                not element.value.startswith(FORBIDDEN_GIT_OPTION_PREFIXES),
+                "HELPER_GIT_UNMODELED",
+                f"{path} passes the unmodelled git option {element.value!r}",
+            )
+            continue
+        require(
+            isinstance(element, ast.Call)
+            and isinstance(element.func, ast.Name)
+            and element.func.id == "str"
+            and len(element.args) == 1
+            and not element.keywords,
+            "HELPER_PROCESS_COMMAND",
+            f"{path} passes a non-literal subprocess operand at position {index}",
+        )
+
+
+def _assert_launch_keywords(path: str, node: ast.Call) -> None:
+    keywords = [keyword.arg for keyword in node.keywords]
     require(
-        not dangerous,
-        "HELPER_GIT_UNMODELED",
-        f"{path} invokes git {dangerous!r}",
+        None not in keywords,
+        "HELPER_PROCESS_COMMAND",
+        f"{path} splats keyword arguments into a subprocess call",
     )
-    keywords = {keyword.arg for keyword in node.keywords}
-    # `executable=` silently replaces the image while argv[0] still reads
-    # "git", so it is refused outright for governed helpers.
-    forbidden = keywords & FORBIDDEN_SUBPROCESS_KEYWORDS
+    forbidden = set(keywords) & FORBIDDEN_SUBPROCESS_KEYWORDS
     require(
         not forbidden,
         "HELPER_PROCESS_COMMAND",
         f"{path} passes the forbidden subprocess argument(s) {sorted(forbidden)}",
     )
     require(
-        None not in keywords,
-        "HELPER_PROCESS_COMMAND",
-        f"{path} splats keyword arguments into a subprocess call",
-    )
-    for keyword in node.keywords:
-        require(
-            keyword.arg != "shell"
-            or not isinstance(keyword.value, ast.Constant)
-            or keyword.value.value is not True,
-            "HELPER_PROCESS_SHELL",
-            f"{path} enables subprocess shell execution",
-        )
-        require(
-            keyword.arg != "env"
-            or isinstance(keyword.value, (ast.Dict, ast.Name))
-            or (
-                isinstance(keyword.value, ast.Call)
-                and isinstance(keyword.value.func, ast.Name)
-            ),
-            "HELPER_PROCESS_COMMAND",
-            f"{path} passes an unmodelled subprocess environment",
-        )
-        require(
-            keyword.arg != "env" or not isinstance(keyword.value, ast.Attribute),
-            "HELPER_PROCESS_COMMAND",
-            f"{path} inherits the ambient environment into a subprocess",
-        )
-    require(
         "env" in keywords,
         "HELPER_PROCESS_COMMAND",
         f"{path} runs a subprocess without an explicit scrubbed environment",
     )
+    for keyword in node.keywords:
+        if keyword.arg == "shell":
+            require(
+                isinstance(keyword.value, ast.Constant)
+                and keyword.value.value is False,
+                "HELPER_PROCESS_SHELL",
+                f"{path} sets shell to a value other than literal False",
+            )
+        elif keyword.arg == "env":
+            # A literal mapping, or a call to a module-level builder defined in
+            # this file. Names, attributes, and dict(...) are refused, because
+            # `env=environ`, `env=dict(os.environ)` and `AMB=os.environ` all
+            # inherit the ambient environment.
+            require(
+                isinstance(keyword.value, ast.Dict)
+                or (
+                    isinstance(keyword.value, ast.Call)
+                    and isinstance(keyword.value.func, ast.Name)
+                    and keyword.value.func.id in ENVIRONMENT_BUILDERS
+                    and not keyword.value.args
+                    and not keyword.value.keywords
+                ),
+                "HELPER_PROCESS_COMMAND",
+                f"{path} passes an unmodelled or ambient subprocess environment",
+            )
+        elif keyword.arg == "cwd":
+            require(
+                isinstance(keyword.value, ast.Constant)
+                or (
+                    isinstance(keyword.value, ast.Call)
+                    and isinstance(keyword.value.func, ast.Name)
+                    and keyword.value.func.id == "str"
+                ),
+                "HELPER_PROCESS_COMMAND",
+                f"{path} passes a non-literal subprocess working directory",
+            )
 
 
 def _powershell_surfaces(path: str, source: str) -> set[str]:

@@ -702,6 +702,137 @@ class CollectorBoundaryTests(unittest.TestCase):
         self.activate(api)
 
 
+class CheckoutConfigExecutionTests(unittest.TestCase):
+    """C-3: a checkout-controlled git config must not execute a process."""
+
+    def build_repo(self, directory, config_lines):
+        checkout = pathlib.Path(directory) / "checkout"
+        checkout.mkdir()
+        image = validator._git_image()
+        environment = validator._git_environment()
+
+        def raw(*arguments):
+            return subprocess.run(
+                [image, "-C", str(checkout), *arguments],
+                capture_output=True, text=True, env=environment, check=False,
+            )
+
+        raw("init", "-q")
+        (checkout / "tracked.txt").write_text("hello\n", encoding="utf-8")
+        (checkout / ".gitattributes").write_text(
+            "tracked.txt filter=evil\n", encoding="utf-8"
+        )
+        raw("add", "-A")
+        raw("-c", "user.email=a@b.c", "-c", "user.name=a", "commit", "-qm", "x")
+        with (checkout / ".git" / "config").open("a", encoding="utf-8") as handle:
+            handle.write(config_lines)
+        # Same byte length, so git cannot decide from stat alone and must
+        # re-hash the worktree file -- which is what runs the clean filter.
+        (checkout / "tracked.txt").write_text("world\n", encoding="utf-8")
+        os.utime(checkout / "tracked.txt", (0, 0))
+        return checkout
+
+    def test_filter_driver_cannot_execute_before_the_verdict(self):
+        try:
+            validator._git_image()
+        except PolicyError:
+            self.skipTest("no trusted git image on this host")
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = pathlib.Path(directory) / "EVIDENCE.txt"
+            payload = str(evidence).replace("\\", "/")
+            checkout = self.build_repo(
+                directory,
+                '\n[filter "evil"]\n'
+                f"\tclean = C:/Windows/System32/cmd.exe /c echo pwned> {payload}\n",
+            )
+            validator._INERT_CONFIG_PROVEN.clear()
+            with self.assertRaises(PolicyError) as raised:
+                validator._run_git(checkout, "status")
+            self.assertEqual(raised.exception.code, "BASE_CHECKOUT_CONFIG")
+            self.assertIn("filter.evil.clean", raised.exception.message)
+            self.assertFalse(
+                evidence.exists(),
+                "a process ran before the policy reached a verdict",
+            )
+
+    def test_every_command_executing_config_family_is_denied(self):
+        try:
+            validator._git_image()
+        except PolicyError:
+            self.skipTest("no trusted git image on this host")
+        families = {
+            "filter": '[filter "e"]\n\tclean = cmd\n',
+            "diff-textconv": '[diff "e"]\n\ttextconv = cmd\n',
+            "diff-command": '[diff "e"]\n\tcommand = cmd\n',
+            "merge-driver": '[merge "e"]\n\tdriver = cmd\n',
+            "fsmonitor": "[core]\n\tfsmonitor = cmd\n",
+            "hookspath": "[core]\n\thooksPath = /tmp/h\n",
+            "sshcommand": "[core]\n\tsshCommand = cmd\n",
+            "pager": "[core]\n\tpager = cmd\n",
+            "editor": "[core]\n\teditor = cmd\n",
+            "askpass": "[core]\n\taskPass = cmd\n",
+            "gitproxy": "[core]\n\tgitProxy = cmd\n",
+            "alternaterefs": "[core]\n\talternateRefsCommand = cmd\n",
+            "attributesfile": "[core]\n\tattributesFile = /tmp/a\n",
+            "sequence-editor": "[sequence]\n\teditor = cmd\n",
+            "credential": "[credential]\n\thelper = cmd\n",
+            "uploadpack": "[uploadpack]\n\tpackObjectsHook = cmd\n",
+            "protocol": '[protocol "ext"]\n\tallow = always\n',
+            "url-insteadof": '[url "x"]\n\tinsteadOf = y\n',
+            "include": "[include]\n\tpath = /tmp/evil\n",
+            "includeif": '[includeIf "gitdir:/"]\n\tpath = /tmp/evil\n',
+            "alias": "[alias]\n\tx = !cmd\n",
+            "trailer": '[trailer "t"]\n\tcommand = cmd\n',
+            "gpg": "[gpg]\n\tprogram = cmd\n",
+            "ssh-variant": "[ssh]\n\tvariant = cmd\n",
+            "templatedir": "[init]\n\ttemplateDir = /tmp/t\n",
+            "remote-uploadpack": '[remote "o"]\n\tuploadpack = cmd\n',
+            "remote-receivepack": '[remote "o"]\n\treceivepack = cmd\n',
+            "pager-subcommand": '[pager]\n\tstatus = cmd\n',
+            "http-proxy": '[http]\n\tproxy = cmd\n',
+            "safe-directory": "[safe]\n\tdirectory = *\n",
+        }
+        for label, block in families.items():
+            with self.subTest(family=label):
+                with tempfile.TemporaryDirectory() as directory:
+                    checkout = self.build_repo(directory, "\n" + block)
+                    validator._INERT_CONFIG_PROVEN.clear()
+                    with self.assertRaises(PolicyError) as raised:
+                        validator._run_git(checkout, "status")
+                    self.assertEqual(
+                        raised.exception.code, "BASE_CHECKOUT_CONFIG"
+                    )
+
+    def test_a_pristine_checkout_is_admitted(self):
+        try:
+            validator._git_image()
+        except PolicyError:
+            self.skipTest("no trusted git image on this host")
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = self.build_repo(directory, "")
+            validator._INERT_CONFIG_PROVEN.clear()
+            validator.assert_inert_local_config(checkout)
+
+    def test_config_scan_precedes_every_worktree_command(self):
+        source = (POLICY_DIR / "validator.py").read_text(encoding="utf-8")
+        self.assertIn("WORKTREE_GIT_COMMANDS", source)
+        self.assertIn("assert_inert_local_config(checkout)", source)
+        module = ast.parse(source)
+        runner = next(
+            node
+            for node in module.body
+            if isinstance(node, ast.FunctionDef) and node.name == "_run_git"
+        )
+        guarded = [
+            node
+            for node in ast.walk(runner)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "assert_inert_local_config"
+        ]
+        self.assertTrue(guarded, "_run_git must gate worktree commands")
+
+
 class TrustedGitImageTests(unittest.TestCase):
     """Exploit-derived: a forged Git image must be unreachable."""
 
@@ -782,6 +913,41 @@ class TrustedGitImageTests(unittest.TestCase):
             self.assertEqual(raised.exception.code, "BASE_CHECKOUT_GIT")
         finally:
             validator.TRUSTED_GIT_IMAGES = saved
+
+    def test_git_capture_rejects_an_unmodelled_token(self):
+        try:
+            image = validator._git_image()
+        except PolicyError:
+            self.skipTest("no trusted git image on this host")
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = pathlib.Path(directory)
+            with self.assertRaises(PolicyError) as raised:
+                validator._git_capture(
+                    [image, "-C", str(checkout), "--no-pager", "log", "--all"],
+                    checkout,
+                    "probe",
+                )
+            self.assertEqual(raised.exception.code, "BASE_CHECKOUT_GIT")
+            self.assertIn("unmodelled git token", raised.exception.message)
+
+    def test_relative_allowlist_entry_that_exists_is_still_refused(self):
+        # Isolates the absolute-path guard: the file really exists relative to
+        # the working directory, so only the isabs check can reject it.
+        with tempfile.TemporaryDirectory() as directory:
+            relative = "relgit.exe"
+            pathlib.Path(directory, relative).write_bytes(b"MZ")
+            saved_cwd = os.getcwd()
+            saved_images = validator.TRUSTED_GIT_IMAGES
+            try:
+                os.chdir(directory)
+                validator.TRUSTED_GIT_IMAGES = (relative,)
+                self.assertTrue(os.path.isfile(relative))
+                with self.assertRaises(PolicyError) as raised:
+                    validator._git_image()
+                self.assertEqual(raised.exception.code, "BASE_CHECKOUT_GIT")
+            finally:
+                os.chdir(saved_cwd)
+                validator.TRUSTED_GIT_IMAGES = saved_images
 
     def test_relative_allowlist_entry_is_refused(self):
         saved = validator.TRUSTED_GIT_IMAGES

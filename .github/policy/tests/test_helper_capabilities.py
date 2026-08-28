@@ -405,5 +405,265 @@ class SubprocessImageTests(unittest.TestCase):
         )
 
 
+class ResolverBindingTests(unittest.TestCase):
+    """C-1: the trusted resolver is checked by binding, never by spelling."""
+
+    def assert_denied(self, source):
+        with self.assertRaises(PolicyError) as raised:
+            _helper_capabilities(
+                "helper.py", source.encode("utf-8"), {"git-read-local"}, True
+            )
+        return raised.exception
+
+    def launch(self, prelude):
+        return (
+            "import subprocess\n"
+            + prelude
+            + "subprocess.run([_git_image(), 'status'], env={})\n"
+        )
+
+    def test_shadowed_resolver_bindings_are_denied(self):
+        cases = {
+            "env-return": "def _git_image():\n    return os.environ['G']\n",
+            "attacker-literal": "def _git_image():\n    return 'C:/evil/git.exe'\n",
+            "argv-return": (
+                "import sys\ndef _git_image():\n    return sys.argv[1]\n"
+            ),
+            "attribute-return": "def _git_image():\n    return mod.path\n",
+            "file-return": (
+                "def _git_image():\n    return open('x').read()\n"
+            ),
+            "lambda": "_git_image = lambda: 'C:/evil/git.exe'\n",
+            "assignment": "def real():\n    return 'x'\n_git_image = real\n",
+            "duplicate-def": (
+                "def _git_image():\n    return '/usr/bin/git'\n"
+                "def _git_image():\n    return 'C:/evil/git.exe'\n"
+            ),
+            "conditional-def": (
+                "if flag:\n    def _git_image():\n        return '/usr/bin/git'\n"
+                "else:\n    def _git_image():\n        return 'C:/evil/git.exe'\n"
+            ),
+            "rebind-after": (
+                "def _git_image():\n    return '/usr/bin/git'\n"
+                "_git_image = other\n"
+            ),
+            "nested-def": (
+                "def outer():\n    def _git_image():\n        return '/usr/bin/git'\n"
+                "    return _git_image\n"
+            ),
+            "decorated": (
+                "def deco(f):\n    return f\n"
+                "@deco\ndef _git_image():\n    return '/usr/bin/git'\n"
+            ),
+            "async-def": (
+                "async def _git_image():\n    return '/usr/bin/git'\n"
+            ),
+            "parameters": (
+                "def _git_image(which='/usr/bin/git'):\n    return which\n"
+            ),
+            "global-decl": (
+                "def _git_image():\n    return '/usr/bin/git'\n"
+                "def poke():\n    global _git_image\n"
+            ),
+            "try-finally": (
+                "def _git_image():\n    try:\n        return evil()\n"
+                "    finally:\n        pass\n"
+            ),
+            "undefined": "",
+        }
+        for label, prelude in cases.items():
+            with self.subTest(label=label):
+                self.assert_denied(self.launch(prelude))
+
+    def test_resolver_returning_a_trusted_image_is_accepted(self):
+        source = self.launch("def _git_image():\n    return '/usr/bin/git'\n")
+        _helper_capabilities(
+            "helper.py", source.encode("utf-8"), {"git-read-local"}, True
+        )
+
+
+class LauncherIndirectionTests(unittest.TestCase):
+    """C-2: a process launcher must not be reachable through indirection."""
+
+    def assert_denied(self, source):
+        with self.assertRaises(PolicyError) as raised:
+            _helper_capabilities(
+                "helper.py", source.encode("utf-8"), {"git-read-local"}, True
+            )
+        return raised.exception
+
+    def test_indirect_launch_forms_are_denied(self):
+        cases = {
+            "assign-run": (
+                "import os, subprocess\nf = subprocess.run\n"
+                "f([os.environ['ANY'], 'clone', 'https://evil'], env=os.environ,"
+                " executable=os.environ['E'], shell=True)\n"
+            ),
+            "module-alias": (
+                "import subprocess as sp\nsp.run(['git', 'clone', 'x'], env={})\n"
+            ),
+            "shim-alias": (
+                "from attacker import shim as subprocess\n"
+                "subprocess.run(['git', 'clone', 'x'], env={})\n"
+            ),
+            "functools-partial": (
+                "import functools, subprocess\n"
+                "go = functools.partial(subprocess.run)\ngo(['git'], env={})\n"
+            ),
+            "dict-dispatch": (
+                "import subprocess\ntable = {'r': subprocess.run}\n"
+                "table['r'](['git'], env={})\n"
+            ),
+            "subclass-popen": (
+                "import subprocess\nclass P(subprocess.Popen):\n    pass\n"
+                "P(['git'], env={})\n"
+            ),
+            "attribute-reference": (
+                "import subprocess\nref = subprocess.Popen\nref(['git'], env={})\n"
+            ),
+            "os-system-alias": "from os import system as s\ns('git clone x')\n",
+            "star-import": "from subprocess import *\nrun(['git'], env={})\n",
+            "from-import-run": (
+                "from subprocess import run\nrun(['git'], env={})\n"
+            ),
+        }
+        for label, source in cases.items():
+            with self.subTest(label=label):
+                self.assert_denied(source)
+
+    def test_module_alias_is_denied_even_without_a_call(self):
+        # Isolates the alias guard: the declared capability matches the surface,
+        # so neither the dormant nor the undeclared check can mask it.
+        with self.assertRaises(PolicyError) as raised:
+            _helper_capabilities(
+                "helper.py",
+                b"import subprocess as sp\nvalue = 1\n",
+                {"git-read-local"},
+                True,
+            )
+        self.assertIn("alias", raised.exception.message)
+
+    def test_star_import_from_any_module_is_denied(self):
+        with self.assertRaises(PolicyError) as raised:
+            _helper_capabilities(
+                "helper.py", b"from json import *\nvalue = 1\n", set(), True
+            )
+        self.assertIn("star import", raised.exception.message)
+
+    def test_conflicting_rebinding_is_denied(self):
+        with self.assertRaises(PolicyError) as raised:
+            _helper_capabilities(
+                "helper.py", b"import json\ndef json():\n    return 1\n", set(), True
+            )
+        self.assertIn("rebinds", raised.exception.message)
+
+    def test_unresolvable_argv_expression_is_denied(self):
+        # The module contains an assignment, so the argv resolution genuinely
+        # has to decide rather than falling through an empty search.
+        with self.assertRaises(PolicyError) as raised:
+            _helper_capabilities(
+                "helper.py",
+                b"import subprocess\n"
+                b"marker = 1\n"
+                b"def build():\n    return ['git', 'clone']\n"
+                b"def go():\n    return subprocess.run(build(), env={})\n",
+                {"git-read-local"},
+                True,
+            )
+        self.assertEqual(raised.exception.code, "HELPER_PROCESS_COMMAND")
+        self.assertIn("constructed subprocess command", raised.exception.message)
+
+    def test_non_git_literal_image_is_denied(self):
+        self.assert_denied(
+            "import subprocess\nsubprocess.run(['notgit', 'status'], env={})\n"
+        )
+
+    def test_keyword_splat_is_denied_even_with_an_environment(self):
+        self.assert_denied(
+            "import subprocess\n"
+            "subprocess.run(['git', 'status'], env={}, **opts)\n"
+        )
+
+    def test_launch_without_arguments_is_denied(self):
+        self.assert_denied("import subprocess\nsubprocess.run()\n")
+
+
+class LaunchSubstanceTests(unittest.TestCase):
+    """H-4: guards must check substance, not shape."""
+
+    TRUSTED = (
+        "import subprocess\n"
+        "def _git_image():\n    return '/usr/bin/git'\n"
+        "def _git_environment():\n    return {}\n"
+    )
+
+    def assert_denied(self, body, code=None):
+        source = self.TRUSTED + body
+        with self.assertRaises(PolicyError) as raised:
+            _helper_capabilities(
+                "helper.py", source.encode("utf-8"), {"git-read-local"}, True
+            )
+        if code is not None:
+            self.assertEqual(raised.exception.code, code)
+
+    def test_ambient_environment_forms_are_denied(self):
+        for label, body in {
+            "from-import": (
+                "from os import environ\nenv = environ\n"
+                "subprocess.run([_git_image(), 'status'], env=env)\n"
+            ),
+            "dict-copy": (
+                "import os\n"
+                "subprocess.run([_git_image(), 'status'], env=dict(os.environ))\n"
+            ),
+            "indirect": (
+                "import os\nAMB = os.environ\n"
+                "subprocess.run([_git_image(), 'status'], env=AMB)\n"
+            ),
+        }.items():
+            with self.subTest(label=label):
+                self.assert_denied(body, "HELPER_PROCESS_COMMAND")
+
+    def test_shell_must_be_literal_false(self):
+        for value in ("1", "flag", "True", "bool(0)"):
+            with self.subTest(value=value):
+                self.assert_denied(
+                    f"subprocess.run([_git_image(), 'status'], env={{}}, shell={value})\n",
+                    "HELPER_PROCESS_SHELL",
+                )
+
+    def test_cwd_must_be_literal(self):
+        self.assert_denied(
+            "import os\n"
+            "subprocess.run([_git_image(), 'status'], env={}, cwd=os.environ['X'])\n",
+            "HELPER_PROCESS_COMMAND",
+        )
+
+    def test_nonliteral_operands_cannot_smuggle_a_subcommand(self):
+        for body in (
+            "subprocess.run([_git_image(), sub, 'x'], env={})\n",
+            "subprocess.run([_git_image(), 'cl' + 'one'], env={})\n",
+            "subprocess.run([_git_image(), f'{x}'], env={})\n",
+        ):
+            with self.subTest(body=body.strip()):
+                self.assert_denied(body, "HELPER_PROCESS_COMMAND")
+
+    def test_git_global_options_are_modelled(self):
+        for option in (
+            "'-c', 'alias.x=!cmd'",
+            "'--exec-path=C:/evil'",
+            "'--upload-pack=evil'",
+            "'--receive-pack=evil'",
+            "'--git-dir=C:/evil'",
+            "'--work-tree=C:/evil'",
+            "'--namespace=x'",
+        ):
+            with self.subTest(option=option):
+                self.assert_denied(
+                    f"subprocess.run([_git_image(), {option}, 'status'], env={{}})\n",
+                    "HELPER_GIT_UNMODELED",
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
