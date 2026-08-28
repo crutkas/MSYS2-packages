@@ -74,32 +74,69 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $workflow = Join-Path $env:GITHUB_WORKSPACE `
             '.github\workflows\arm64-msys-libgcrypt.yml'
-          $workflowText = Get-Content -Raw -LiteralPath $workflow
-          $usesKeys = @(
-            [regex]::Matches(
-              $workflowText, '(?m)^\s*(?:-\s*)?(?:\{\s*)?uses\s*:')
-          )
-          $usesRefs = @(
-            [regex]::Matches(
-              $workflowText,
-              '(?m)^\s*(?:-\s*)?(?:\{\s*)?uses\s*:\s*(?<ref>[^,\s#}]+)')
-          )
-          if ($usesKeys.Count -ne $usesRefs.Count) {
-            throw 'An Action reference uses unsupported or empty syntax.'
+          function Assert-ImmutableActionRefs([string] $WorkflowText) {
+            $keyPattern =
+              '(?im)(?<![A-Za-z0-9_-])(?:"uses"|''uses''|uses)\s*:'
+            $refPattern =
+              $keyPattern + '\s*(?<ref>[^,\s#}\]]+)'
+            $usesKeys = @([regex]::Matches($WorkflowText, $keyPattern))
+            $usesRefs = @([regex]::Matches($WorkflowText, $refPattern))
+            if ($usesKeys.Count -ne $usesRefs.Count) {
+              throw 'An Action reference uses unsupported or empty syntax.'
+            }
+            $actionRefs = @(
+              $usesRefs | ForEach-Object { $_.Groups['ref'].Value }
+            )
+            $externalRefs = @($actionRefs | Where-Object { $_ -notlike './*' })
+            if ($externalRefs.Count -eq 0) {
+              throw 'No external Action references were found; pin audit scope is invalid.'
+            }
+            $mutableRefs = @(
+              $externalRefs |
+                Where-Object { $_ -cnotmatch '^[^@\s]+@[0-9a-f]{40}$' }
+            )
+            if ($mutableRefs.Count -ne 0) {
+              throw "Mutable external Action references: $($mutableRefs -join ', ')"
+            }
+            return $externalRefs.Count
           }
-          $actionRefs = @($usesRefs | ForEach-Object { $_.Groups['ref'].Value })
-          $externalRefs = @($actionRefs | Where-Object { $_ -notlike './*' })
-          if ($externalRefs.Count -eq 0) {
-            throw 'No external Action references were found; pin audit scope is invalid.'
+
+          $externalCount = Assert-ImmutableActionRefs `
+            (Get-Content -Raw -LiteralPath $workflow)
+          $usesName = 'u' + 'ses'
+          $localFixture = @(
+            "- ${usesName}: owner/action@0123456789abcdef0123456789abcdef01234567",
+            "- ${usesName}: ./local-action"
+          ) -join "`n"
+          if ((Assert-ImmutableActionRefs $localFixture) -ne 1) {
+            throw 'Local Action reference fixture changed external reference counting.'
           }
-          $mutableRefs = @(
-            $externalRefs |
-              Where-Object { $_ -cnotmatch '^[^@\s]+@[0-9a-f]{40}$' }
+          $negativeFixtures = @(
+            "- ${usesName}: owner/action@v4",
+            "- { ${usesName}: owner/action@main }",
+            "- { name: bypass, ${usesName}: owner/action@v1 }",
+            ('- { "name": "quoted", "' + $usesName + '": "owner/action@v2" }'),
+            ("- { 'name': 'quoted', '" + $usesName + "': owner/action@v3 }"),
+            ("? $usesName`n: owner/action@v4"),
+            "- ${usesName}:"
           )
-          if ($mutableRefs.Count -ne 0) {
-            throw "Mutable external Action references: $($mutableRefs -join ', ')"
+          $rejectedCount = 0
+          foreach ($fixture in $negativeFixtures) {
+            $rejected = $false
+            try {
+              Assert-ImmutableActionRefs $fixture | Out-Null
+            } catch {
+              $rejected = $true
+            }
+            if (-not $rejected) {
+              throw "Action pin negative fixture was accepted: $fixture"
+            }
+            $rejectedCount++
           }
-          "external_action_refs=$($externalRefs.Count) status=green"
+          if ($rejectedCount -ne $negativeFixtures.Count) {
+            throw 'Action pin negative fixture accounting mismatch.'
+          }
+          "external_action_refs=$externalCount local_fixture=green negative_fixtures=$rejectedCount status=green"
 
       - name: Require immutable dependency admission
         shell: pwsh
