@@ -25,6 +25,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.Principal;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
 
@@ -37,13 +38,27 @@ namespace PrivatePacmanV2
         public uint LinkCount { get; set; }
     }
 
+    public sealed class SecurityState
+    {
+        public string OwnerSid { get; set; }
+        public string SecurityDescriptorSddl { get; set; }
+    }
+
     public static class NativePath
     {
         private const uint OpenExisting = 3;
         private const uint FileFlagBackupSemantics = 0x02000000;
+        private const uint FileFlagOpenReparsePoint = 0x00200000;
         private const uint FileShareRead = 0x00000001;
         private const uint FileShareWrite = 0x00000002;
         private const uint FileShareDelete = 0x00000004;
+        private const uint ReadControl = 0x00020000;
+        private const uint OwnerSecurityInformation = 0x00000001;
+        private const uint GroupSecurityInformation = 0x00000002;
+        private const uint DaclSecurityInformation = 0x00000004;
+        private const uint SecurityInformation =
+            OwnerSecurityInformation | GroupSecurityInformation | DaclSecurityInformation;
+        private static readonly IntPtr InvalidHandleValue = new IntPtr(-1);
 
         [StructLayout(LayoutKind.Sequential)]
         private struct ByHandleFileInformation
@@ -58,6 +73,15 @@ namespace PrivatePacmanV2
             public uint NumberOfLinks;
             public uint FileIndexHigh;
             public uint FileIndexLow;
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct Win32FindStreamData
+        {
+            public long StreamSize;
+
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 296)]
+            public string StreamName;
         }
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -87,6 +111,43 @@ namespace PrivatePacmanV2
             string deviceName,
             StringBuilder targetPath,
             int maximumLength);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        private static extern uint GetSecurityInfo(
+            IntPtr handle,
+            int objectType,
+            uint securityInformation,
+            out IntPtr owner,
+            out IntPtr group,
+            out IntPtr dacl,
+            out IntPtr sacl,
+            out IntPtr securityDescriptor);
+
+        [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            IntPtr securityDescriptor,
+            uint requestedStringSdRevision,
+            uint securityInformation,
+            out IntPtr stringSecurityDescriptor,
+            out uint stringSecurityDescriptorLength);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr FindFirstStreamW(
+            string fileName,
+            int infoLevel,
+            out Win32FindStreamData findStreamData,
+            uint flags);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool FindNextStreamW(
+            IntPtr findStream,
+            out Win32FindStreamData findStreamData);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool FindClose(IntPtr findFile);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr LocalFree(IntPtr memory);
 
         private static string StripExtendedPrefix(string path)
         {
@@ -172,6 +233,124 @@ namespace PrivatePacmanV2
 
             return buffer.ToString();
         }
+
+        public static SecurityState GetSecurityState(string path, bool openReparsePoint)
+        {
+            uint flags = FileFlagBackupSemantics;
+            if (openReparsePoint)
+            {
+                flags |= FileFlagOpenReparsePoint;
+            }
+
+            using (SafeFileHandle handle = CreateFileW(
+                path,
+                ReadControl,
+                FileShareRead | FileShareWrite | FileShareDelete,
+                IntPtr.Zero,
+                OpenExisting,
+                flags,
+                IntPtr.Zero))
+            {
+                if (handle.IsInvalid)
+                {
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Unable to read security state: " + path);
+                }
+
+                IntPtr owner;
+                IntPtr group;
+                IntPtr dacl;
+                IntPtr sacl;
+                IntPtr securityDescriptor;
+                uint result = GetSecurityInfo(
+                    handle.DangerousGetHandle(),
+                    1,
+                    SecurityInformation,
+                    out owner,
+                    out group,
+                    out dacl,
+                    out sacl,
+                    out securityDescriptor);
+                if (result != 0)
+                {
+                    throw new Win32Exception((int)result, "Unable to read security descriptor: " + path);
+                }
+
+                try
+                {
+                    IntPtr stringDescriptor;
+                    uint stringLength;
+                    if (!ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                        securityDescriptor,
+                        1,
+                        SecurityInformation,
+                        out stringDescriptor,
+                        out stringLength))
+                    {
+                        throw new Win32Exception(
+                            Marshal.GetLastWin32Error(),
+                            "Unable to serialize security descriptor: " + path);
+                    }
+
+                    try
+                    {
+                        return new SecurityState
+                        {
+                            OwnerSid = owner == IntPtr.Zero ? null : new SecurityIdentifier(owner).Value,
+                            SecurityDescriptorSddl = Marshal.PtrToStringUni(stringDescriptor)
+                        };
+                    }
+                    finally
+                    {
+                        LocalFree(stringDescriptor);
+                    }
+                }
+                finally
+                {
+                    LocalFree(securityDescriptor);
+                }
+            }
+        }
+
+        public static string[] GetAlternateStreams(string path)
+        {
+            Win32FindStreamData data;
+            IntPtr handle = FindFirstStreamW(path, 0, out data, 0);
+            if (handle == InvalidHandleValue)
+            {
+                int error = Marshal.GetLastWin32Error();
+                if (error == 38)
+                {
+                    return new string[0];
+                }
+                throw new Win32Exception(error, "Unable to enumerate named streams: " + path);
+            }
+
+            List<string> streams = new List<string>();
+            try
+            {
+                do
+                {
+                    if (!String.Equals(data.StreamName, "::$DATA", StringComparison.Ordinal))
+                    {
+                        streams.Add(data.StreamName);
+                    }
+                }
+                while (FindNextStreamW(handle, out data));
+
+                int error = Marshal.GetLastWin32Error();
+                if (error != 38)
+                {
+                    throw new Win32Exception(error, "Unable to complete named-stream enumeration: " + path);
+                }
+            }
+            finally
+            {
+                FindClose(handle);
+            }
+
+            streams.Sort(StringComparer.Ordinal);
+            return streams.ToArray();
+        }
     }
 
     public sealed class ChangeRecord
@@ -194,9 +373,11 @@ namespace PrivatePacmanV2
             watcher.IncludeSubdirectories = includeSubdirectories;
             watcher.InternalBufferSize = 65536;
             watcher.NotifyFilter =
+                NotifyFilters.Attributes |
                 NotifyFilters.DirectoryName |
                 NotifyFilters.FileName |
                 NotifyFilters.LastWrite |
+                NotifyFilters.Security |
                 NotifyFilters.Size;
             watcher.Changed += OnChanged;
             watcher.Created += OnChanged;
@@ -669,12 +850,38 @@ function Get-PrivatePacmanFileHash {
     }
 }
 
+function Get-PrivatePacmanSnapshotMetadata {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Path,
+
+        [Parameter(Mandatory)]
+        [IO.FileAttributes] $Attributes
+    )
+
+    $alternateStreams = @([PrivatePacmanV2.NativePath]::GetAlternateStreams($Path))
+    if ($alternateStreams.Count -ne 0) {
+        throw "Alternate data streams are forbidden in private package state: $Path [$($alternateStreams -join ', ')]"
+    }
+
+    $isReparse = ($Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+    $security = [PrivatePacmanV2.NativePath]::GetSecurityState($Path, $isReparse)
+    return [pscustomobject][ordered]@{
+        Attributes = [int64]$Attributes
+        OwnerSid = [string]$security.OwnerSid
+        SecurityDescriptorSddl = [string]$security.SecurityDescriptorSddl
+        AlternateStreams = @()
+    }
+}
+
 function Get-PrivatePacmanTreeSnapshotCore {
     param(
         [Parameter(Mandatory)]
         [string] $Path,
 
         [switch] $AllowMissing,
+
+        [switch] $RejectReparsePoint,
 
         [string[]] $ExcludeRelativePath = @()
     )
@@ -697,12 +904,21 @@ function Get-PrivatePacmanTreeSnapshotCore {
             Path = $normalized
             Exists = $false
             Digest = Get-PrivatePacmanStringSha256 -Value 'missing'
+            ContentDigest = Get-PrivatePacmanStringSha256 -Value 'missing'
             EntryCount = 0
+            RootAttributes = $null
+            RootOwnerSid = $null
+            RootSecurityDescriptorSddl = $null
+            RootAlternateStreams = @()
             Entries = @()
         }
     }
 
     $root = Resolve-PrivatePacmanExistingPath -Path $normalized -Kind Directory -Name 'Snapshot path'
+    $rootAttributes = [IO.File]::GetAttributes($root)
+    $rootMetadata = Get-PrivatePacmanSnapshotMetadata `
+        -Path $root `
+        -Attributes $rootAttributes
     $excluded = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($relativePath in $ExcludeRelativePath) {
         [void]$excluded.Add($relativePath)
@@ -727,6 +943,23 @@ function Get-PrivatePacmanTreeSnapshotCore {
             $attributes = [IO.File]::GetAttributes($child)
             $isDirectory = ($attributes -band [IO.FileAttributes]::Directory) -ne 0
             $isReparse = ($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+            if ($isReparse -and $RejectReparsePoint) {
+                throw "Reparse points are forbidden in protected package state: $child"
+            }
+            if ($isReparse) {
+                $security = [PrivatePacmanV2.NativePath]::GetSecurityState($child, $true)
+                $metadata = [pscustomobject][ordered]@{
+                    Attributes = [int64]$attributes
+                    OwnerSid = [string]$security.OwnerSid
+                    SecurityDescriptorSddl = [string]$security.SecurityDescriptorSddl
+                    AlternateStreams = @('<not-enumerated-for-reparse-entry>')
+                }
+            }
+            else {
+                $metadata = Get-PrivatePacmanSnapshotMetadata `
+                    -Path $child `
+                    -Attributes $attributes
+            }
             $kind = if ($isReparse) {
                 if ($isDirectory) { 'directory-link' } else { 'file-link' }
             }
@@ -772,7 +1005,10 @@ function Get-PrivatePacmanTreeSnapshotCore {
                 Kind = $kind
                 Length = $length
                 Sha256 = $sha256
-                Attributes = [int64]$attributes
+                Attributes = $metadata.Attributes
+                OwnerSid = $metadata.OwnerSid
+                SecurityDescriptorSddl = $metadata.SecurityDescriptorSddl
+                AlternateStreams = $metadata.AlternateStreams
                 LinkType = if ($isReparse) { [string]$item.LinkType } else { $null }
                 RawTarget = $rawTarget
                 ResolvedTarget = $resolvedTarget
@@ -780,8 +1016,14 @@ function Get-PrivatePacmanTreeSnapshotCore {
         }
     }
 
-    $orderedEntries = @($entries | Sort-Object -Property RelativePath -CaseSensitive)
-    $identityLines = foreach ($entry in $orderedEntries) {
+    $sortedEntries = [Collections.Generic.SortedDictionary[string, object]]::new(
+        [StringComparer]::Ordinal
+    )
+    foreach ($entry in $entries) {
+        $sortedEntries.Add([string]$entry.RelativePath, $entry)
+    }
+    $orderedEntries = @($sortedEntries.Values)
+    $contentLines = foreach ($entry in $orderedEntries) {
         [pscustomobject][ordered]@{
             RelativePath = $entry.RelativePath
             Kind = $entry.Kind
@@ -792,12 +1034,42 @@ function Get-PrivatePacmanTreeSnapshotCore {
             ResolvedTarget = $entry.ResolvedTarget
         } | ConvertTo-Json -Compress
     }
+    $canonicalLines = @(
+        [pscustomobject][ordered]@{
+            RelativePath = '.'
+            Kind = 'root'
+            Attributes = $rootMetadata.Attributes
+            OwnerSid = $rootMetadata.OwnerSid
+            SecurityDescriptorSddl = $rootMetadata.SecurityDescriptorSddl
+            AlternateStreams = $rootMetadata.AlternateStreams
+        } | ConvertTo-Json -Compress
+    )
+    $canonicalLines += @(foreach ($entry in $orderedEntries) {
+        [pscustomobject][ordered]@{
+            RelativePath = $entry.RelativePath
+            Kind = $entry.Kind
+            Length = $entry.Length
+            Sha256 = $entry.Sha256
+            Attributes = $entry.Attributes
+            OwnerSid = $entry.OwnerSid
+            SecurityDescriptorSddl = $entry.SecurityDescriptorSddl
+            AlternateStreams = $entry.AlternateStreams
+            LinkType = $entry.LinkType
+            RawTarget = $entry.RawTarget
+            ResolvedTarget = $entry.ResolvedTarget
+        } | ConvertTo-Json -Compress
+    })
 
     [pscustomobject][ordered]@{
         Path = $root
         Exists = $true
-        Digest = Get-PrivatePacmanStringSha256 -Value ($identityLines -join "`n")
+        Digest = Get-PrivatePacmanStringSha256 -Value ($canonicalLines -join "`n")
+        ContentDigest = Get-PrivatePacmanStringSha256 -Value ($contentLines -join "`n")
         EntryCount = $orderedEntries.Count
+        RootAttributes = $rootMetadata.Attributes
+        RootOwnerSid = $rootMetadata.OwnerSid
+        RootSecurityDescriptorSddl = $rootMetadata.SecurityDescriptorSddl
+        RootAlternateStreams = $rootMetadata.AlternateStreams
         Entries = $orderedEntries
     }
 }
@@ -920,10 +1192,18 @@ function Copy-PrivatePacmanSeed {
     $watcher = [PrivatePacmanV2.TreeWatcher]::new($Source, '*', $true)
     $watcherStopped = $false
     try {
-        $preflight = Get-PrivatePacmanTreeSnapshotCore -Path $Source
-        [Threading.Thread]::Sleep(250)
+        $preflight = @(
+            Get-PrivatePacmanQuiescentSnapshotSet `
+                -ProtectedRoot @(
+                    [pscustomobject][ordered]@{
+                        Path = $Source
+                        Exists = $true
+                    }
+                ) `
+                -RejectReparsePoint
+        )[0]
         $watcher.Start()
-        $before = Get-PrivatePacmanTreeSnapshotCore -Path $Source
+        $before = Get-PrivatePacmanTreeSnapshotCore -Path $Source -RejectReparsePoint
         if ($preflight.Digest -cne $before.Digest) {
             throw 'Private seed was not stable before its monitored copy.'
         }
@@ -974,15 +1254,17 @@ function Copy-PrivatePacmanSeed {
             }
         }
 
-        $after = Get-PrivatePacmanTreeSnapshotCore -Path $Source
+        $after = Get-PrivatePacmanTreeSnapshotCore -Path $Source -RejectReparsePoint
         $copied = Get-PrivatePacmanTreeSnapshotCore `
             -Path $Destination `
+            -RejectReparsePoint `
             -ExcludeRelativePath @($OwnerRelativePath)
         [Threading.Thread]::Sleep(150)
         $watcher.Stop()
         $watcherStopped = $true
 
-        if ($before.Digest -cne $after.Digest -or $before.Digest -cne $copied.Digest) {
+        if ($before.Digest -cne $after.Digest -or
+            $before.ContentDigest -cne $copied.ContentDigest) {
             throw 'Private seed changed during its copy or the copied bytes do not match.'
         }
         if ($watcher.GetErrors().Count -ne 0 -or $watcher.GetChanges().Count -ne 0) {
@@ -992,6 +1274,7 @@ function Copy-PrivatePacmanSeed {
         return [pscustomobject][ordered]@{
             Path = $before.Path
             Digest = $before.Digest
+            ContentDigest = $before.ContentDigest
             EntryCount = $before.EntryCount
         }
     }
@@ -1142,7 +1425,7 @@ function Get-PrivatePacmanPackageInventory {
     $root = Resolve-PrivatePacmanExistingPath -Path $PackageRoot -Kind Directory -Name 'PackageRoot'
     Assert-PrivatePacmanSameDrive -First $root -Second $WorkspaceRoot -Description 'PackageRoot'
 
-    $snapshot = Get-PrivatePacmanTreeSnapshotCore -Path $root
+    $snapshot = Get-PrivatePacmanTreeSnapshotCore -Path $root -RejectReparsePoint
     $packages = [Collections.Generic.List[object]]::new()
     foreach ($entry in $snapshot.Entries) {
         if ($entry.Kind -like '*-link') {
@@ -1726,6 +2009,41 @@ function Stop-PrivatePacmanWatchers {
     return @($results)
 }
 
+function Get-PrivatePacmanQuiescentSnapshotSet {
+    param(
+        [Parameter(Mandatory)]
+        [object[]] $ProtectedRoot,
+
+        [switch] $RejectReparsePoint,
+
+        [ValidateRange(1, 10)]
+        [int] $MaximumAttempts = 4
+    )
+
+    for ($attempt = 1; $attempt -le $MaximumAttempts; $attempt++) {
+        $snapshots = @(foreach ($protected in $ProtectedRoot) {
+            Get-PrivatePacmanTreeSnapshotCore `
+                -Path $protected.Path `
+                -AllowMissing `
+                -RejectReparsePoint:$RejectReparsePoint
+        })
+        $probeWatchers = @(Start-PrivatePacmanWatchers -ProtectedRoot $ProtectedRoot)
+        [Threading.Thread]::Sleep(350)
+        $probeEvidence = @(Stop-PrivatePacmanWatchers -Watcher $probeWatchers)
+        $errors = @($probeEvidence | ForEach-Object Errors)
+        if ($errors.Count -ne 0) {
+            throw "Protected-state quiescence watcher failed: $($errors -join '; ')"
+        }
+
+        $changes = @($probeEvidence | ForEach-Object Changes)
+        if ($changes.Count -eq 0) {
+            return $snapshots
+        }
+    }
+
+    throw "Protected package state did not become quiescent after $MaximumAttempts attempts."
+}
+
 function New-PrivatePacmanExternalState {
     param(
         [Parameter(Mandatory)]
@@ -2072,17 +2390,17 @@ function Invoke-PrivatePacmanUpgrade {
             -StagingRoot $stagingRoot
         $resultPath = [IO.Path]::Combine($canonicalLayout.EvidenceDirectory, 'result.json')
 
-        $protectedPreflight = @(foreach ($protectedEntry in $protected) {
-            Get-PrivatePacmanTreeSnapshotCore `
-                -Path $protectedEntry.Path `
-                -AllowMissing
-        })
-        [Threading.Thread]::Sleep(250)
+        $protectedPreflight = @(
+            Get-PrivatePacmanQuiescentSnapshotSet `
+                -ProtectedRoot $protected `
+                -RejectReparsePoint
+        )
         $watchers = @(Start-PrivatePacmanWatchers -ProtectedRoot $protected)
         $protectedBefore = @(foreach ($protectedEntry in $protected) {
             $snapshot = Get-PrivatePacmanTreeSnapshotCore `
                 -Path $protectedEntry.Path `
-                -AllowMissing
+                -AllowMissing `
+                -RejectReparsePoint
             $fileName = "protected-$([Array]::IndexOf($protected, $protectedEntry))-before.json"
             Write-PrivatePacmanJson `
                 -Path ([IO.Path]::Combine($canonicalLayout.EvidenceDirectory, $fileName)) `
@@ -2091,7 +2409,12 @@ function Invoke-PrivatePacmanUpgrade {
                 Path = $snapshot.Path
                 Exists = $snapshot.Exists
                 Digest = $snapshot.Digest
+                ContentDigest = $snapshot.ContentDigest
                 EntryCount = $snapshot.EntryCount
+                RootAttributes = $snapshot.RootAttributes
+                RootOwnerSid = $snapshot.RootOwnerSid
+                RootSecurityDescriptorSddl = $snapshot.RootSecurityDescriptorSddl
+                AlternateDataStreams = 'forbidden'
                 Manifest = $fileName
                 IsCanonicalSharedRoot = $protectedEntry.IsCanonicalSharedRoot
             }
@@ -2254,7 +2577,8 @@ function Invoke-PrivatePacmanUpgrade {
                 $protectedAfter = @(foreach ($protectedEntry in $protected) {
                     $snapshot = Get-PrivatePacmanTreeSnapshotCore `
                         -Path $protectedEntry.Path `
-                        -AllowMissing
+                        -AllowMissing `
+                        -RejectReparsePoint
                     $fileName = "protected-$([Array]::IndexOf($protected, $protectedEntry))-after.json"
                     Write-PrivatePacmanJson `
                         -Path ([IO.Path]::Combine($canonicalLayout.EvidenceDirectory, $fileName)) `
@@ -2263,7 +2587,12 @@ function Invoke-PrivatePacmanUpgrade {
                         Path = $snapshot.Path
                         Exists = $snapshot.Exists
                         Digest = $snapshot.Digest
+                        ContentDigest = $snapshot.ContentDigest
                         EntryCount = $snapshot.EntryCount
+                        RootAttributes = $snapshot.RootAttributes
+                        RootOwnerSid = $snapshot.RootOwnerSid
+                        RootSecurityDescriptorSddl = $snapshot.RootSecurityDescriptorSddl
+                        AlternateDataStreams = 'forbidden'
                         Manifest = $fileName
                         IsCanonicalSharedRoot = $protectedEntry.IsCanonicalSharedRoot
                     }

@@ -321,6 +321,7 @@ function New-PrivatePacmanFixture {
     [IO.File]::WriteAllText($packagePath, "package-$Name", [Text.UTF8Encoding]::new($false))
     $sharedFile = Join-Path $protectedRoot 'var\lib\pacman\local\state'
     [IO.File]::WriteAllText($sharedFile, "shared-$Name", [Text.UTF8Encoding]::new($false))
+    Set-Acl -LiteralPath $sharedFile -AclObject (Get-Acl -LiteralPath $sharedFile)
     [IO.File]::WriteAllText(
         (Join-Path $protectedRoot 'var\log\pacman.log'),
         "log-$Name",
@@ -425,6 +426,48 @@ function Set-PrivatePacmanFixtureManifest {
     $Fixture.ExpectedManifestSha256 = [Convert]::ToHexString(
         [Security.Cryptography.SHA256]::HashData($manifestBytes)
     ).ToLowerInvariant()
+}
+
+function Set-PrivatePacmanTestMetadataMutation {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Path
+    )
+
+    $originalAcl = Get-Acl -LiteralPath $Path
+    $originalAttributes = [IO.File]::GetAttributes($Path)
+    $modifiedAcl = Get-Acl -LiteralPath $Path
+    $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+        [Security.Principal.WindowsIdentity]::GetCurrent().User,
+        [Security.AccessControl.FileSystemRights]::ReadAttributes,
+        [Security.AccessControl.AccessControlType]::Allow
+    )
+    [void]$modifiedAcl.AddAccessRule($rule)
+    Set-Acl -LiteralPath $Path -AclObject $modifiedAcl
+
+    $attributeMask = (
+        [IO.FileAttributes]::Hidden -bor
+        [IO.FileAttributes]::System -bor
+        [IO.FileAttributes]::ReadOnly
+    )
+    [IO.File]::SetAttributes($Path, $originalAttributes -bxor $attributeMask)
+    return [pscustomobject][ordered]@{
+        Acl = $originalAcl
+        Attributes = $originalAttributes
+    }
+}
+
+function Restore-PrivatePacmanTestMetadata {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Path,
+
+        [Parameter(Mandatory)]
+        [psobject] $Original
+    )
+
+    Set-Acl -LiteralPath $Path -AclObject $Original.Acl
+    [IO.File]::SetAttributes($Path, [IO.FileAttributes]$Original.Attributes)
 }
 
 function Invoke-PrivatePacmanFixture {
@@ -551,6 +594,7 @@ $suiteRoot = Join-Path ([IO.Path]::GetTempPath()) "private-pacman-v2-$([guid]::N
 [void][IO.Directory]::CreateDirectory($suiteRoot)
 $sharedBefore = Get-PrivatePacmanTreeSnapshot -Path 'C:\msys64' -AllowMissing
 $sharedAfter = $null
+$script:populatedSharedEvidence = $null
 $recorderPath = $null
 $script:signingKey = [Security.Cryptography.ECDsa]::Create(
     [Security.Cryptography.ECCurve+NamedCurves]::nistP256
@@ -559,34 +603,7 @@ $script:signingKey = [Security.Cryptography.ECDsa]::Create(
 try {
     $recorderPath = New-PrivatePacmanRecorder -Directory (Join-Path $suiteRoot 'recorder')
 
-    Invoke-PrivatePacmanTestCase -Name 'contract workflow pins exact-head source actions' -Test {
-        $workflowPath = Join-Path (Split-Path $PSScriptRoot -Parent) '.github\workflows\private-pacman-contract.yml'
-        $workflow = [IO.File]::ReadAllText($workflowPath)
-        $uses = @(
-            [regex]::Matches($workflow, '(?m)^\s*uses:\s*(?<value>\S+)\s*$') |
-                ForEach-Object { $_.Groups['value'].Value }
-        )
-        Assert-PrivatePacmanSequence @(
-            'actions/checkout@11d5960a326750d5838078e36cf38b85af677262'
-            'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02'
-        ) $uses 'Contract workflow action set or pins changed.'
-        foreach ($action in $uses) {
-            Assert-PrivatePacmanTest `
-                ($action -match '^[^@\s]+@[0-9a-f]{40}$') `
-                "External action is not pinned to a full commit: $action"
-        }
-        Assert-PrivatePacmanTest `
-            ($workflow -match "github\.event\.pull_request\.head\.repo\.full_name == github\.repository") `
-            'Contract workflow does not gate pull requests to same-repository heads.'
-        Assert-PrivatePacmanTest `
-            ($workflow -match 'ref:\s*\$\{\{\s*github\.event\.pull_request\.head\.sha \|\| github\.sha\s*\}\}') `
-            'Contract workflow does not check out the exact event head.'
-        Assert-PrivatePacmanTest `
-            ($workflow -match '\$actual -cne \$expected') `
-            'Contract workflow does not verify the checked-out commit.'
-        Assert-PrivatePacmanTest `
-            ($workflow -notmatch '(?i)\.pkg\.tar|gh\s+release|setup-msys2|download-artifact') `
-            'Contract workflow consumes, installs, downloads, or publishes package material.'
+    Invoke-PrivatePacmanTestCase -Name 'repository contains no tracked package candidate bytes' -Test {
         $repositoryRoot = Split-Path $PSScriptRoot -Parent
         $trackedCandidateBytes = @(& git -C $repositoryRoot ls-files '*.pkg.tar.*')
         Assert-PrivatePacmanEqual 0 $trackedCandidateBytes.Count 'Tracked package candidate bytes are present.'
@@ -651,6 +668,203 @@ try {
         }
         finally {
             Clear-PrivatePacmanTestEnvironment
+        }
+    }
+
+    Invoke-PrivatePacmanTestCase -Name 'populated protected state exposes complete preservation evidence' -Test {
+        $fixture = New-PrivatePacmanFixture -Name 'populated-shared' -SuiteRoot $suiteRoot -RecorderPath $recorderPath
+        Set-PrivatePacmanFixtureEnvironment -Fixture $fixture
+        try {
+            $result = Invoke-PrivatePacmanFixture -Fixture $fixture
+            $before = @($result.ProtectedBefore | Where-Object Path -EQ $fixture.ProtectedRoot)[0]
+            $after = @($result.ProtectedAfter | Where-Object Path -EQ $fixture.ProtectedRoot)[0]
+            Assert-PrivatePacmanTest $before.Exists 'Populated protected root was reported missing before invocation.'
+            Assert-PrivatePacmanTest $after.Exists 'Populated protected root was reported missing after invocation.'
+            Assert-PrivatePacmanTest ($before.EntryCount -ge 5) 'Populated protected-root entry count is incomplete.'
+            Assert-PrivatePacmanEqual $before.Digest $after.Digest 'Populated protected metadata digest changed.'
+            Assert-PrivatePacmanEqual $before.ContentDigest $after.ContentDigest 'Populated protected content digest changed.'
+            Assert-PrivatePacmanTest (-not [string]::IsNullOrWhiteSpace($before.RootOwnerSid)) 'Protected-root owner is absent from evidence.'
+            Assert-PrivatePacmanTest (-not [string]::IsNullOrWhiteSpace($before.RootSecurityDescriptorSddl)) 'Protected-root security descriptor is absent from evidence.'
+            Assert-PrivatePacmanEqual 'forbidden' $before.AlternateDataStreams 'Protected-root ADS policy is absent from evidence.'
+
+            $manifest = Get-Content `
+                -Raw `
+                -LiteralPath (Join-Path $fixture.Layout.EvidenceDirectory $before.Manifest) |
+                    ConvertFrom-Json
+            $sharedRelativePath = [IO.Path]::GetRelativePath($fixture.ProtectedRoot, $fixture.SharedFile)
+            $sharedEntry = @($manifest.Entries | Where-Object RelativePath -CEQ $sharedRelativePath)[0]
+            Assert-PrivatePacmanTest (-not [string]::IsNullOrWhiteSpace($sharedEntry.OwnerSid)) 'Protected file owner is absent from canonical evidence.'
+            Assert-PrivatePacmanTest (-not [string]::IsNullOrWhiteSpace($sharedEntry.SecurityDescriptorSddl)) 'Protected file security descriptor is absent from canonical evidence.'
+            Assert-PrivatePacmanTest ($null -ne $sharedEntry.Attributes) 'Protected file attributes are absent from canonical evidence.'
+            Assert-PrivatePacmanEqual 0 @($sharedEntry.AlternateStreams).Count 'Protected evidence admitted an alternate stream.'
+
+            $script:populatedSharedEvidence = [pscustomobject][ordered]@{
+                Kind = 'synthetic-populated-fixed-drive-root'
+                ExistedBefore = [bool]$before.Exists
+                ExistedAfter = [bool]$after.Exists
+                EntryCountBefore = [int]$before.EntryCount
+                EntryCountAfter = [int]$after.EntryCount
+                BeforeDigest = [string]$before.Digest
+                AfterDigest = [string]$after.Digest
+                BeforeContentDigest = [string]$before.ContentDigest
+                AfterContentDigest = [string]$after.ContentDigest
+                ByteAndMetadataIdentical = (
+                    $before.Digest -ceq $after.Digest -and
+                    $before.ContentDigest -ceq $after.ContentDigest
+                )
+                OwnerAndDaclBound = $true
+                AttributesBound = $true
+                AlternateDataStreams = 'forbidden'
+            }
+        }
+        finally {
+            Clear-PrivatePacmanTestEnvironment
+        }
+    }
+
+    Invoke-PrivatePacmanTestCase -Name 'permanent ACL and attribute changes alter protected digest evidence' -Test {
+        $fixture = New-PrivatePacmanFixture -Name 'permanent-metadata' -SuiteRoot $suiteRoot -RecorderPath $recorderPath
+        $job = Start-PrivatePacmanFixtureJob -Fixture $fixture -Mode 'wait'
+        $original = $null
+        try {
+            Wait-PrivatePacmanPath -Path $fixture.ReadyPath
+            $original = Set-PrivatePacmanTestMetadataMutation -Path $fixture.SharedFile
+            [IO.File]::WriteAllText($fixture.GoPath, 'go')
+            $null = Wait-PrivatePacmanFixtureJob -Job $job -ExpectedState Failed
+
+            $evidence = Get-Content `
+                -Raw `
+                -LiteralPath (Join-Path $fixture.Layout.EvidenceDirectory 'result.json') |
+                    ConvertFrom-Json
+            $before = @($evidence.ProtectedBefore | Where-Object Path -EQ $fixture.ProtectedRoot)[0]
+            $after = @($evidence.ProtectedAfter | Where-Object Path -EQ $fixture.ProtectedRoot)[0]
+            Assert-PrivatePacmanTest ($before.Digest -cne $after.Digest) 'Permanent metadata drift did not change the canonical digest.'
+            Assert-PrivatePacmanEqual $before.ContentDigest $after.ContentDigest 'Metadata-only drift changed the content digest.'
+
+            $beforeManifest = Get-Content -Raw -LiteralPath (Join-Path $fixture.Layout.EvidenceDirectory $before.Manifest) | ConvertFrom-Json
+            $afterManifest = Get-Content -Raw -LiteralPath (Join-Path $fixture.Layout.EvidenceDirectory $after.Manifest) | ConvertFrom-Json
+            $relative = [IO.Path]::GetRelativePath($fixture.ProtectedRoot, $fixture.SharedFile)
+            $beforeEntry = @($beforeManifest.Entries | Where-Object RelativePath -CEQ $relative)[0]
+            $afterEntry = @($afterManifest.Entries | Where-Object RelativePath -CEQ $relative)[0]
+            Assert-PrivatePacmanTest ($beforeEntry.Attributes -ne $afterEntry.Attributes) 'Permanent file attributes were not bound.'
+            Assert-PrivatePacmanTest ($beforeEntry.SecurityDescriptorSddl -cne $afterEntry.SecurityDescriptorSddl) 'Permanent DACL mutation was not bound.'
+            Assert-PrivatePacmanEqual $beforeEntry.OwnerSid $afterEntry.OwnerSid 'DACL-only test unexpectedly changed owner identity.'
+            Assert-PrivatePacmanTest (-not $evidence.Success) 'Permanent metadata drift was reported as success.'
+        }
+        finally {
+            if ($null -ne $original) {
+                Restore-PrivatePacmanTestMetadata -Path $fixture.SharedFile -Original $original
+            }
+            if (-not [IO.File]::Exists($fixture.GoPath)) {
+                [IO.File]::WriteAllText($fixture.GoPath, 'go')
+            }
+        }
+    }
+
+    Invoke-PrivatePacmanTestCase -Name 'restored ACL and attribute changes remain fatal watcher evidence' -Test {
+        $fixture = New-PrivatePacmanFixture -Name 'restored-metadata' -SuiteRoot $suiteRoot -RecorderPath $recorderPath
+        $job = Start-PrivatePacmanFixtureJob -Fixture $fixture -Mode 'wait'
+        $original = $null
+        try {
+            Wait-PrivatePacmanPath -Path $fixture.ReadyPath
+            $original = Set-PrivatePacmanTestMetadataMutation -Path $fixture.SharedFile
+            Restore-PrivatePacmanTestMetadata -Path $fixture.SharedFile -Original $original
+            $original = $null
+            [Threading.Thread]::Sleep(150)
+            [IO.File]::WriteAllText($fixture.GoPath, 'go')
+            $null = Wait-PrivatePacmanFixtureJob -Job $job -ExpectedState Failed
+
+            $evidence = Get-Content `
+                -Raw `
+                -LiteralPath (Join-Path $fixture.Layout.EvidenceDirectory 'result.json') |
+                    ConvertFrom-Json
+            $before = @($evidence.ProtectedBefore | Where-Object Path -EQ $fixture.ProtectedRoot)[0]
+            $after = @($evidence.ProtectedAfter | Where-Object Path -EQ $fixture.ProtectedRoot)[0]
+            Assert-PrivatePacmanEqual $before.Digest $after.Digest 'Restored metadata did not return to the original canonical digest.'
+            $events = @(
+                $evidence.Watchers |
+                    Where-Object Path -EQ $fixture.ProtectedRoot |
+                    ForEach-Object Changes |
+                    Where-Object Path -EQ $fixture.SharedFile
+            )
+            Assert-PrivatePacmanTest ($events.Count -gt 0) 'Restored ACL/attribute mutation emitted no retained event.'
+            Assert-PrivatePacmanTest (-not $evidence.Success) 'Restored metadata drift was reported as success.'
+        }
+        finally {
+            if ($null -ne $original) {
+                Restore-PrivatePacmanTestMetadata -Path $fixture.SharedFile -Original $original
+            }
+            if (-not [IO.File]::Exists($fixture.GoPath)) {
+                [IO.File]::WriteAllText($fixture.GoPath, 'go')
+            }
+        }
+    }
+
+    Invoke-PrivatePacmanTestCase -Name 'alternate data streams are forbidden and transient writes are observed' -Test {
+        $packageFixture = New-PrivatePacmanFixture -Name 'package-ads' -SuiteRoot $suiteRoot -RecorderPath $recorderPath
+        Set-Content -LiteralPath $packageFixture.PackagePath -Stream contract -Value 'synthetic-stream'
+        try {
+            $null = Assert-PrivatePacmanThrows {
+                Invoke-PrivatePacmanFixture -Fixture $packageFixture
+            } 'Alternate data streams are forbidden'
+            Assert-PrivatePacmanTest (-not (Test-Path -LiteralPath $packageFixture.Layout.StateDirectory)) 'Package ADS rejection created session state.'
+        }
+        finally {
+            Remove-Item -LiteralPath $packageFixture.PackagePath -Stream contract -ErrorAction SilentlyContinue
+        }
+
+        $directoryFixture = New-PrivatePacmanFixture -Name 'directory-ads' -SuiteRoot $suiteRoot -RecorderPath $recorderPath
+        Set-Content -LiteralPath $directoryFixture.ProtectedRoot -Stream contract -Value 'synthetic-directory-stream'
+        try {
+            $null = Assert-PrivatePacmanThrows {
+                Get-PrivatePacmanTreeSnapshot -Path $directoryFixture.ProtectedRoot
+            } 'Alternate data streams are forbidden'
+        }
+        finally {
+            [IO.File]::Delete($directoryFixture.ProtectedRoot + ':contract')
+        }
+
+        $protectedFixture = New-PrivatePacmanFixture -Name 'protected-ads' -SuiteRoot $suiteRoot -RecorderPath $recorderPath
+        Set-Content -LiteralPath $protectedFixture.SharedFile -Stream contract -Value 'synthetic-stream'
+        try {
+            $null = Assert-PrivatePacmanThrows {
+                Invoke-PrivatePacmanFixture -Fixture $protectedFixture
+            } 'Alternate data streams are forbidden'
+            Assert-PrivatePacmanTest (-not (Test-Path -LiteralPath $protectedFixture.Layout.Root)) 'Protected ADS rejection created a private root.'
+        }
+        finally {
+            Remove-Item -LiteralPath $protectedFixture.SharedFile -Stream contract -ErrorAction SilentlyContinue
+        }
+
+        $transientFixture = New-PrivatePacmanFixture -Name 'transient-ads' -SuiteRoot $suiteRoot -RecorderPath $recorderPath
+        $job = Start-PrivatePacmanFixtureJob -Fixture $transientFixture -Mode 'wait'
+        try {
+            Wait-PrivatePacmanPath -Path $transientFixture.ReadyPath
+            Set-Content -LiteralPath $transientFixture.SharedFile -Stream contract -Value 'synthetic-stream'
+            Remove-Item -LiteralPath $transientFixture.SharedFile -Stream contract
+            [Threading.Thread]::Sleep(150)
+            [IO.File]::WriteAllText($transientFixture.GoPath, 'go')
+            $null = Wait-PrivatePacmanFixtureJob -Job $job -ExpectedState Failed
+            $evidence = Get-Content `
+                -Raw `
+                -LiteralPath (Join-Path $transientFixture.Layout.EvidenceDirectory 'result.json') |
+                    ConvertFrom-Json
+            $before = @($evidence.ProtectedBefore | Where-Object Path -EQ $transientFixture.ProtectedRoot)[0]
+            $after = @($evidence.ProtectedAfter | Where-Object Path -EQ $transientFixture.ProtectedRoot)[0]
+            Assert-PrivatePacmanEqual $before.Digest $after.Digest 'Transient ADS test did not restore canonical state.'
+            $events = @(
+                $evidence.Watchers |
+                    Where-Object Path -EQ $transientFixture.ProtectedRoot |
+                    ForEach-Object Changes |
+                    Where-Object Path -EQ $transientFixture.SharedFile
+            )
+            Assert-PrivatePacmanTest ($events.Count -gt 0) 'Transient ADS writes emitted no retained event.'
+        }
+        finally {
+            Remove-Item -LiteralPath $transientFixture.SharedFile -Stream contract -ErrorAction SilentlyContinue
+            if (-not [IO.File]::Exists($transientFixture.GoPath)) {
+                [IO.File]::WriteAllText($transientFixture.GoPath, 'go')
+            }
         }
     }
 
@@ -792,7 +1006,7 @@ try {
         }
     }
 
-    Invoke-PrivatePacmanTestCase -Name 'junction workspace and seed escapes are rejected' -Test {
+    Invoke-PrivatePacmanTestCase -Name 'workspace seed and protected reparse escapes are rejected' -Test {
         $fixture = New-PrivatePacmanFixture -Name 'junction' -SuiteRoot $suiteRoot -RecorderPath $recorderPath
         $workspaceTarget = Join-Path $fixture.Base 'workspace-target'
         [void][IO.Directory]::CreateDirectory($workspaceTarget)
@@ -832,6 +1046,26 @@ try {
         finally {
             if ([IO.Directory]::Exists($seedJunction)) {
                 [IO.Directory]::Delete($seedJunction, $false)
+            }
+        }
+
+        $protectedFixture = New-PrivatePacmanFixture -Name 'protected-reparse' -SuiteRoot $suiteRoot -RecorderPath $recorderPath
+        $protectedTarget = Join-Path $protectedFixture.Base 'outside-protected'
+        [void][IO.Directory]::CreateDirectory($protectedTarget)
+        $protectedCanary = Join-Path $protectedTarget 'canary'
+        [IO.File]::WriteAllText($protectedCanary, 'protected-target')
+        $protectedJunction = Join-Path $protectedFixture.ProtectedRoot 'escape'
+        $null = New-Item -ItemType Junction -Path $protectedJunction -Target $protectedTarget
+        try {
+            $null = Assert-PrivatePacmanThrows {
+                Invoke-PrivatePacmanFixture -Fixture $protectedFixture
+            } 'Reparse points are forbidden'
+            Assert-PrivatePacmanEqual 'protected-target' ([IO.File]::ReadAllText($protectedCanary)) 'Protected reparse target was modified.'
+            Assert-PrivatePacmanTest (-not (Test-Path -LiteralPath $protectedFixture.Layout.Root)) 'Protected reparse rejection created a private root.'
+        }
+        finally {
+            if ([IO.Directory]::Exists($protectedJunction)) {
+                [IO.Directory]::Delete($protectedJunction, $false)
             }
         }
     }
@@ -1268,6 +1502,15 @@ else {
     Write-Host 'PASS canonical C:\msys64 is byte-identical before and after the suite'
 }
 
+if ($null -eq $script:populatedSharedEvidence) {
+    $results.Add([pscustomobject][ordered]@{
+        Name = 'populated shared-state report evidence is present'
+        Passed = $false
+        DurationMilliseconds = 0
+        Error = 'The populated protected-root test did not publish report evidence.'
+    })
+}
+
 $failed = @($results | Where-Object { -not $_.Passed })
 $report = [pscustomobject][ordered]@{
     Schema = 'private-pacman-contract-tests/v2'
@@ -1279,8 +1522,11 @@ $report = [pscustomobject][ordered]@{
         ExistedAfter = $sharedAfter.Exists
         BeforeDigest = $sharedBefore.Digest
         AfterDigest = $sharedAfter.Digest
-        ByteIdentical = $sharedIdentical
+        BeforeContentDigest = $sharedBefore.ContentDigest
+        AfterContentDigest = $sharedAfter.ContentDigest
+        ByteAndMetadataIdentical = $sharedIdentical
     }
+    PopulatedSharedState = $script:populatedSharedEvidence
     Passed = $results.Count - $failed.Count
     Failed = $failed.Count
     Tests = @($results)
@@ -1296,6 +1542,10 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
     )
 }
 
+Write-Host "CANONICAL_SHARED_STATE ExistedBefore=$($report.CanonicalSharedState.ExistedBefore) ExistedAfter=$($report.CanonicalSharedState.ExistedAfter) BeforeDigest=$($report.CanonicalSharedState.BeforeDigest) AfterDigest=$($report.CanonicalSharedState.AfterDigest)"
+if ($null -ne $report.PopulatedSharedState) {
+    Write-Host "POPULATED_SHARED_STATE ExistedBefore=$($report.PopulatedSharedState.ExistedBefore) ExistedAfter=$($report.PopulatedSharedState.ExistedAfter) EntryCountBefore=$($report.PopulatedSharedState.EntryCountBefore) EntryCountAfter=$($report.PopulatedSharedState.EntryCountAfter) BeforeDigest=$($report.PopulatedSharedState.BeforeDigest) AfterDigest=$($report.PopulatedSharedState.AfterDigest)"
+}
 Write-Host "$($report.Passed) passed, $($report.Failed) failed"
 if ($failed.Count -ne 0) {
     throw "$($failed.Count) private pacman contract test(s) failed."

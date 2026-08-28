@@ -1,12 +1,8 @@
 name: private-pacman-contract
 
+# Diagnostic only. Admission requires protected default-branch governance.
 on:
   pull_request:
-    paths:
-      - .ci/PrivatePacman.md
-      - .ci/PrivatePacman.psm1
-      - .ci/Test-PrivatePacman.ps1
-      - .github/workflows/private-pacman-contract.yml
   workflow_dispatch:
 
 permissions:
@@ -14,13 +10,20 @@ permissions:
 
 jobs:
   source-contract:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: windows-2025
     timeout-minutes: 20
 
     steps:
+      - name: Reject unsupported pull request heads
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: pwsh
+        env:
+          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          if ($env:PR_HEAD_REPOSITORY -cne $env:GITHUB_REPOSITORY) {
+            throw "Unsupported fork head: $env:PR_HEAD_REPOSITORY"
+          }
+
       - name: Check out the exact source head
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -62,7 +65,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: private-pacman-contract-${{ github.run_id }}-${{ github.run_attempt }}
+          name: private-pacman-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/private-pacman-contract.json
           if-no-files-found: error
           retention-days: 7

@@ -42,11 +42,21 @@ The helper:
 - holds the private config, executable, owner marker, and package inputs
   against replacement while pacman runs;
 - snapshots every protected tree by hashing each regular file's bytes and
-  recording directory and reparse-link identities;
+  rejects every nested reparse entry before transaction state is admitted;
+- binds each root and entry's owner SID, group/DACL security descriptor SDDL,
+  and complete Windows attribute mask into the canonical digest and evidence;
+- watches security and attribute changes in addition to names, writes, and
+  sizes, so restored metadata changes remain fatal even when final digests
+  match;
+- enumerates named streams on every admitted root, directory, and file and
+  fails closed if any alternate data stream is present; rejecting reparse
+  entries prevents stream enumeration from following an external link target;
 - always includes canonical `C:\msys64` in the protected set, even when it is
   absent;
 - requires an initial preflight digest to match the authoritative monitored
   before snapshot, without discarding any watcher events;
+- requires a separate disposable preflight watcher to observe a quiet interval
+  before authoritative monitoring starts; only pre-monitor noise is discarded;
 - keeps protected-root watchers active from the before snapshot through
   private-root cleanup, and fails on any change event, watcher error, or
   before/after digest difference;
@@ -85,6 +95,11 @@ snapshots. A normal completed invocation requires both mechanisms to remain
 clean. If the owning PowerShell process crashes, watcher continuity is lost;
 recovery can remove only roots with matching internal and external ownership
 records and records the outcome as failed, never successful.
+
+The canonical security evidence contains owner, group, and DACL state readable
+with `READ_CONTROL`. Audit SACL access requires `SeSecurityPrivilege` and is
+not claimed as an admission signal. Security watcher events still invalidate a
+transaction while monitoring is active.
 
 ## Usage
 
@@ -161,7 +176,8 @@ The external state directory contains:
   signed ownership identity, seed-copy digest, managed-config digest, and
   controlled environment;
 - `evidence/protected-*-before.json` and
-  `evidence/protected-*-after.json`: full byte manifests;
+  `evidence/protected-*-after.json`: full byte, owner/group/DACL, attribute,
+  reparse-rejection, and named-stream-policy manifests;
 - `evidence/result.json`: process output and exit status, before/after
   protected digests, watcher events/errors, cleanup status, and failures.
 
@@ -180,6 +196,23 @@ Recovery takes an exclusive sentinel lock, requires matching internal and
 external nonces and canonical paths, removes only the recorded root or
 staging root, and writes `evidence/recovery.json`. Recovery always records
 `WatcherContinuity = false` and `Result = cleaned-fail-closed`.
+
+## Diagnostic workflow boundary
+
+`private-pacman-contract.yml` runs for every pull request. A fork pull request
+gets a visible failing job rather than a skipped result. A same-repository run
+checks out and verifies the exact PR head and uploads only its JSON diagnostic
+report.
+
+This workflow is defined by candidate-controlled source and is not an
+authoritative admission gate. Production use requires protected default-branch
+governance that the candidate cannot alter or self-certify.
+
+There is no production caller in this change. Before one can be admitted, a
+separate trusted integration must pin raw manifest and public-key source URLs
+or commits, bind expected repository and host identities across redirects,
+allowlist signer keys and ownership names, and establish trusted time and
+revocation policy. Those gates are intentionally unresolved here.
 
 ## Contract tests
 
@@ -200,6 +233,12 @@ owner/session binding, complete package enumeration, signed traversal,
 argv completeness, repository absence, path aliases, drive mismatch,
 UNC/device/share paths, junctions, file symlinks, seed reparse points, atomic
 collisions, concurrent sentinel ownership, package/config/root locks,
-transient protected-state races, child crashes, timeouts, parent-process crash
-recovery, and reparse-safe cleanup. It snapshots canonical `C:\msys64` before
-and after the entire suite and requires identical existence and byte digests.
+permanent and restored ACL/attribute drift, permanent and transient alternate
+data streams, transient protected-state races, child crashes, timeouts,
+parent-process crash recovery, and reparse-safe cleanup.
+
+The JSON report and logs expose `ExistedBefore`, `ExistedAfter`, entry counts,
+and pre/post content and canonical digests for a deterministic populated
+protected-root fixture. They separately expose canonical `C:\msys64`
+existence and digests; an absent hosted-run root remains an explicit
+non-admission gate rather than evidence for a populated installation.
