@@ -1,0 +1,238 @@
+# Maintainer: Chris Reddington <crutkas@microsoft.com>
+
+_realname=gnupg
+_target=aarch64-pc-msys
+_target_root="/opt/${_target}"
+
+pkgbase=mingw-w64-cross-msysarm64-gnupg
+pkgname=(
+  mingw-w64-cross-msysarm64-gnupg
+  mingw-w64-cross-msysarm64-gnupg-docs
+)
+pkgver=2.4.7
+pkgrel=1
+pkgdesc="Native ARM64 MSYS implementation of the OpenPGP standard"
+arch=('x86_64')
+url='https://gnupg.org/'
+license=('spdx:GPL-3.0-or-later')
+groups=('mingw-w64-cross-toolchain' 'mingw-w64-cross')
+msys2_repository_url='https://git.gnupg.org/cgi-bin/gitweb.cgi?p=gnupg.git'
+msys2_references=('cpe: cpe:/a:gnupg:gnupg')
+depends=()
+makedepends=(
+  'autotools'
+  'gcc'
+  'gettext-devel'
+  'pkgconf'
+  'mingw-w64-cross-cygwinarm64-binutils=0.unresolved'
+  'mingw-w64-cross-msysarm64-gcc=0.unresolved'
+  'mingw-w64-cross-msysarm64-gcc-libs=0.unresolved'
+  'mingw-w64-cross-msysarm64-runtime-devel=0.unresolved'
+  'mingw-w64-cross-msysarm64-sysroot=0.unresolved'
+  'mingw-w64-cross-msysarm64-w32api-runtime=0.unresolved'
+  'mingw-w64-cross-msysarm64-npth-devel=0.unresolved'
+  'mingw-w64-cross-msysarm64-libgpg-error-devel=0.unresolved'
+  'mingw-w64-cross-msysarm64-libgcrypt-devel=0.unresolved'
+  'mingw-w64-cross-msysarm64-libassuan-devel=0.unresolved'
+  'mingw-w64-cross-msysarm64-libksba-devel=0.unresolved'
+  'mingw-w64-cross-msysarm64-readline-devel=0.unresolved'
+  'mingw-w64-cross-msysarm64-zlib-devel=0.unresolved'
+  'mingw-w64-cross-msysarm64-libbz2-devel=0.unresolved'
+  'mingw-w64-cross-msysarm64-libsqlite-devel=0.unresolved'
+  'mingw-w64-cross-msysarm64-libiconv-devel=0.unresolved'
+)
+options=('!strip' '!buildflags' '!emptydirs')
+source=(
+  "https://gnupg.org/ftp/gcrypt/${_realname}/${_realname}-${pkgver}.tar.bz2"
+  "https://gnupg.org/ftp/gcrypt/${_realname}/${_realname}-${pkgver}.tar.bz2.sig"
+  '../gnupg/0001-gnupg-2.2.8-msys2.patch'
+  '../gnupg/gnupg-2.4-avoid_beta_warning.patch'
+  '../gnupg/gnupg-2.4-drop_import_clean.patch'
+  '../gnupg/gnupg-2.4-revert_default_rfc4880bis.patch'
+  'dependencies.lock.json'
+  'inventory.json'
+)
+sha256sums=(
+  '7b24706e4da7e0e3b06ca068231027401f238102c41c909631349dcc3b85eb46'
+  '043bd2067efc5ad5837767fef556096dd42490f98bc12a47c6ef0e42fa552560'
+  '902563c91c72ed9222343de3482f4ca7b141775235625af5ad790f3d86419370'
+  '243c3a79295519b3931f9d846cf2af5caa064a78de812ee336dc786c1567b4d0'
+  '6ade15b536c50a88efc2d9dc958433b0ccfaf2908025b7672753e6bfce51c3c6'
+  'ef2267eecd9eb59bbbbdb97d55cbfe10236b4979a125c6683a840830bc202905'
+  '2befdd85bb926912a084ca5ec9db5b088252540e7d224d1d5bafd8003733b758'
+  '2ec9adc67172cf78837786071e0fc0e7b47a3e6fd3bf00213bb8d2be2a291c93'
+)
+validpgpkeys=(
+  '5B80C5754298F0CB55D8ED6ABCEF7E294B092E28'
+  '6DAA6E64A76D2840571B4902528897B826403ADA'
+  'AC8E115BF73E2D8D47FA9908E98E9B2D19C6C8BD'
+  '02F38DFF731FF97CB039A1DA549E695E905BA208'
+)
+
+prepare() {
+  cd "${srcdir}/${_realname}-${pkgver}"
+
+  patch -p1 -i "${srcdir}/0001-gnupg-2.2.8-msys2.patch"
+  patch -p1 -i "${srcdir}/gnupg-2.4-avoid_beta_warning.patch"
+  patch -p1 -i "${srcdir}/gnupg-2.4-drop_import_clean.patch"
+  patch -p1 -i "${srcdir}/gnupg-2.4-revert_default_rfc4880bis.patch"
+  ./autogen.sh --force
+}
+
+build() {
+  local private_root="${ALTROOT:?ALTROOT must name the fresh private package root}"
+  local sysroot="${private_root}${_target_root}"
+  local target_usr="${sysroot}/usr"
+  local build_dir="${srcdir}/build-${_target}"
+  local prefix_map="-ffile-prefix-map=${srcdir}=. -fdebug-prefix-map=${srcdir}=. -fmacro-prefix-map=${srcdir}=."
+
+  test "${private_root}" != "/"
+  test "${private_root}" != "/opt"
+  test "${private_root}" != "/c/msys64"
+  test -f "${sysroot}/bin/msys-2.0.dll"
+  test -f "${sysroot}/lib/cygwin-compile-only.specs"
+  test -f "${target_usr}/include/gcrypt.h"
+  test -f "${target_usr}/include/gpg-error.h"
+  test -f "${target_usr}/include/assuan.h"
+  test -f "${target_usr}/include/ksba.h"
+  test -f "${sysroot}/include/npth.h" -o -f "${target_usr}/include/npth.h"
+
+  rm -rf "${build_dir}" "${srcdir}/dest"
+  mkdir -p "${build_dir}" "${srcdir}/dest"
+
+  export PATH="${private_root}/opt/bin:/usr/bin"
+  export CC="${private_root}/opt/bin/${_target}-gcc"
+  export CXX="${private_root}/opt/bin/${_target}-g++"
+  export AR="${private_root}/opt/bin/${_target}-ar"
+  export AS="${private_root}/opt/bin/${_target}-as"
+  export LD="${private_root}/opt/bin/${_target}-ld"
+  export NM="${private_root}/opt/bin/${_target}-nm"
+  export OBJDUMP="${private_root}/opt/bin/${_target}-objdump"
+  export RANLIB="${private_root}/opt/bin/${_target}-ranlib"
+  export STRIP="${private_root}/opt/bin/${_target}-strip"
+  export DLLTOOL="${private_root}/opt/bin/${_target}-dlltool"
+  export WINDRES="${private_root}/opt/bin/${_target}-windres"
+  export CC_FOR_BUILD='gcc'
+  export PKG_CONFIG='/usr/bin/pkg-config'
+  export PKG_CONFIG_LIBDIR="${target_usr}/lib/pkgconfig:${sysroot}/lib/pkgconfig"
+  export PKG_CONFIG_SYSROOT_DIR="${private_root}"
+  export CPPFLAGS="-D__MSYS__ -isystem ${sysroot}/include -isystem ${sysroot}/include/w32api -isystem ${target_usr}/include"
+  export CFLAGS="-O2 -pipe ${prefix_map}"
+  export CXXFLAGS="${CFLAGS}"
+  export LDFLAGS="--sysroot=${sysroot} -specs=${sysroot}/lib/cygwin-compile-only.specs -L${target_usr}/lib -L${sysroot}/lib -Wl,-u,_pei386_runtime_relocator"
+  export LIBS='-lmsys-2.0'
+  export lt_cv_deplibs_check_method='pass_all'
+  export lt_cv_archive_cmds_need_lc='no'
+
+  test "$("${CC}" -dumpmachine)" = "${_target}"
+  "${OBJDUMP}" -f "${CC}" | grep -Eq 'pei-x86-64|pe-x86-64'
+
+  (
+    cd "${build_dir}"
+    "${srcdir}/${_realname}-${pkgver}/configure" \
+      --build="${CHOST}" \
+      --host="${_target}" \
+      --target="${_target}" \
+      --prefix=/usr \
+      --sysconfdir=/etc \
+      --localstatedir=/var \
+      --sbindir=/usr/bin \
+      --libexecdir=/usr/lib/gnupg \
+      --disable-libdns \
+      --disable-ldap \
+      --disable-gnutls \
+      --disable-nls \
+      --enable-bzip2 \
+      --enable-sqlite \
+      --enable-gpgsm \
+      --enable-dirmngr \
+      --enable-wks-tools \
+      --enable-maintainer-mode
+  )
+
+  make -C "${build_dir}" -j"$(nproc)"
+  make -C "${build_dir}" DESTDIR="${srcdir}/dest" install
+}
+
+check() {
+  local private_root="${ALTROOT:?ALTROOT must name the fresh private package root}"
+  local target_usr="${private_root}${_target_root}/usr"
+  local stage="${srcdir}/dest/usr"
+  local work="${srcdir}/check"
+  local expected actual
+
+  rm -rf "${work}"
+  mkdir -p "${work}"
+
+  expected="$(jq -r '.expected_pe[]' "${srcdir}/inventory.json" | sort)"
+  actual="$(
+    cd "${stage}"
+    find bin lib/gnupg -type f \( -iname '*.exe' -o -iname '*.dll' \) -printf '%p\n' | sort
+  )"
+  diff -u <(printf '%s\n' "${expected}") <(printf '%s\n' "${actual}")
+
+  while IFS= read -r pe; do
+    "${private_root}/opt/bin/${_target}-objdump" -f "${stage}/${pe}" |
+      grep -F 'architecture: aarch64'
+    "${private_root}/opt/bin/${_target}-objdump" -f "${stage}/${pe}" |
+      grep -F 'file format pei-aarch64-little'
+    "${private_root}/opt/bin/${_target}-objdump" -p "${stage}/${pe}" |
+      grep -Fi 'DLL Name: msys-2.0.dll'
+    ! "${private_root}/opt/bin/${_target}-objdump" -p "${stage}/${pe}" |
+      grep -Eqi 'cygwin1\.dll|x86_64|mingw'
+  done < <(jq -r '.expected_pe[]' "${srcdir}/inventory.json")
+
+  cat > "${work}/gpg-error-consumer.c" <<'EOF'
+#include <gpg-error.h>
+int main(void) { return gpg_err_code(GPG_ERR_NO_ERROR); }
+EOF
+  "${private_root}/opt/bin/${_target}-gcc" \
+    --sysroot="${private_root}${_target_root}" \
+    -specs="${private_root}${_target_root}/lib/cygwin-compile-only.specs" \
+    -I"${target_usr}/include" \
+    "${work}/gpg-error-consumer.c" \
+    -L"${target_usr}/lib" -lgpg-error \
+    -o "${work}/gpg-error-consumer.exe"
+  "${private_root}/opt/bin/${_target}-objdump" -f "${work}/gpg-error-consumer.exe" |
+    grep -F 'architecture: aarch64'
+}
+
+package_mingw-w64-cross-msysarm64-gnupg() {
+  pkgdesc="Native ARM64 MSYS GnuPG programs for aarch64-pc-msys"
+  depends=(
+    'mingw-w64-cross-msysarm64-runtime=0.unresolved'
+    'mingw-w64-cross-msysarm64-gcc-libs=0.unresolved'
+    'mingw-w64-cross-msysarm64-npth=0.unresolved'
+    'mingw-w64-cross-msysarm64-libgpg-error=0.unresolved'
+    'mingw-w64-cross-msysarm64-libgcrypt=0.unresolved'
+    'mingw-w64-cross-msysarm64-libassuan=0.unresolved'
+    'mingw-w64-cross-msysarm64-libksba=0.unresolved'
+    'mingw-w64-cross-msysarm64-readline=0.unresolved'
+    'mingw-w64-cross-msysarm64-zlib=0.unresolved'
+    'mingw-w64-cross-msysarm64-libbz2=0.unresolved'
+    'mingw-w64-cross-msysarm64-libsqlite=0.unresolved'
+    'mingw-w64-cross-msysarm64-libiconv=0.unresolved'
+    'mingw-w64-cross-msysarm64-pinentry=0.unresolved'
+  )
+  provides=("aarch64-pc-msys-gnupg=${pkgver}" "aarch64-pc-msys-dirmngr=${pkgver}")
+  conflicts=('aarch64-pc-msys-gnupg' 'aarch64-pc-msys-dirmngr')
+
+  install -d "${pkgdir}${_target_root}/usr/share"
+  cp -a "${srcdir}/dest/usr/bin" "${pkgdir}${_target_root}/usr/"
+  cp -a "${srcdir}/dest/usr/lib" "${pkgdir}${_target_root}/usr/"
+  cp -a "${srcdir}/dest/usr/share/gnupg" "${pkgdir}${_target_root}/usr/share/"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/COPYING"
+}
+
+package_mingw-w64-cross-msysarm64-gnupg-docs() {
+  pkgdesc="Documentation for native ARM64 MSYS GnuPG"
+  depends=("mingw-w64-cross-msysarm64-gnupg=${pkgver}-${pkgrel}")
+
+  install -d "${pkgdir}${_target_root}/usr/share"
+  cp -a "${srcdir}/dest/usr/share/doc" "${pkgdir}${_target_root}/usr/share/"
+  cp -a "${srcdir}/dest/usr/share/info" "${pkgdir}${_target_root}/usr/share/"
+  cp -a "${srcdir}/dest/usr/share/man" "${pkgdir}${_target_root}/usr/share/"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/COPYING"
+}

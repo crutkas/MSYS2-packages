@@ -1,0 +1,493 @@
+{
+  "schema_version": 1,
+  "lane": "mingw-w64-cross-msysarm64-gnupg",
+  "target": {
+    "triplet": "aarch64-pc-msys",
+    "object_format": "pei-aarch64-little",
+    "abi": "LP64/AAPCS64/SEH",
+    "runtime": "msys-2.0.dll",
+    "forbidden_personalities": [
+      "x86_64-pc-msys",
+      "aarch64-w64-mingw32",
+      "aarch64-pc-cygwin"
+    ],
+    "forbidden_imports": [
+      "cygwin1.dll"
+    ]
+  },
+  "source": {
+    "version": "2.4.7",
+    "archive_url": "https://gnupg.org/ftp/gcrypt/gnupg/gnupg-2.4.7.tar.bz2",
+    "archive_bytes": 8010244,
+    "archive_sha256": "7b24706e4da7e0e3b06ca068231027401f238102c41c909631349dcc3b85eb46",
+    "signature_url": "https://gnupg.org/ftp/gcrypt/gnupg/gnupg-2.4.7.tar.bz2.sig",
+    "signature_bytes": 238,
+    "signature_sha256": "043bd2067efc5ad5837767fef556096dd42490f98bc12a47c6ef0e42fa552560",
+    "valid_signing_keys": [
+      "5B80C5754298F0CB55D8ED6ABCEF7E294B092E28",
+      "6DAA6E64A76D2840571B4902528897B826403ADA",
+      "AC8E115BF73E2D8D47FA9908E98E9B2D19C6C8BD",
+      "02F38DFF731FF97CB039A1DA549E695E905BA208"
+    ]
+  },
+  "baseline": {
+    "authority": "MSYS2 package built from this repository's gnupg 2.4.7-1 recipe",
+    "asset_url": "https://repo.msys2.org/msys/x86_64/gnupg-2.4.7-1-x86_64.pkg.tar.zst",
+    "asset_bytes": 2690955,
+    "asset_sha256": "b305da0c0a103ffcf8d4a382eb49927b7751dffd4362fafbb6ecab7b9e781417",
+    "package_name": "gnupg",
+    "package_version": "2.4.7-1",
+    "package_architecture": "x86_64"
+  },
+  "fixed_binutils_evidence": {
+    "release_id": 377908415,
+    "release_tag": "cygwinarm64-binutils-pr21-3356eec-20260827",
+    "immutable": false,
+    "admission": false,
+    "diagnostic_only": true,
+    "package_commit": "3356eec1411983cc252b04afac32bca5f3b8d824",
+    "package_bytes": 6545114,
+    "package_sha256": "3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b",
+    "linker_sha256": "075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f",
+    "scanner": {
+      "repository": "crutkas/MSYS2-packages",
+      "commit": "3356eec1411983cc252b04afac32bca5f3b8d824",
+      "path": ".ci/check-aarch64-pseudo-relocs.ps1",
+      "sha256": "888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9",
+      "package_contained": false
+    }
+  },
+  "shared_state_observation": {
+    "cutoff": "2026-08-27T08:55:35-07:00",
+    "pacman_log_bytes": 155150,
+    "pacman_log_sha256": "925ce045782b49e6454956eae9ee0a5b700b17c805843d18329509f4e2a492c8",
+    "database_file_count": 1178,
+    "database_canonical_manifest_sha256": "93a39fb4e4105489b733275fa94e8cc718f25c239f0064cd64c4a68832a68c34"
+  },
+  "revoked_releases": [
+    {
+      "release_tag": "msysarm64-runtime-pr10-a527-20260824",
+      "reason": "Revoked after the native ARM64 unload trampoline defect was proven; no artifact from this release is admissible for final GnuPG."
+    }
+  ],
+  "quarantined_releases": [
+    {
+      "release_id": 377482427,
+      "release_tag": "msysarm64-gcc-pr13-20260826",
+      "immutable": null,
+      "admission": false,
+      "diagnostic_only": true,
+      "reason": "Live immutable status and release provenance have not completed independent final audit.",
+      "producer_commit": "c17cf6f65ebbf88cdc7cfa0cbf6f038eba955a67",
+      "package_diagnostics": [
+        {
+          "asset_name": "mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst",
+          "asset_bytes": 83876291,
+          "asset_sha256": "a74887c76a933ec424933bf662729d94975b83138af783bd93f2e7acd95c3a22"
+        },
+        {
+          "asset_name": "mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst",
+          "asset_bytes": 4963824,
+          "asset_sha256": "990f163cacf9ffce1b58445be91fedc57f135cc26a88d7dba109806446b41438"
+        }
+      ]
+    },
+    {
+      "release_id": 377493699,
+      "release_tag": "msysarm64-gcc-pr13-support-20260826",
+      "immutable": null,
+      "admission": false,
+      "diagnostic_only": true,
+      "reason": "Live immutable status and release provenance have not completed independent final audit.",
+      "producer_commit": "42f1fb808363203a83c7f6f935ab7e4bdffbe127",
+      "package_diagnostics": [
+        {
+          "asset_name": "mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst",
+          "asset_bytes": 1520166,
+          "asset_sha256": "9715aab6894379bf5ab936a3a559f286fb4aedbb64f0774d7457182e00648e08"
+        },
+        {
+          "asset_name": "mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst",
+          "asset_bytes": 2349635,
+          "asset_sha256": "7727936f4212e5af04e9739eca60f157c0875796c1e82fcfb79fd4398b111e24"
+        }
+      ]
+    },
+    {
+      "release_id": 377908415,
+      "release_tag": "cygwinarm64-binutils-pr21-3356eec-20260827",
+      "immutable": false,
+      "admission": false,
+      "diagnostic_only": true,
+      "reason": "GitHub REST reports immutable=false; this release is globally quarantined and can never satisfy admission.",
+      "producer_commit": "3356eec1411983cc252b04afac32bca5f3b8d824",
+      "package_diagnostics": [
+        {
+          "asset_name": "mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst",
+          "asset_bytes": 6545114,
+          "asset_sha256": "3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b"
+        }
+      ]
+    },
+    {
+      "release_id": 378064013,
+      "release_tag": "msysarm64-libgpg-error-pr16-06ae2f9-20260827",
+      "immutable": false,
+      "admission": false,
+      "diagnostic_only": true,
+      "reason": "The release carrier is not immutable. Its diagnostic bytes are nonconsumable until an unchanged remint is independently audited and explicitly admitted.",
+      "producer_commit": "06ae2f9c2ad5d69e736e4d056772a7be1546a076",
+      "package_diagnostics": [
+        {
+          "asset_name": "mingw-w64-cross-msysarm64-libgpg-error-1.56-1-x86_64.pkg.tar.zst",
+          "asset_bytes": 125720,
+          "asset_sha256": "ca9c377b91896f3286071fd456389006ade6e297e7dd21efb06ab572ccb55d34"
+        },
+        {
+          "asset_name": "mingw-w64-cross-msysarm64-libgpg-error-devel-1.56-1-x86_64.pkg.tar.zst",
+          "asset_bytes": 123170,
+          "asset_sha256": "642880ad8fc5498fa7b755825b30008d466dbefa0dd07de80f5f5516b7968a2a"
+        }
+      ]
+    }
+  ],
+  "unresolved_handoff_fields": [
+    "release_id",
+    "release_tag",
+    "release_immutable",
+    "asset_id",
+    "asset_url",
+    "asset_name",
+    "asset_bytes",
+    "asset_sha256",
+    "producer_commit",
+    "package.name",
+    "package.version",
+    "package.provides",
+    "package.owned_files"
+  ],
+  "dependencies": [
+    {
+      "id": "runtime-headers",
+      "required": true,
+      "purpose": "corrected target headers and compile-only specs from the admitted runtime successor",
+      "status": "unresolved",
+      "release_tag": null,
+      "asset_url": null,
+      "asset_name": null,
+      "asset_bytes": null,
+      "asset_sha256": null,
+      "producer_commit": null,
+      "package": null
+    },
+    {
+      "id": "runtime",
+      "required": true,
+      "purpose": "corrected target MSYS runtime with the unload trampoline defect fixed",
+      "status": "unresolved",
+      "release_tag": null,
+      "asset_url": null,
+      "asset_name": null,
+      "asset_bytes": null,
+      "asset_sha256": null,
+      "producer_commit": null,
+      "package": null
+    },
+    {
+      "id": "runtime-devel",
+      "required": true,
+      "purpose": "corrected target import and static libraries from the admitted runtime successor",
+      "status": "unresolved",
+      "release_tag": null,
+      "asset_url": null,
+      "asset_name": null,
+      "asset_bytes": null,
+      "asset_sha256": null,
+      "producer_commit": null,
+      "package": null
+    },
+    {
+      "id": "runtime-sysroot",
+      "required": true,
+      "purpose": "corrected target sysroot manifest from the admitted runtime successor",
+      "status": "unresolved",
+      "release_tag": null,
+      "asset_url": null,
+      "asset_name": null,
+      "asset_bytes": null,
+      "asset_sha256": null,
+      "producer_commit": null,
+      "package": null
+    },
+    {
+      "id": "default-manifest",
+      "required": true,
+      "purpose": "corrected target Windows manifest object from the admitted runtime successor",
+      "status": "unresolved",
+      "release_tag": null,
+      "asset_url": null,
+      "asset_name": null,
+      "asset_bytes": null,
+      "asset_sha256": null,
+      "producer_commit": null,
+      "package": null
+    },
+    {
+      "id": "gcc",
+      "required": true,
+      "purpose": "x86_64-hosted aarch64-pc-msys compiler from an immutable independently admitted release",
+      "status": "unresolved",
+      "release_id": null,
+      "release_tag": null,
+      "asset_id": null,
+      "asset_url": null,
+      "asset_name": null,
+      "asset_bytes": null,
+      "asset_sha256": null,
+      "producer_commit": null,
+      "package": null
+    },
+    {
+      "id": "gcc-libs",
+      "required": true,
+      "purpose": "target GCC runtime libraries from an immutable independently admitted release",
+      "status": "unresolved",
+      "release_id": null,
+      "release_tag": null,
+      "asset_id": null,
+      "asset_url": null,
+      "asset_name": null,
+      "asset_bytes": null,
+      "asset_sha256": null,
+      "producer_commit": null,
+      "package": null
+    },
+    {
+      "id": "libstdcxx-headers",
+      "required": true,
+      "purpose": "target C++ headers from an immutable independently admitted release",
+      "status": "unresolved",
+      "release_id": null,
+      "release_tag": null,
+      "asset_id": null,
+      "asset_url": null,
+      "asset_name": null,
+      "asset_bytes": null,
+      "asset_sha256": null,
+      "producer_commit": null,
+      "package": null
+    },
+    {
+      "id": "w32api-runtime",
+      "required": true,
+      "purpose": "target Windows import libraries from an immutable independently admitted release",
+      "status": "unresolved",
+      "release_id": null,
+      "release_tag": null,
+      "asset_id": null,
+      "asset_url": null,
+      "asset_name": null,
+      "asset_bytes": null,
+      "asset_sha256": null,
+      "producer_commit": null,
+      "package": null
+    },
+    {
+      "id": "binutils",
+      "required": true,
+      "purpose": "fixed target tools from a new immutable independently admitted release",
+      "status": "unresolved",
+      "release_id": null,
+      "release_tag": null,
+      "asset_id": null,
+      "asset_url": null,
+      "asset_name": null,
+      "asset_bytes": null,
+      "asset_sha256": null,
+      "producer_commit": null,
+      "package": null
+    },
+    {
+      "id": "npth",
+      "required": true,
+      "purpose": "GnuPG threading runtime and development files",
+      "status": "unresolved",
+      "release_tag": null,
+      "asset_url": null,
+      "asset_name": null,
+      "asset_bytes": null,
+      "asset_sha256": null,
+      "producer_commit": null,
+      "package": null
+    },
+    {
+      "id": "libgpg-error-runtime",
+      "required": true,
+      "purpose": "GnuPG error runtime from an immutable independently admitted release",
+      "status": "unresolved",
+      "release_tag": null,
+      "asset_url": null,
+      "asset_name": null,
+      "asset_bytes": null,
+      "asset_sha256": null,
+      "producer_commit": null,
+      "package": null
+    },
+    {
+      "id": "libgpg-error-devel",
+      "required": true,
+      "purpose": "GnuPG error headers, archives and metadata from an immutable independently admitted release",
+      "status": "unresolved",
+      "release_tag": null,
+      "asset_url": null,
+      "asset_name": null,
+      "asset_bytes": null,
+      "asset_sha256": null,
+      "producer_commit": null,
+      "package": null
+    },
+    {
+      "id": "libgcrypt",
+      "required": true,
+      "purpose": "cryptographic runtime and development files",
+      "status": "unresolved",
+      "release_tag": null,
+      "asset_url": null,
+      "asset_name": null,
+      "asset_bytes": null,
+      "asset_sha256": null,
+      "producer_commit": null,
+      "package": null
+    },
+    {
+      "id": "libassuan",
+      "required": true,
+      "purpose": "IPC runtime and development files",
+      "status": "unresolved",
+      "release_tag": null,
+      "asset_url": null,
+      "asset_name": null,
+      "asset_bytes": null,
+      "asset_sha256": null,
+      "producer_commit": null,
+      "package": null
+    },
+    {
+      "id": "libksba",
+      "required": true,
+      "purpose": "X.509 runtime and development files",
+      "status": "unresolved",
+      "release_tag": null,
+      "asset_url": null,
+      "asset_name": null,
+      "asset_bytes": null,
+      "asset_sha256": null,
+      "producer_commit": null,
+      "package": null
+    },
+    {
+      "id": "pinentry",
+      "required": true,
+      "purpose": "noninteractive-capable runtime pinentry",
+      "status": "unresolved",
+      "release_tag": null,
+      "asset_url": null,
+      "asset_name": null,
+      "asset_bytes": null,
+      "asset_sha256": null,
+      "producer_commit": null,
+      "package": null
+    },
+    {
+      "id": "ncurses",
+      "required": true,
+      "purpose": "pinentry and readline runtime closure",
+      "status": "unresolved",
+      "release_tag": null,
+      "asset_url": null,
+      "asset_name": null,
+      "asset_bytes": null,
+      "asset_sha256": null,
+      "producer_commit": null,
+      "package": null
+    },
+    {
+      "id": "readline",
+      "required": true,
+      "purpose": "gpgscm runtime and development files",
+      "status": "unresolved",
+      "release_tag": null,
+      "asset_url": null,
+      "asset_name": null,
+      "asset_bytes": null,
+      "asset_sha256": null,
+      "producer_commit": null,
+      "package": null
+    },
+    {
+      "id": "zlib",
+      "required": true,
+      "purpose": "compression runtime and development files",
+      "status": "unresolved",
+      "release_tag": null,
+      "asset_url": null,
+      "asset_name": null,
+      "asset_bytes": null,
+      "asset_sha256": null,
+      "producer_commit": null,
+      "package": null
+    },
+    {
+      "id": "bzip2",
+      "required": true,
+      "purpose": "compression runtime and development files",
+      "status": "unresolved",
+      "release_tag": null,
+      "asset_url": null,
+      "asset_name": null,
+      "asset_bytes": null,
+      "asset_sha256": null,
+      "producer_commit": null,
+      "package": null
+    },
+    {
+      "id": "sqlite",
+      "required": true,
+      "purpose": "keybox database runtime and development files",
+      "status": "unresolved",
+      "release_tag": null,
+      "asset_url": null,
+      "asset_name": null,
+      "asset_bytes": null,
+      "asset_sha256": null,
+      "producer_commit": null,
+      "package": null
+    },
+    {
+      "id": "libiconv",
+      "required": true,
+      "purpose": "target character conversion runtime and development files",
+      "status": "unresolved",
+      "release_tag": null,
+      "asset_url": null,
+      "asset_name": null,
+      "asset_bytes": null,
+      "asset_sha256": null,
+      "producer_commit": null,
+      "package": null
+    },
+    {
+      "id": "openssl",
+      "required": false,
+      "purpose": "not linked by GnuPG; alternate TLS is disabled for this lane",
+      "status": "not-applicable",
+      "release_tag": null,
+      "asset_url": null,
+      "asset_name": null,
+      "asset_bytes": null,
+      "asset_sha256": null,
+      "producer_commit": null,
+      "package": null
+    }
+  ]
+}

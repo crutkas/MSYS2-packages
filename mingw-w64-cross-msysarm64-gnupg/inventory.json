@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "baseline_package": {
+    "name": "gnupg",
+    "version": "2.4.7-1",
+    "architecture": "x86_64",
+    "url": "https://repo.msys2.org/msys/x86_64/gnupg-2.4.7-1-x86_64.pkg.tar.zst",
+    "bytes": 2690955,
+    "sha256": "b305da0c0a103ffcf8d4a382eb49927b7751dffd4362fafbb6ecab7b9e781417"
+  },
+  "packages": {
+    "mingw-w64-cross-msysarm64-gnupg": {
+      "requires_nonempty": true,
+      "path_prefixes": [
+        "opt/aarch64-pc-msys/usr/bin",
+        "opt/aarch64-pc-msys/usr/lib/gnupg"
+      ]
+    },
+    "mingw-w64-cross-msysarm64-gnupg-docs": {
+      "requires_nonempty": true,
+      "path_prefixes": [
+        "opt/aarch64-pc-msys/usr/share/doc",
+        "opt/aarch64-pc-msys/usr/share/info",
+        "opt/aarch64-pc-msys/usr/share/man"
+      ]
+    }
+  },
+  "expected_pe": [
+    "usr/bin/dirmngr-client.exe",
+    "usr/bin/dirmngr.exe",
+    "usr/bin/gpg-agent.exe",
+    "usr/bin/gpg-card.exe",
+    "usr/bin/gpg-connect-agent.exe",
+    "usr/bin/gpg-mail-tube.exe",
+    "usr/bin/gpg-wks-client.exe",
+    "usr/bin/gpg-wks-server.exe",
+    "usr/bin/gpg.exe",
+    "usr/bin/gpgconf.exe",
+    "usr/bin/gpgparsemail.exe",
+    "usr/bin/gpgscm.exe",
+    "usr/bin/gpgsm.exe",
+    "usr/bin/gpgsplit.exe",
+    "usr/bin/gpgtar.exe",
+    "usr/bin/gpgv.exe",
+    "usr/bin/kbxutil.exe",
+    "usr/bin/watchgnupg.exe",
+    "usr/lib/gnupg/gpg-auth.exe",
+    "usr/lib/gnupg/gpg-check-pattern.exe",
+    "usr/lib/gnupg/gpg-pair-tool.exe",
+    "usr/lib/gnupg/gpg-preset-passphrase.exe",
+    "usr/lib/gnupg/gpg-protect-tool.exe",
+    "usr/lib/gnupg/keyboxd.exe",
+    "usr/lib/gnupg/scdaemon.exe"
+  ],
+  "allowed_target_dll_patterns": [
+    "^msys-2\\.0\\.dll$",
+    "^msys-(assuan|bz2|gcc_s-seh|gcrypt|gpg-error|iconv|intl|ksba|ncursesw|npth|readline|sqlite3|stdc\\+\\+|z)[A-Za-z0-9._-]*\\.dll$",
+    "^(advapi32|bcrypt|crypt32|dnsapi|iphlpapi|kernel32|netapi32|ntdll|ole32|psapi|rpcrt4|secur32|shell32|shlwapi|user32|version|winmm|ws2_32)\\.dll$"
+  ],
+  "forbidden_import_patterns": [
+    "cygwin1\\.dll",
+    "x86_64",
+    "mingw"
+  ],
+  "archive_policy": {
+    "expected": false,
+    "reason": "GnuPG 2.4.7 installs no public development archive; any archive is unexpected and is still armap/architecture checked."
+  },
+  "required_build_evidence": [
+    "source-signature-verification",
+    "independent-build-a",
+    "independent-build-b",
+    "byte-identical-packages",
+    "complete-ownership-mtree",
+    "corruption-detection-reinstall-recovery",
+    "forbidden-path-binary-scan",
+    "package-architecture-imports",
+    "pseudo-relocations"
+  ],
+  "native_evidence_required": [
+    "machine-architecture",
+    "gpg-version",
+    "key-generation",
+    "detach-sign-verify",
+    "clear-sign-verify",
+    "encrypt-decrypt",
+    "import-export",
+    "agent-lifecycle",
+    "pinentry-contract",
+    "git-commit-signing",
+    "git-tag-signing",
+    "process-module-trace",
+    "process-image-load-stop-closure",
+    "shared-state-unchanged"
+  ]
+}

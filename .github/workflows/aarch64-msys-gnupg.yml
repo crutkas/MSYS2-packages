@@ -1,0 +1,317 @@
+name: aarch64-pc-msys GnuPG
+
+on:
+  pull_request:
+    paths:
+      - '.ci/*Aarch64GnuPG*.ps1'
+      - '.ci/*Aarch64PseudoReloc*.ps1'
+      - '.ci/check-aarch64-pseudo-relocs.ps1'
+      - 'mingw-w64-cross-msysarm64-gnupg/**'
+      - '.github/workflows/aarch64-msys-gnupg.yml'
+  push:
+    paths:
+      - '.ci/*Aarch64GnuPG*.ps1'
+      - '.ci/*Aarch64PseudoReloc*.ps1'
+      - '.ci/check-aarch64-pseudo-relocs.ps1'
+      - 'mingw-w64-cross-msysarm64-gnupg/**'
+      - '.github/workflows/aarch64-msys-gnupg.yml'
+  workflow_dispatch:
+    inputs:
+      build_candidate:
+        description: Build only after every required lock entry is coordinator-admitted
+        type: boolean
+        default: false
+      run_native:
+        description: Run hermetic native ARM64 tests after candidate build
+        type: boolean
+        default: false
+      coordinator_admission:
+        description: Coordinator admission record for native execution
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aarch64-msys-gnupg-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Run source and negative tests
+        shell: pwsh
+        run: .\.ci\Test-Aarch64GnuPGStatic.ps1
+      - name: Create closed-schema static evidence
+        shell: pwsh
+        run: |
+          $base = (& git merge-base origin/master HEAD).Trim()
+          $head = (& git rev-parse HEAD).Trim()
+          $evidence = Join-Path $env:RUNNER_TEMP "gnupg-static-evidence.json"
+          .\.ci\New-Aarch64GnuPGStaticEvidence.ps1 `
+            -Repository "${{ github.repository }}" `
+            -BaseCommit $base `
+            -HeadCommit $head `
+            -OutputPath $evidence
+          .\.ci\Test-Aarch64GnuPGStaticEvidence.ps1 `
+            -EvidencePath $evidence `
+            -Repository "${{ github.repository }}" `
+            -BaseCommit $base `
+            -HeadCommit $head | Out-Null
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: aarch64-pc-msys-gnupg-static-evidence
+          path: ${{ runner.temp }}/gnupg-static-evidence.json
+          if-no-files-found: error
+
+  build:
+    if: github.event_name == 'workflow_dispatch' && inputs.build_candidate
+    needs: static
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        independent_build: [a, b]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require a complete admitted dependency lock
+        shell: pwsh
+        run: .\.ci\Test-Aarch64GnuPGDependencyLock.ps1 -LockPath .\mingw-w64-cross-msysarm64-gnupg\dependencies.lock.json
+      - name: Require live immutable release identities
+        shell: pwsh
+        run: .\.ci\Test-Aarch64GnuPGReleaseAdmission.ps1 -LockPath .\mingw-w64-cross-msysarm64-gnupg\dependencies.lock.json
+      - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
+        with:
+          msystem: MSYS
+          install: >-
+            base-devel
+            gettext-devel
+            git
+            jq
+            pkgconf
+          update: true
+      - name: Install immutable inputs in a fresh private root
+        id: root
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "gnupg-build-${{ matrix.independent_build }}-root"
+          .\.ci\Initialize-Aarch64GnuPGPrivateRoot.ps1 `
+            -LockPath .\mingw-w64-cross-msysarm64-gnupg\dependencies.lock.json `
+            -RootPath $root `
+            -EvidencePath (Join-Path $env:RUNNER_TEMP "dependency-transaction.json")
+          $msysRoot = (& C:\msys64\usr\bin\cygpath.exe -u $root).Trim()
+          "windows_path=$root" >> $env:GITHUB_OUTPUT
+          "msys_path=$msysRoot" >> $env:GITHUB_OUTPUT
+      - name: Import upstream signing keys
+        shell: msys2 {0}
+        run: |
+          cd "$GITHUB_WORKSPACE/mingw-w64-cross-msysarm64-gnupg"
+          ../.ci/fetch-validpgpkeys.sh
+      - name: Build source and signature pinned packages
+        shell: msys2 {0}
+        env:
+          ALTROOT: ${{ steps.root.outputs.msys_path }}
+          MSYS: winsymlinks:sys
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/mingw-w64-cross-msysarm64-gnupg"
+          makepkg --cleanbuild --noconfirm --nodeps
+      - name: Record independent build identity
+        shell: pwsh
+        run: |
+          [ordered]@{
+           schema_version = 1
+           result = "pass"
+           build_id = "${{ matrix.independent_build }}"
+           source_signature_verified = $true
+          } | ConvertTo-Json | Set-Content `
+           -LiteralPath (Join-Path $env:RUNNER_TEMP "build-identity-evidence.json") `
+           -Encoding utf8NoBOM
+      - name: Preflight every package byte and archive path
+        shell: pwsh
+        run: |
+          $packages = @(Get-ChildItem .\mingw-w64-cross-msysarm64-gnupg\*.pkg.tar.* -File | ForEach-Object FullName)
+          .\.ci\Test-Aarch64GnuPGForbiddenPaths.ps1 `
+            -InputPath $packages `
+            -ForbiddenPath @(
+              $env:GITHUB_WORKSPACE,
+              $env:RUNNER_TEMP,
+              "${{ steps.root.outputs.windows_path }}",
+              "C:\msys64"
+            ) `
+            -EvidencePath (Join-Path $env:RUNNER_TEMP "forbidden-path-evidence.json")
+      - name: Verify package inventory, imports, archives and pseudo-relocs
+        shell: pwsh
+        run: |
+          $lane = ".\mingw-w64-cross-msysarm64-gnupg"
+          $packages = @(Get-ChildItem "$lane\*.pkg.tar.*" -File | ForEach-Object FullName)
+          .\.ci\Test-Aarch64GnuPGSplitPackages.ps1 `
+            -Packages $packages `
+            -InventoryPath "$lane\inventory.json"
+          $runtime = Get-ChildItem "$lane\mingw-w64-cross-msysarm64-gnupg-[0-9]*.pkg.tar.*" -File -Exclude "*-docs-*" | Select-Object -First 1
+          if ($null -eq $runtime) { throw "Runtime package was not produced" }
+          $extract = Join-Path $env:RUNNER_TEMP "gnupg-package"
+          New-Item -ItemType Directory -Force $extract | Out-Null
+          & C:\msys64\usr\bin\bsdtar.exe -xf $runtime.FullName -C $extract
+          if ($LASTEXITCODE -ne 0) { throw "Package extraction failed" }
+          $candidate = Join-Path $extract "opt\aarch64-pc-msys"
+          .\.ci\Test-Aarch64GnuPGPackage.ps1 `
+            -CandidateRoot $candidate `
+            -InventoryPath "$lane\inventory.json" `
+            -Objdump "${{ steps.root.outputs.windows_path }}\opt\bin\aarch64-pc-msys-objdump.exe" `
+            -Nm "${{ steps.root.outputs.windows_path }}\opt\bin\aarch64-pc-msys-nm.exe" `
+            -Ar "${{ steps.root.outputs.windows_path }}\opt\bin\aarch64-pc-msys-ar.exe" `
+            -EvidencePath (Join-Path $env:RUNNER_TEMP "package-evidence.json")
+      - name: Exercise isolated candidate transactions
+        shell: pwsh
+        run: |
+          $packages = @(Get-ChildItem .\mingw-w64-cross-msysarm64-gnupg\*.pkg.tar.* -File | ForEach-Object FullName)
+          .\.ci\Initialize-Aarch64GnuPGPrivateRoot.ps1 `
+            -LockPath .\mingw-w64-cross-msysarm64-gnupg\dependencies.lock.json `
+            -RootPath (Join-Path $env:RUNNER_TEMP "gnupg-transaction-root") `
+            -CandidatePackages $packages `
+            -EvidencePath (Join-Path $env:RUNNER_TEMP "candidate-transaction.json")
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: aarch64-pc-msys-gnupg-build-${{ matrix.independent_build }}
+          path: |
+            mingw-w64-cross-msysarm64-gnupg/*.pkg.tar.*
+            ${{ runner.temp }}/dependency-transaction.json
+            ${{ runner.temp }}/candidate-transaction.json
+            ${{ runner.temp }}/build-identity-evidence.json
+            ${{ runner.temp }}/package-evidence.json
+            ${{ runner.temp }}/forbidden-path-evidence.json
+          if-no-files-found: error
+
+  reproducibility:
+    if: github.event_name == 'workflow_dispatch' && inputs.build_candidate
+    needs: build
+    runs-on: windows-2025
+    outputs:
+      package_manifest_sha256: ${{ steps.compare.outputs.package_manifest_sha256 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: aarch64-pc-msys-gnupg-build-a
+          path: ${{ runner.temp }}/build-a
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: aarch64-pc-msys-gnupg-build-b
+          path: ${{ runner.temp }}/build-b
+      - name: Require byte-identical independent packages
+        id: compare
+        shell: pwsh
+        run: |
+          $result = .\.ci\Compare-Aarch64GnuPGBuilds.ps1 `
+            -BuildAPath (Join-Path $env:RUNNER_TEMP "build-a") `
+            -BuildBPath (Join-Path $env:RUNNER_TEMP "build-b") `
+            -OutputPath (Join-Path $env:RUNNER_TEMP "matched") `
+            -EvidencePath (Join-Path $env:RUNNER_TEMP "matched\reproducibility.json") `
+            -InventoryPath .\mingw-w64-cross-msysarm64-gnupg\inventory.json
+          "package_manifest_sha256=$($result.package_manifest_sha256)" >> $env:GITHUB_OUTPUT
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: aarch64-pc-msys-gnupg-candidate
+          path: |
+            ${{ runner.temp }}/matched/**
+          if-no-files-found: error
+
+  native:
+    if: github.event_name == 'workflow_dispatch' && inputs.build_candidate && inputs.run_native && inputs.coordinator_admission != ''
+    needs: reproducibility
+    runs-on: windows-11-arm
+    environment: gnupg-native-admission
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: aarch64-pc-msys-gnupg-candidate
+          path: candidate
+      - name: Bind coordinator admission to commit, lock and package bytes
+        shell: pwsh
+        env:
+          ADMISSION_RECORD: ${{ inputs.coordinator_admission }}
+          EXPECTED_ADMISSION_SHA256: ${{ vars.GNUPG_COORDINATOR_ADMISSION_SHA256 }}
+          PACKAGE_MANIFEST_SHA256: ${{ needs.reproducibility.outputs.package_manifest_sha256 }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:EXPECTED_ADMISSION_SHA256)) {
+            throw "Protected environment admission SHA-256 is not configured"
+          }
+          $recordBytes = [Text.Encoding]::UTF8.GetBytes($env:ADMISSION_RECORD)
+          $recordSha256 = [Convert]::ToHexString(
+            [Security.Cryptography.SHA256]::HashData($recordBytes)
+          ).ToLowerInvariant()
+          if ($recordSha256 -ne $env:EXPECTED_ADMISSION_SHA256) {
+            throw "Coordinator admission record is not authorized by the protected environment"
+          }
+          $record = $env:ADMISSION_RECORD | ConvertFrom-Json
+          $lockText = [IO.File]::ReadAllText(
+            ".\mingw-w64-cross-msysarm64-gnupg\dependencies.lock.json"
+          ).Replace("`r`n", "`n")
+          $lockSha256 = [Convert]::ToHexString(
+            [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($lockText))
+          ).ToLowerInvariant()
+          if ($record.commit -ne $env:GITHUB_SHA -or
+              $record.lock_sha256 -ne $lockSha256 -or
+              $record.package_manifest_sha256 -ne $env:PACKAGE_MANIFEST_SHA256) {
+            throw "Coordinator admission is not bound to this commit, lock and package manifest"
+          }
+          [ordered]@{
+            schema_version = 1
+            result = "pass"
+            admission_sha256 = $recordSha256
+            commit = $record.commit
+            lock_sha256 = $record.lock_sha256
+            package_manifest_sha256 = $record.package_manifest_sha256
+          } | ConvertTo-Json | Set-Content `
+            -LiteralPath (Join-Path $env:RUNNER_TEMP "admission-binding.json") `
+            -Encoding utf8NoBOM
+      - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
+        with:
+          msystem: MSYS
+          install: pacman
+          update: true
+      - name: Recreate portable root from admitted archives
+        id: native-root
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "gnupg-native-root"
+          $packages = @(Get-ChildItem .\candidate -Recurse -File -Filter *.pkg.tar.* | ForEach-Object FullName)
+          .\.ci\Initialize-Aarch64GnuPGPrivateRoot.ps1 `
+            -LockPath .\mingw-w64-cross-msysarm64-gnupg\dependencies.lock.json `
+            -RootPath $root `
+            -CandidatePackages $packages `
+            -EvidencePath (Join-Path $env:RUNNER_TEMP "native-transaction.json")
+          "path=$root" >> $env:GITHUB_OUTPUT
+      - name: Run native cryptographic and Git signing evidence
+        shell: pwsh
+        run: |
+          $git = (Get-Command git.exe -CommandType Application).Source
+          .\.ci\Test-Aarch64GnuPGNative.ps1 `
+            -CandidateRoot "${{ steps.native-root.outputs.path }}\opt\aarch64-pc-msys" `
+            -GitPath $git `
+            -TransactionEvidencePath (Join-Path $env:RUNNER_TEMP "native-transaction.json") `
+            -EvidencePath (Join-Path $env:RUNNER_TEMP "native-evidence.json")
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: aarch64-pc-msys-gnupg-native-evidence
+          path: |
+            ${{ runner.temp }}/native-transaction.json
+            ${{ runner.temp }}/native-evidence.json
+            ${{ runner.temp }}/admission-binding.json
+          if-no-files-found: error
