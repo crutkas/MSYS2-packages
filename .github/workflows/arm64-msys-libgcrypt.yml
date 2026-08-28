@@ -75,6 +75,10 @@ jobs:
           $workflow = Join-Path $env:GITHUB_WORKSPACE `
             '.github\workflows\arm64-msys-libgcrypt.yml'
           function Assert-ImmutableActionRefs([string] $WorkflowText) {
+            if ($WorkflowText -cmatch
+                '\\(?:x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8})') {
+              throw 'YAML hexadecimal escapes are unsupported in this workflow.'
+            }
             $keyPattern =
               '(?im)(?<![A-Za-z0-9_-])(?:"uses"|''uses''|uses)\s*:'
             $refPattern =
@@ -121,6 +125,12 @@ jobs:
             "- ${usesName}:"
           )
           $rejectedCount = 0
+          $escape = '\'
+          $negativeFixtures += @(
+            ('- "us' + $escape + 'x65s": owner/action@v1'),
+            ('- "us' + $escape + 'u0065s": owner/action@v1'),
+            ('- "us' + $escape + 'U00000065s": owner/action@v1')
+          )
           foreach ($fixture in $negativeFixtures) {
             $rejected = $false
             try {
