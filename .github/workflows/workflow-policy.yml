@@ -1,0 +1,50 @@
+name: workflow-policy
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: workflow-policy / verify
+    runs-on: windows-2025
+    steps:
+      - name: Check out protected base
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: protected-base
+          fetch-depth: 1
+          persist-credentials: false
+          clean: true
+      - name: Verify protected base and create private root
+        shell: pwsh
+        env:
+          POLICY_REPOSITORY: ${{ github.repository }}
+          POLICY_REPOSITORY_ID: ${{ github.repository_id }}
+          POLICY_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          POLICY_BASE_REF: ${{ github.event.pull_request.base.ref }}
+          POLICY_RUN_ID: ${{ github.run_id }}
+          POLICY_RUN_ATTEMPT: ${{ github.run_attempt }}
+          POLICY_JOB: ${{ github.job }}
+          POLICY_MATRIX: none
+        run: |
+          & "$env:GITHUB_WORKSPACE\protected-base\.github\policy\private-root.ps1"
+      - name: Validate candidate as inert data
+        shell: pwsh
+        env:
+          POLICY_GITHUB_TOKEN: ${{ github.token }}
+          POLICY_API_URL: ${{ github.api_url }}
+          POLICY_REPOSITORY: ${{ github.repository }}
+          POLICY_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          python -B "$env:GITHUB_WORKSPACE\protected-base\.github\policy\validator.py" collect --event "$env:GITHUB_EVENT_PATH" --graph "$env:GITHUB_WORKSPACE\protected-base\.github\policy\approval-graph.json" --base-checkout "$env:GITHUB_WORKSPACE\protected-base" --private-root "$env:POLICY_PRIVATE_ROOT"
