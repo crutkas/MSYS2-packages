@@ -231,7 +231,7 @@ gpg --batch --import '$inputsPosix/signature_key.asc'
 cd '$recipePosix'
 makepkg --cleanbuild --check --noconfirm
 "@
-  & $bash --login -lc $script 2>&1 | Tee-Object -FilePath (Join-Path $OutputDir 'build.log')
+  & $bash -lc $script 2>&1 | Tee-Object -FilePath (Join-Path $OutputDir 'build.log')
   if ($LASTEXITCODE -ne 0) { throw 'Deterministic npth cross-build failed.' }
 
   $packages = @(Get-ChildItem -LiteralPath $recipeStage `
