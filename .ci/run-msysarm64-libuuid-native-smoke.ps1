@@ -73,7 +73,8 @@ function Invoke-Download {
         [Parameter(Mandatory = $true)][string]$Sha256
     )
 
-    & curl.exe --fail --location --retry 5 --silent --show-error `
+    & curl.exe --fail --location --retry 5 --retry-all-errors `
+        --retry-delay 2 --silent --show-error `
         --output $Path $Uri
     if ($LASTEXITCODE -ne 0) {
         throw "Download failed: $Uri"
