@@ -655,6 +655,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Safe-extraction fail-closed negative tests failed' }
 
           $m = Get-Content -Raw $manifest | ConvertFrom-Json
+          if ($m.disposition.status -ne 'diagnostic-only' -or $m.disposition.publish) {
+            throw 'a527-derived admission evidence must remain diagnostic-only and non-publishable'
+          }
           $parent = $m.source.expectedParent
           $PSNativeCommandUseErrorActionPreference = $false
           & git merge-base --is-ancestor $parent HEAD
@@ -701,6 +704,7 @@ jobs:
               descends_from_parent = $ancestry
             }
             source_date_epoch = [long]$env:SOURCE_DATE_EPOCH
+            disposition = $m.disposition
             package_archives_equal = $comparison.package_archives_equal
             inner_package_trees_equal = $comparison.inner_trees_equal
             input_download_seals_equal = $comparison.input_download_seals_equal

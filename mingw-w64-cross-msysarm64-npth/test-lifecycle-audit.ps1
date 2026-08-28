@@ -50,6 +50,13 @@ function New-Pkg {
 }
 
 try {
+  $scriptText = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'lifecycle-audit.ps1')
+  if ($scriptText -notmatch "corrupt_qkk_exit" -or
+      $scriptText -notmatch "recovered_qkk_exit" -or
+      $scriptText -notmatch "'-Qkk'") {
+    Fail 'lifecycle audit does not bind corruption detection and recovery evidence'
+  }
+
   # --- Get-PackageInfo / Get-PackageFiles ----------------------------------
   $runtimePkg = New-Pkg -PkgName 'mingw-w64-cross-msysarm64-npth' -PkgInfoExtra @(
     'depend = aarch64-pc-msys-runtime=3.6.10.r0.ga527ace21',

@@ -20,6 +20,10 @@ $raw = Get-Content -LiteralPath $manifestPath -Raw
 $manifest = $raw | ConvertFrom-Json
 
 Assert ($manifest.schema -eq 1) 'schema must be 1'
+Assert ($manifest.disposition.status -eq 'diagnostic-only') 'a527 outputs must remain diagnostic-only'
+Assert ($manifest.disposition.publish -eq $false) 'a527 outputs must never be publishable'
+Assert ($manifest.disposition.canonicalRebuildBlockedOn -eq 'corrected ARM64 MSYS runtime') `
+  'canonical rebuild blocker must be explicit'
 
 # --- source binding -------------------------------------------------------
 Assert ($manifest.source.repository -eq 'crutkas/MSYS2-packages') 'source.repository mismatch'
@@ -146,7 +150,7 @@ foreach ($pin in @($manifest.actionPins.checkout, $manifest.actionPins.uploadArt
 if (Test-Path -LiteralPath $pkgbuildPath) {
   $pkgbuild = Get-Content -LiteralPath $pkgbuildPath -Raw
   Assert ($pkgbuild.Contains($manifest.npthSource.tarball.sha256)) 'PKGBUILD must pin the manifest npth tarball sha256'
-  $expectedSums = "(?s)sha256sums=\(\s*'$($manifest.npthSource.tarball.sha256)'\s*'SKIP'\s*'dfe9fa551f7e44508466158099f85b93997a14fc3f5cf7da7c768909ddac08e1'\s*'48453666d8f2b210239547daa4e64cdd0c2180551cdfb3795237863ecd31ead2'\s*'5eec9c3423f6ee7ea3f354ea06b9ee6f40af88425a8e5294c6a4f6db085cb008'\s*\)"
+  $expectedSums = "(?s)sha256sums=\(\s*'$($manifest.npthSource.tarball.sha256)'\s*'SKIP'\s*'dfe9fa551f7e44508466158099f85b93997a14fc3f5cf7da7c768909ddac08e1'\s*'1cf63874ee38b53132f0c7676b45839e2227136a49f61badc597a27c7727465f'\s*'5eec9c3423f6ee7ea3f354ea06b9ee6f40af88425a8e5294c6a4f6db085cb008'\s*\)"
   Assert ($pkgbuild -match $expectedSums) 'PKGBUILD source checksum order must match source() order'
   Assert ($pkgbuild.Contains('"mingw-w64-cross-msysarm64-npth=${pkgver}-${pkgrel}"')) `
     'devel package must require the exact runtime package release'

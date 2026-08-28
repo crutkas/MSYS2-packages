@@ -249,6 +249,8 @@ function Invoke-LifecycleAudit {
     throw 'The candidate set is incomplete'
   }
   $owners = Get-CandidateOwnership -FilesByPackage $filesByPackage
+  $owners | ConvertTo-Json -Depth 4 |
+    Set-Content -Encoding utf8 (Join-Path $ReportDirectory 'candidate-ownership.json')
   $records | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 (Join-Path $ReportDirectory 'candidate-seal.json')
 
   # --- build the isolated transaction root -----------------------------------
@@ -332,6 +334,46 @@ SigLevel = Never
       throw "$name was not reinstalled at the expected version"
     }
   }
+
+  # Corrupt one installed candidate file, require pacman -Qkk to detect it,
+  # reinstall from the same hash-verified archives, and prove exact recovery.
+  $corruptRelative = @($owners.Keys | Where-Object { $_ -like '*/msys-npth-*.dll' })
+  if ($corruptRelative.Count -ne 1) {
+    throw "Expected exactly one runtime DLL to exercise corruption recovery, found $($corruptRelative.Count)"
+  }
+  $corruptPath = Join-Path $TransactionRoot ($corruptRelative[0] -replace '/', '\')
+  $cleanHash = (Get-FileHash -LiteralPath $corruptPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  $stream = [IO.File]::Open($corruptPath, [IO.FileMode]::Append, [IO.FileAccess]::Write)
+  try { $stream.Write([byte[]](0x4e, 0x50, 0x54, 0x48), 0, 4) } finally { $stream.Dispose() }
+  $corruptHash = (Get-FileHash -LiteralPath $corruptPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($corruptHash -eq $cleanHash) { throw 'Candidate corruption fixture did not change the installed file hash' }
+
+  $qkkCorruptArgs = $common + @('-Qkk', 'mingw-w64-cross-msysarm64-npth')
+  $qkkCorrupt = @(& $Pacman @qkkCorruptArgs 2>&1)
+  $qkkCorruptExit = $LASTEXITCODE
+  $qkkCorrupt | Set-Content -Encoding utf8 (Join-Path $ReportDirectory 'qkk-corrupt.txt')
+  if ($qkkCorruptExit -eq 0) { throw 'pacman -Qkk failed to detect installed candidate corruption' }
+
+  Invoke-Pacman -Pacman $Pacman -Arguments ($common + @('-U') + $CandidateArchive)
+  $recoveredHash = (Get-FileHash -LiteralPath $corruptPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($recoveredHash -ne $cleanHash) {
+    throw "Candidate reinstall did not restore the corrupted file (expected $cleanHash, got $recoveredHash)"
+  }
+  $qkkRecoveredArgs = $common + @('-Qkk') + $script:ExpectedNames
+  $qkkRecovered = @(& $Pacman @qkkRecoveredArgs 2>&1)
+  $qkkRecoveredExit = $LASTEXITCODE
+  $qkkRecovered | Set-Content -Encoding utf8 (Join-Path $ReportDirectory 'qkk-recovered.txt')
+  if ($qkkRecoveredExit -ne 0) { throw 'pacman -Qkk did not pass after candidate recovery' }
+  [ordered]@{
+    path = $corruptRelative[0]
+    clean_sha256 = $cleanHash
+    corrupt_sha256 = $corruptHash
+    corrupt_qkk_exit = $qkkCorruptExit
+    recovered_sha256 = $recoveredHash
+    recovered_qkk_exit = $qkkRecoveredExit
+  } | ConvertTo-Json |
+    Set-Content -Encoding utf8 (Join-Path $ReportDirectory 'corruption-recovery.json')
+
   Copy-Item -LiteralPath $log -Destination (Join-Path $ReportDirectory 'transaction-pacman.log')
 
   # --- re-seal shared + private base and require exact equality ---------------

@@ -65,6 +65,20 @@ try {
   Assert (-not (Test-ExitMarker -ExitCode 0 -Output @('nope') -Marker 'NPTH-DYNAMIC-OK')) 'missing marker accepted'
   Assert (-not (Test-ExitMarker -ExitCode 0 -Output $null -Marker 'NPTH-DYNAMIC-OK')) 'null output accepted'
 
+  # --- Get-NpthThreadMarker: exact PID and one nonzero worker TID required ---
+  $thread = Get-NpthThreadMarker -Output @(
+    'NPTH-DYNAMIC-READY',
+    'NPTH-DYNAMIC-THREAD pid=123 tid=456'
+  ) -ExpectedProcessId 123
+  Assert ($thread.process_id -eq 123 -and $thread.worker_thread_id -eq 456) `
+    'valid worker thread marker rejected'
+  Assert-Throws {
+    Get-NpthThreadMarker -Output @('NPTH-DYNAMIC-THREAD pid=999 tid=456') -ExpectedProcessId 123
+  } 'worker marker with wrong process ID accepted'
+  Assert-Throws {
+    Get-NpthThreadMarker -Output @('NPTH-DYNAMIC-THREAD pid=123 tid=0') -ExpectedProcessId 123
+  } 'worker marker with zero thread ID accepted'
+
   # --- Test-ModuleArchitecture: any non-arm64 module is an offender ---
   $clean = @(
     [ordered]@{ name = 'msys-npth-0.dll'; machine = 'arm64'; sha256 = ('a' * 64) },

@@ -1,5 +1,11 @@
 {
   "schema": 1,
+  "disposition": {
+    "status": "diagnostic-only",
+    "publish": false,
+    "reason": "All package and native bytes in this workflow derive from the a527 runtime and must not be released.",
+    "canonicalRebuildBlockedOn": "corrected ARM64 MSYS runtime"
+  },
   "description": "Immutable admission inputs for the aarch64-pc-msys npth candidate. Every entry is content-addressed; the workflow verifies size and SHA-256 before use and refuses to proceed on any mismatch.",
   "source": {
     "repository": "crutkas/MSYS2-packages",

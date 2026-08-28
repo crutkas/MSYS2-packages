@@ -177,6 +177,27 @@ function Invoke-NativeConsumer {
   }
 }
 
+function Get-NpthThreadMarker {
+  param(
+    [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Output,
+    [Parameter(Mandatory)] [int] $ExpectedProcessId
+  )
+
+  $markerLines = @($Output | Where-Object {
+      "$_" -match '^NPTH-DYNAMIC-THREAD pid=([0-9]+) tid=([0-9]+)$'
+    })
+  if ($markerLines.Count -ne 1) {
+    throw "Expected exactly one NPTH worker thread marker, found $($markerLines.Count)."
+  }
+  [void]("$($markerLines[0])" -match '^NPTH-DYNAMIC-THREAD pid=([0-9]+) tid=([0-9]+)$')
+  $processId = [int]$Matches[1]
+  $threadId = [int]$Matches[2]
+  if ($processId -ne $ExpectedProcessId -or $threadId -le 0) {
+    throw "Invalid NPTH worker marker pid=$processId tid=$threadId (expected pid $ExpectedProcessId)."
+  }
+  return [ordered]@{ process_id = $processId; worker_thread_id = $threadId }
+}
+
 function Invoke-NativeDynamicConsumer {
   <# Keeps the dynamic consumer alive after its READY marker, captures that
      process's real module list, then requires its final success marker. #>
@@ -204,15 +225,24 @@ function Invoke-NativeDynamicConsumer {
       } else {
         @()
       }
-      if ($lines -contains $ReadyMarker) { break }
+      $hasThreadMarker = [bool]($lines | Where-Object {
+          "$_" -match '^NPTH-DYNAMIC-THREAD pid=[0-9]+ tid=[0-9]+$'
+        })
+      if ($lines -contains $ReadyMarker -and $hasThreadMarker) { break }
       if ($process.HasExited) {
         throw "Dynamic consumer exited before '$ReadyMarker' (exit $($process.ExitCode))."
       }
     } while ([DateTime]::UtcNow -lt $deadline)
-    if ($lines -notcontains $ReadyMarker) {
-      throw "Dynamic consumer did not emit '$ReadyMarker' before the module-capture deadline."
+    if ($lines -notcontains $ReadyMarker -or -not $hasThreadMarker) {
+      throw "Dynamic consumer did not emit ready and worker-thread markers before the capture deadline."
     }
 
+    $threadMarker = Get-NpthThreadMarker -Output $lines -ExpectedProcessId $process.Id
+    $liveThreadIds = @($process.Threads | ForEach-Object { $_.Id })
+    if ($liveThreadIds.Count -lt 2 -or
+        $threadMarker.worker_thread_id -notin $liveThreadIds) {
+      throw "NPTH worker thread $($threadMarker.worker_thread_id) was not live during capture."
+    }
     $modules = @(Get-ProcessModuleEvidence -ProcessId $process.Id)
     $process.WaitForExit()
     $output = @(
@@ -230,6 +260,9 @@ function Invoke-NativeDynamicConsumer {
         machine   = (Get-PeMachineType -Path $resolved).machine_name
         sha256    = (Get-FileHash -LiteralPath $resolved -Algorithm SHA256).Hash.ToLowerInvariant()
         output    = $output
+        process_id = $threadMarker.process_id
+        worker_thread_id = $threadMarker.worker_thread_id
+        live_thread_ids = $liveThreadIds
       }
       modules = $modules
     }

@@ -9,6 +9,7 @@
 #include <npth.h>
 #include <stdio.h>
 #include <string.h>
+#include <windows.h>
 
 _Static_assert (sizeof (long) == 8, "aarch64-pc-msys must use LP64");
 _Static_assert (sizeof (void *) == 8, "aarch64-pc-msys pointers must be 64-bit");
@@ -17,6 +18,11 @@ static void *
 worker (void *arg)
 {
   int *value = (int *) arg;
+  printf ("NPTH-DYNAMIC-THREAD pid=%lu tid=%lu\n",
+          (unsigned long) GetCurrentProcessId (),
+          (unsigned long) GetCurrentThreadId ());
+  fflush (stdout);
+  npth_sleep (3);
   *value = 42;
   return value;
 }
@@ -48,6 +54,9 @@ main (void)
       return 2;
     }
 
+  puts ("NPTH-DYNAMIC-READY");
+  fflush (stdout);
+
   rc = npth_join (thread, &result);
   if (rc || result != &payload || payload != 42)
     {
@@ -55,9 +64,6 @@ main (void)
       return 4;
     }
 
-  puts ("NPTH-DYNAMIC-READY");
-  fflush (stdout);
-  npth_sleep (3);
   puts ("NPTH-DYNAMIC-OK");
   return 0;
 }
