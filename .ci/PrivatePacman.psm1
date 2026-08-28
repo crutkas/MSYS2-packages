@@ -980,18 +980,23 @@ function Get-PrivatePacmanTreeSnapshotCore {
     $testBarrier = $script:TestSnapshotBarrier
     if ($null -ne $testBarrier -and
         [StringComparer]::OrdinalIgnoreCase.Equals([string]$testBarrier.Root, $root)) {
-        $script:TestSnapshotBarrier = $null
-        [IO.File]::WriteAllText(
-            [string]$testBarrier.EnteredPath,
-            'entered',
-            [Text.UTF8Encoding]::new($false)
-        )
-        $deadline = [DateTime]::UtcNow.AddSeconds(120)
-        while (-not [IO.File]::Exists([string]$testBarrier.ReleasePath)) {
-            if ([DateTime]::UtcNow -ge $deadline) {
-                throw "Timed out at the private snapshot test barrier: $root"
+        if ([int]$testBarrier.SkipMatches -gt 0) {
+            $testBarrier.SkipMatches = [int]$testBarrier.SkipMatches - 1
+        }
+        else {
+            $script:TestSnapshotBarrier = $null
+            [IO.File]::WriteAllText(
+                [string]$testBarrier.EnteredPath,
+                'entered',
+                [Text.UTF8Encoding]::new($false)
+            )
+            $deadline = [DateTime]::UtcNow.AddSeconds(120)
+            while (-not [IO.File]::Exists([string]$testBarrier.ReleasePath)) {
+                if ([DateTime]::UtcNow -ge $deadline) {
+                    throw "Timed out at the private snapshot test barrier: $root"
+                }
+                [Threading.Thread]::Sleep(25)
             }
-            [Threading.Thread]::Sleep(25)
         }
     }
     $excluded = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -2113,7 +2118,7 @@ function Get-PrivatePacmanQuiescentSnapshotSet {
                 -RejectReparsePoint:$RejectReparsePoint
         })
         $probeWatchers = @(Start-PrivatePacmanWatchers -ProtectedRoot $ProtectedRoot)
-        [Threading.Thread]::Sleep(350)
+        [Threading.Thread]::Sleep(1000)
         $probeEvidence = @(Stop-PrivatePacmanWatchers -Watcher $probeWatchers)
         $errors = @($probeEvidence | ForEach-Object Errors)
         if ($errors.Count -ne 0) {
@@ -2123,33 +2128,6 @@ function Get-PrivatePacmanQuiescentSnapshotSet {
         $changes = @($probeEvidence | ForEach-Object Changes)
         if ($changes.Count -eq 0) {
             return $snapshots
-        }
-    }
-
-    throw "Protected package state did not become quiescent after $MaximumAttempts attempts."
-}
-
-function Wait-PrivatePacmanProtectedRootsQuiescent {
-    param(
-        [Parameter(Mandatory)]
-        [object[]] $ProtectedRoot,
-
-        [ValidateRange(1, 10)]
-        [int] $MaximumAttempts = 4
-    )
-
-    for ($attempt = 1; $attempt -le $MaximumAttempts; $attempt++) {
-        $probeWatchers = @(Start-PrivatePacmanWatchers -ProtectedRoot $ProtectedRoot)
-        [Threading.Thread]::Sleep(350)
-        $probeEvidence = @(Stop-PrivatePacmanWatchers -Watcher $probeWatchers)
-        $errors = @($probeEvidence | ForEach-Object Errors)
-        if ($errors.Count -ne 0) {
-            throw "Protected-state quiescence watcher failed: $($errors -join '; ')"
-        }
-
-        $changes = @($probeEvidence | ForEach-Object Changes)
-        if ($changes.Count -eq 0) {
-            return
         }
     }
 
@@ -2502,7 +2480,11 @@ function Invoke-PrivatePacmanUpgrade {
             -StagingRoot $stagingRoot
         $resultPath = [IO.Path]::Combine($canonicalLayout.EvidenceDirectory, 'result.json')
 
-        Wait-PrivatePacmanProtectedRootsQuiescent -ProtectedRoot $protected
+        $protectedPreflight = @(
+            Get-PrivatePacmanQuiescentSnapshotSet `
+                -ProtectedRoot $protected `
+                -RejectReparsePoint
+        )
         $watchers = @(Start-PrivatePacmanWatchers -ProtectedRoot $protected)
         $protectedBefore = @(for ($index = 0; $index -lt $protected.Count; $index++) {
             $protectedEntry = $protected[$index]
@@ -2530,6 +2512,12 @@ function Invoke-PrivatePacmanUpgrade {
                 IsCanonicalSharedRoot = $protectedEntry.IsCanonicalSharedRoot
             }
         })
+        for ($index = 0; $index -lt $protectedBefore.Count; $index++) {
+            if ($protectedPreflight[$index].Exists -ne $protectedBefore[$index].Exists -or
+                $protectedPreflight[$index].Digest -cne $protectedBefore[$index].Digest) {
+                throw "Protected package state was not stable before monitoring: $($protectedBefore[$index].Path)"
+            }
+        }
         $state.Sentinel.ProtectedRoots = @($protectedBefore)
         Set-PrivatePacmanLockedJson -Stream $state.Stream -Value $state.Sentinel
 

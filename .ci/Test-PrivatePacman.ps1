@@ -592,6 +592,7 @@ function Start-PrivatePacmanFixtureJob {
                         Root = $Root
                         EnteredPath = $EnteredPath
                         ReleasePath = $ReleasePath
+                        SkipMatches = 1
                     }
                 } $BarrierRoot $BarrierEnteredPath $BarrierReleasePath
             }
@@ -637,10 +638,35 @@ function Wait-PrivatePacmanFixtureJob {
     return $output
 }
 
-$suiteRoot = Join-Path ([IO.Path]::GetTempPath()) "private-pacman-v2-$([guid]::NewGuid().ToString('N'))"
+function Get-PrivatePacmanGuardedTreeSnapshot {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Path,
+
+        [switch] $AllowMissing
+    )
+
+    try {
+        return [pscustomobject][ordered]@{
+            Snapshot = Get-PrivatePacmanTreeSnapshot -Path $Path -AllowMissing:$AllowMissing
+            Error = $null
+        }
+    }
+    catch {
+        return [pscustomobject][ordered]@{
+            Snapshot = $null
+            Error = $_.Exception.ToString()
+        }
+    }
+}
+
+$temporaryBase = [PrivatePacmanV2.NativePath]::GetFinalPath(
+    [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+)
+$suiteRoot = Join-Path $temporaryBase "private-pacman-v2-$([guid]::NewGuid().ToString('N'))"
 [void][IO.Directory]::CreateDirectory($suiteRoot)
-$sharedBefore = Get-PrivatePacmanTreeSnapshot -Path 'C:\msys64' -AllowMissing
-$sharedAfter = $null
+$sharedBeforeCapture = Get-PrivatePacmanGuardedTreeSnapshot -Path 'C:\msys64' -AllowMissing
+$sharedAfterCapture = $null
 $script:populatedSharedEvidence = $null
 $script:canonicalTransactionEvidence = $null
 $recorderPath = $null
@@ -662,6 +688,14 @@ try {
         $repositoryRoot = Split-Path $PSScriptRoot -Parent
         $trackedCandidateBytes = @(& git -C $repositoryRoot ls-files '*.pkg.tar.*')
         Assert-PrivatePacmanEqual 0 $trackedCandidateBytes.Count 'Tracked package candidate bytes are present.'
+    }
+
+    Invoke-PrivatePacmanTestCase -Name 'suite temporary root is canonical' -Test {
+        $resolvedSuiteRoot = & $module {
+            param([string] $Path)
+            Resolve-PrivatePacmanExistingPath -Path $Path -Kind Directory -Name 'Test suite root'
+        } $suiteRoot
+        Assert-PrivatePacmanEqual $suiteRoot $resolvedSuiteRoot 'Test suite root is not its final canonical path.'
     }
 
     Invoke-PrivatePacmanTestCase -Name 'repository-free argv is completely isolated' -Test {
@@ -1313,15 +1347,16 @@ try {
             }
             [IO.File]::WriteAllText($barrierRelease, 'release')
 
-            Wait-PrivatePacmanPath -Path $fixture.ReadyPath
-            [IO.File]::WriteAllText($fixture.GoPath, 'go')
             $null = Wait-PrivatePacmanFixtureJob -Job $job -ExpectedState Failed
 
             $evidence = Get-Content `
                 -Raw `
                 -LiteralPath (Join-Path $fixture.Layout.EvidenceDirectory 'result.json') |
                     ConvertFrom-Json
-            Assert-PrivatePacmanTest ($null -ne $evidence.Invocation.Process) 'Before-snapshot drift prevented the recorder from exercising the monitored boundary.'
+            Assert-PrivatePacmanTest ($null -eq $evidence.Invocation.Process) 'Unstable before evidence reached the native process boundary.'
+            Assert-PrivatePacmanTest (
+                @($evidence.Failures | Where-Object { $_ -match 'not stable before monitoring' }).Count -eq 1
+            ) 'Before-snapshot drift did not fail the preflight-to-authoritative digest comparison.'
             $before = @($evidence.ProtectedBefore | Where-Object Path -EQ $fixture.ProtectedRoot)[0]
             $after = @($evidence.ProtectedAfter | Where-Object Path -EQ $fixture.ProtectedRoot)[0]
             Assert-PrivatePacmanEqual $before.Digest $after.Digest 'Before-snapshot drift test did not restore byte identity.'
@@ -1565,10 +1600,23 @@ finally {
     if ([IO.Directory]::Exists($suiteRoot)) {
         Remove-Item -LiteralPath $suiteRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
-    $sharedAfter = Get-PrivatePacmanTreeSnapshot -Path 'C:\msys64' -AllowMissing
+    $sharedAfterCapture = Get-PrivatePacmanGuardedTreeSnapshot -Path 'C:\msys64' -AllowMissing
 }
 
+$sharedBefore = $sharedBeforeCapture.Snapshot
+$sharedAfter = $sharedAfterCapture.Snapshot
+$sharedCaptureErrors = @(
+    if (-not [string]::IsNullOrWhiteSpace([string]$sharedBeforeCapture.Error)) {
+        "Before snapshot failed: $($sharedBeforeCapture.Error)"
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$sharedAfterCapture.Error)) {
+        "After snapshot failed: $($sharedAfterCapture.Error)"
+    }
+)
 $sharedIdentical = (
+    $sharedCaptureErrors.Count -eq 0 -and
+    $null -ne $sharedBefore -and
+    $null -ne $sharedAfter -and
     $sharedBefore.Exists -eq $sharedAfter.Exists -and
     $sharedBefore.Digest -ceq $sharedAfter.Digest
 )
@@ -1577,7 +1625,12 @@ if (-not $sharedIdentical) {
         Name = 'canonical C:\msys64 is byte-identical before and after the suite'
         Passed = $false
         DurationMilliseconds = 0
-        Error = 'Canonical shared package state changed during the contract suite.'
+        Error = if ($sharedCaptureErrors.Count -ne 0) {
+            $sharedCaptureErrors -join "`n"
+        }
+        else {
+            'Canonical shared package state changed during the contract suite.'
+        }
     })
 }
 else {
@@ -1615,12 +1668,16 @@ $report = [pscustomobject][ordered]@{
     PowerShell = $PSVersionTable.PSVersion.ToString()
     CanonicalSharedState = [pscustomobject][ordered]@{
         Path = 'C:\msys64'
-        ExistedBefore = $sharedBefore.Exists
-        ExistedAfter = $sharedAfter.Exists
-        BeforeDigest = $sharedBefore.Digest
-        AfterDigest = $sharedAfter.Digest
-        BeforeContentDigest = $sharedBefore.ContentDigest
-        AfterContentDigest = $sharedAfter.ContentDigest
+        BeforeCaptureSucceeded = $null -ne $sharedBefore
+        AfterCaptureSucceeded = $null -ne $sharedAfter
+        BeforeCaptureError = $sharedBeforeCapture.Error
+        AfterCaptureError = $sharedAfterCapture.Error
+        ExistedBefore = if ($null -ne $sharedBefore) { $sharedBefore.Exists } else { $null }
+        ExistedAfter = if ($null -ne $sharedAfter) { $sharedAfter.Exists } else { $null }
+        BeforeDigest = if ($null -ne $sharedBefore) { $sharedBefore.Digest } else { $null }
+        AfterDigest = if ($null -ne $sharedAfter) { $sharedAfter.Digest } else { $null }
+        BeforeContentDigest = if ($null -ne $sharedBefore) { $sharedBefore.ContentDigest } else { $null }
+        AfterContentDigest = if ($null -ne $sharedAfter) { $sharedAfter.ContentDigest } else { $null }
         ByteAndMetadataIdentical = $sharedIdentical
     }
     CanonicalTransactionState = $script:canonicalTransactionEvidence
@@ -1640,7 +1697,7 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
     )
 }
 
-Write-Host "CANONICAL_SHARED_STATE ExistedBefore=$($report.CanonicalSharedState.ExistedBefore) ExistedAfter=$($report.CanonicalSharedState.ExistedAfter) BeforeDigest=$($report.CanonicalSharedState.BeforeDigest) AfterDigest=$($report.CanonicalSharedState.AfterDigest)"
+Write-Host "CANONICAL_SHARED_STATE BeforeCaptureSucceeded=$($report.CanonicalSharedState.BeforeCaptureSucceeded) AfterCaptureSucceeded=$($report.CanonicalSharedState.AfterCaptureSucceeded) ExistedBefore=$($report.CanonicalSharedState.ExistedBefore) ExistedAfter=$($report.CanonicalSharedState.ExistedAfter) BeforeDigest=$($report.CanonicalSharedState.BeforeDigest) AfterDigest=$($report.CanonicalSharedState.AfterDigest)"
 if ($null -ne $report.CanonicalTransactionState) {
     Write-Host "CANONICAL_TRANSACTION_STATE ExistedBefore=$($report.CanonicalTransactionState.ExistedBefore) ExistedAfter=$($report.CanonicalTransactionState.ExistedAfter) BeforeDigest=$($report.CanonicalTransactionState.BeforeDigest) AfterDigest=$($report.CanonicalTransactionState.AfterDigest)"
 }

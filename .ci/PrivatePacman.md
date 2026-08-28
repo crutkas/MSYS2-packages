@@ -54,12 +54,14 @@ The helper:
   entries prevents stream enumeration from following an external link target;
 - always includes canonical `C:\msys64` in the protected set, even when it is
   absent;
-- requires a separate disposable preflight watcher to observe a quiet interval
-  before authoritative monitoring starts; only pre-monitor noise is discarded;
+- requires a complete preflight snapshot and a separate disposable watcher to
+  observe a quiet interval before authoritative monitoring starts; only
+  pre-monitor noise is discarded;
 - starts authoritative protected-root watchers before the complete byte and
-  metadata before snapshot, never clears their events, keeps them active
-  through private-root cleanup, and fails on any change event, watcher error,
-  or before/after digest difference;
+  metadata before snapshot, requires it to match the preflight digest, never
+  clears authoritative events, keeps the watchers active through private-root
+  cleanup, and fails on any change event, watcher error, or before/after digest
+  difference;
 - removes reparse entries as leaves during cleanup and never follows their
   targets; and
 - preserves evidence outside the disposable private root on success and
@@ -247,10 +249,14 @@ The JSON report and logs expose `ExistedBefore`, `ExistedAfter`, entry counts,
 and pre/post content and canonical digests for a deterministic populated
 protected-root fixture. One native-boundary transaction protects the literal
 canonical `C:\msys64`; its transaction evidence and separate suite-level
-pre/post snapshot are reported. Remaining adversarial transactions substitute
-a small populated fixed-drive root and one test uses a deterministic snapshot
-barrier by changing private module state only inside the test harness; the
-production command surface exposes neither override. This avoids repeatedly
-walking a hosted multi-gigabyte installation without weakening production
-behavior. An absent hosted-run root remains an explicit non-admission gate
-rather than evidence for a populated installation.
+pre/post snapshot are reported. Capture success and complete failure text are
+explicit report fields, so an unreadable entry or forbidden stream cannot
+suppress diagnostic JSON. The suite resolves its temporary base through the
+native final path before applying the same canonicality checks as production.
+Remaining adversarial transactions substitute a small populated fixed-drive
+root and one test uses a deterministic snapshot barrier by changing private
+module state only inside the test harness; the production command surface
+exposes neither override. This avoids repeatedly walking a hosted
+multi-gigabyte installation without weakening production behavior. An absent
+hosted-run root remains an explicit non-admission gate rather than evidence for
+a populated installation.
