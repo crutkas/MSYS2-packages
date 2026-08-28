@@ -1,0 +1,10 @@
+name: Invalid noncanonical structure
+
+on:
+  push:
+
+jobs:
+    build:
+        runs-on: windows-11-arm
+        steps:
+        - run: pacman --noconfirm -Syu

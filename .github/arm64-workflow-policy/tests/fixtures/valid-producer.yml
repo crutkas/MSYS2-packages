@@ -1,0 +1,42 @@
+name: Valid ARM64 producer
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.after }}
+          persist-credentials: false
+
+      - name: Verify canonical push head
+        env:
+          EXPECTED_HEAD: ${{ github.event.after }}
+        run: python .github/arm64-workflow-policy/verify_head.py "$env:EXPECTED_HEAD"
+
+      - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884
+        with:
+          msystem: CLANGARM64
+          location: ${{ runner.temp }}\msys64-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+          cache: false
+          release: true
+          install: git
+
+      - name: Build fixture
+        shell: msys2 {0}
+        run: makepkg --noconfirm
+
+      - name: Upload immutable fixture
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: arm64-packages-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.event.after }}
+          path: artifacts/*.pkg.tar.zst
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: false

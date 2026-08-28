@@ -1,0 +1,25 @@
+name: Invalid missing evidence
+
+on:
+  push:
+
+jobs:
+  check:
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.after }}
+          persist-credentials: false
+
+      - name: Verify canonical push head
+        env:
+          EXPECTED_HEAD: ${{ github.event.after }}
+        run: python .github/arm64-workflow-policy/verify_head.py "$env:EXPECTED_HEAD"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: 24680
+          repository: crutkas/MSYS2-packages
+          run-id: 123456789
+          github-token: ${{ github.token }}

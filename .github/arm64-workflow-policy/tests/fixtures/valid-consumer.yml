@@ -1,0 +1,54 @@
+name: Valid ARM64 consumer
+
+on:
+  push:
+    branches:
+      - master
+  pull_request_target:
+
+env:
+  ARM64_CONSUMER_LOCK: .github/arm64-workflow-locks/valid-consumer-lock.json
+
+jobs:
+  consume:
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: windows-11-arm
+    steps:
+      - name: Check out canonical push head
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.after }}
+          persist-credentials: false
+
+      - name: Verify canonical push head
+        if: ${{ github.event_name == 'push' }}
+        env:
+          EXPECTED_HEAD: ${{ github.event.after }}
+        run: python .github/arm64-workflow-policy/verify_head.py "$env:EXPECTED_HEAD"
+
+      - name: Check out exact same-repository PR head
+        if: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Verify exact same-repository PR head
+        if: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name == github.repository }}
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: python .github/arm64-workflow-policy/verify_head.py "$env:EXPECTED_HEAD"
+
+      - name: Validate immutable consumer lock
+        run: python .github/arm64-workflow-policy/validate.py evidence "$env:ARM64_CONSUMER_LOCK"
+
+      - name: Download immutable artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          artifact-ids: 24680
+          repository: crutkas/MSYS2-packages
+          run-id: 123456789
+          github-token: ${{ github.token }}
