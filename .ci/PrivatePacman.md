@@ -53,13 +53,15 @@ The helper:
   entries prevents stream enumeration from following an external link target;
 - always includes canonical `C:\msys64` in the protected set, even when it is
   absent;
-- requires an initial preflight digest to match the authoritative monitored
-  before snapshot, without discarding any watcher events;
+- reuses the quiet preflight digest as canonical `C:\msys64` before evidence,
+  avoiding a redundant full shared-root walk before any private-root work;
+- requires every additional protected root's preflight digest to match its
+  authoritative monitored before snapshot, without discarding watcher events;
 - requires a separate disposable preflight watcher to observe a quiet interval
   before authoritative monitoring starts; only pre-monitor noise is discarded;
-- keeps protected-root watchers active from the before snapshot through
-  private-root cleanup, and fails on any change event, watcher error, or
-  before/after digest difference;
+- starts protected-root watchers before publishing the before evidence, keeps
+  them active through private-root cleanup, and fails on any change event,
+  watcher error, or before/after digest difference;
 - removes reparse entries as leaves during cleanup and never follows their
   targets; and
 - preserves evidence outside the disposable private root on success and
@@ -239,6 +241,11 @@ parent-process crash recovery, and reparse-safe cleanup.
 
 The JSON report and logs expose `ExistedBefore`, `ExistedAfter`, entry counts,
 and pre/post content and canonical digests for a deterministic populated
-protected-root fixture. They separately expose canonical `C:\msys64`
-existence and digests; an absent hosted-run root remains an explicit
-non-admission gate rather than evidence for a populated installation.
+protected-root fixture. One native-boundary transaction protects the literal
+canonical `C:\msys64`; its transaction evidence and separate suite-level
+pre/post snapshot are reported. Remaining adversarial transactions substitute
+a small populated fixed-drive root by changing private module state only inside
+the test harness; the production command surface has no canonical-root
+override. This avoids repeatedly walking a hosted multi-gigabyte installation
+without weakening production behavior. An absent hosted-run root remains an
+explicit non-admission gate rather than evidence for a populated installation.

@@ -141,6 +141,21 @@ function Clear-PrivatePacmanTestEnvironment {
     }
 }
 
+function Set-PrivatePacmanTestCanonicalSharedRoot {
+    param(
+        [Parameter(Mandatory)]
+        [Management.Automation.PSModuleInfo] $Module,
+
+        [Parameter(Mandatory)]
+        [string] $Path
+    )
+
+    & $Module {
+        param([string] $CanonicalSharedRoot)
+        $script:CanonicalSharedRoot = $CanonicalSharedRoot
+    } $Path
+}
+
 function Wait-PrivatePacmanPath {
     param(
         [Parameter(Mandatory)]
@@ -519,7 +534,8 @@ function Start-PrivatePacmanFixtureJob {
             $Fixture.ConfigCapturePath,
             $Fixture.ReadyPath,
             $Fixture.GoPath,
-            $Mode
+            $Mode,
+            $script:testCanonicalSharedRoot
         ) `
         -ScriptBlock {
             param(
@@ -538,7 +554,8 @@ function Start-PrivatePacmanFixtureJob {
                 $ConfigCapturePath,
                 $ReadyPath,
                 $GoPath,
-                $Mode
+                $Mode,
+                $CanonicalSharedRoot
             )
             Set-StrictMode -Version Latest
             $ErrorActionPreference = 'Stop'
@@ -547,7 +564,11 @@ function Start-PrivatePacmanFixtureJob {
             $env:PRIVATE_PACMAN_TEST_READY = $ReadyPath
             $env:PRIVATE_PACMAN_TEST_GO = $GoPath
             $env:PRIVATE_PACMAN_TEST_MODE = $Mode
-            Import-Module $ModulePath -Force
+            $jobModule = Import-Module $ModulePath -Force -PassThru
+            & $jobModule {
+                param([string] $Path)
+                $script:CanonicalSharedRoot = $Path
+            } $CanonicalSharedRoot
             Invoke-PrivatePacmanUpgrade `
                 -Layout $Layout `
                 -SeedRoot $Seed `
@@ -595,7 +616,15 @@ $suiteRoot = Join-Path ([IO.Path]::GetTempPath()) "private-pacman-v2-$([guid]::N
 $sharedBefore = Get-PrivatePacmanTreeSnapshot -Path 'C:\msys64' -AllowMissing
 $sharedAfter = $null
 $script:populatedSharedEvidence = $null
+$script:canonicalTransactionEvidence = $null
 $recorderPath = $null
+$script:testCanonicalSharedRoot = Join-Path $suiteRoot 'synthetic-canonical-shared-root'
+[void][IO.Directory]::CreateDirectory((Join-Path $script:testCanonicalSharedRoot 'var\lib\pacman'))
+[IO.File]::WriteAllText(
+    (Join-Path $script:testCanonicalSharedRoot 'var\lib\pacman\local-state'),
+    'synthetic-canonical-shared-state',
+    [Text.UTF8Encoding]::new($false)
+)
 $script:signingKey = [Security.Cryptography.ECDsa]::Create(
     [Security.Cryptography.ECCurve+NamedCurves]::nistP256
 )
@@ -664,12 +693,30 @@ try {
             $canonicalEvidence = @($result.ProtectedBefore | Where-Object IsCanonicalSharedRoot)
             Assert-PrivatePacmanEqual 1 $canonicalEvidence.Count 'Canonical C:\msys64 evidence is missing or duplicated.'
             $canonicalAfter = @($result.ProtectedAfter | Where-Object IsCanonicalSharedRoot)
+            Assert-PrivatePacmanEqual 'C:\msys64' $canonicalEvidence[0].Path 'The production canonical root was not protected by the argv transaction.'
             Assert-PrivatePacmanEqual $canonicalEvidence[0].Digest $canonicalAfter[0].Digest 'Canonical C:\msys64 state changed.'
+            $script:canonicalTransactionEvidence = [pscustomobject][ordered]@{
+                Path = [string]$canonicalEvidence[0].Path
+                ExistedBefore = [bool]$canonicalEvidence[0].Exists
+                ExistedAfter = [bool]$canonicalAfter[0].Exists
+                BeforeDigest = [string]$canonicalEvidence[0].Digest
+                AfterDigest = [string]$canonicalAfter[0].Digest
+                BeforeContentDigest = [string]$canonicalEvidence[0].ContentDigest
+                AfterContentDigest = [string]$canonicalAfter[0].ContentDigest
+                ByteAndMetadataIdentical = (
+                    $canonicalEvidence[0].Digest -ceq $canonicalAfter[0].Digest -and
+                    $canonicalEvidence[0].ContentDigest -ceq $canonicalAfter[0].ContentDigest
+                )
+            }
         }
         finally {
             Clear-PrivatePacmanTestEnvironment
         }
     }
+
+    Set-PrivatePacmanTestCanonicalSharedRoot `
+        -Module $module `
+        -Path $script:testCanonicalSharedRoot
 
     Invoke-PrivatePacmanTestCase -Name 'populated protected state exposes complete preservation evidence' -Test {
         $fixture = New-PrivatePacmanFixture -Name 'populated-shared' -SuiteRoot $suiteRoot -RecorderPath $recorderPath
@@ -1269,13 +1316,14 @@ try {
         Set-PrivatePacmanFixtureEnvironment -Fixture $fixture -Mode 'crash'
         try {
             $null = Assert-PrivatePacmanThrows {
-                Invoke-PrivatePacmanFixture -Fixture $fixture
+                Invoke-PrivatePacmanFixture -Fixture $fixture -TimeoutSeconds 120
             } 'exited with code|failed closed'
             $resultPath = Join-Path $fixture.Layout.EvidenceDirectory 'result.json'
             $evidence = Get-Content -Raw -LiteralPath $resultPath | ConvertFrom-Json
             Assert-PrivatePacmanTest (-not $evidence.Success) 'Child crash was reported as success.'
             Assert-PrivatePacmanTest (Test-Path -LiteralPath $fixture.ArgvPath) 'Child crash test never crossed the native process boundary.'
             Assert-PrivatePacmanTest ($null -ne $evidence.Invocation.Process) 'Child crash produced no process evidence.'
+            Assert-PrivatePacmanTest (-not $evidence.Invocation.Process.TimedOut) 'Child crash degraded into the timeout path.'
             Assert-PrivatePacmanTest ($evidence.Invocation.Process.ExitCode -ne 0) 'Child crash did not produce a failing native exit code.'
             Assert-PrivatePacmanTest (-not (Test-Path -LiteralPath $fixture.Layout.Root)) 'Child crash left a private root.'
             Assert-PrivatePacmanTest $evidence.Cleanup.RootAbsent 'Crash evidence does not prove root cleanup.'
@@ -1350,10 +1398,15 @@ param(
     [string] $ExpectedManifestSha256,
     [string] $ExpectedPublicKeySha256,
     [string] $ExpectedOwner,
-    [string] $ProtectedRoot
+    [string] $ProtectedRoot,
+    [string] $CanonicalSharedRoot
 )
 $ErrorActionPreference = 'Stop'
-Import-Module $ModulePath -Force
+$privatePacmanModule = Import-Module $ModulePath -Force -PassThru
+& $privatePacmanModule {
+    param([string] $Path)
+    $script:CanonicalSharedRoot = $Path
+} $CanonicalSharedRoot
 $layout = New-PrivatePacmanLayout -WorkspaceRoot $Workspace -SessionId $SessionId
 Invoke-PrivatePacmanUpgrade `
     -Layout $layout `
@@ -1389,7 +1442,8 @@ Invoke-PrivatePacmanUpgrade `
             '-ExpectedManifestSha256', $fixture.ExpectedManifestSha256,
             '-ExpectedPublicKeySha256', $fixture.ExpectedPublicKeySha256,
             '-ExpectedOwner', $fixture.Owner,
-            '-ProtectedRoot', $fixture.ProtectedRoot
+            '-ProtectedRoot', $fixture.ProtectedRoot,
+            '-CanonicalSharedRoot', $script:testCanonicalSharedRoot
         )) {
             [void]$startInfo.ArgumentList.Add($argument)
         }
@@ -1511,6 +1565,15 @@ if ($null -eq $script:populatedSharedEvidence) {
     })
 }
 
+if ($null -eq $script:canonicalTransactionEvidence) {
+    $results.Add([pscustomobject][ordered]@{
+        Name = 'canonical C:\msys64 transaction evidence is present'
+        Passed = $false
+        DurationMilliseconds = 0
+        Error = 'The native-boundary transaction did not publish canonical shared-root evidence.'
+    })
+}
+
 $failed = @($results | Where-Object { -not $_.Passed })
 $report = [pscustomobject][ordered]@{
     Schema = 'private-pacman-contract-tests/v2'
@@ -1526,6 +1589,7 @@ $report = [pscustomobject][ordered]@{
         AfterContentDigest = $sharedAfter.ContentDigest
         ByteAndMetadataIdentical = $sharedIdentical
     }
+    CanonicalTransactionState = $script:canonicalTransactionEvidence
     PopulatedSharedState = $script:populatedSharedEvidence
     Passed = $results.Count - $failed.Count
     Failed = $failed.Count
@@ -1543,6 +1607,9 @@ if (-not [string]::IsNullOrWhiteSpace($ReportPath)) {
 }
 
 Write-Host "CANONICAL_SHARED_STATE ExistedBefore=$($report.CanonicalSharedState.ExistedBefore) ExistedAfter=$($report.CanonicalSharedState.ExistedAfter) BeforeDigest=$($report.CanonicalSharedState.BeforeDigest) AfterDigest=$($report.CanonicalSharedState.AfterDigest)"
+if ($null -ne $report.CanonicalTransactionState) {
+    Write-Host "CANONICAL_TRANSACTION_STATE ExistedBefore=$($report.CanonicalTransactionState.ExistedBefore) ExistedAfter=$($report.CanonicalTransactionState.ExistedAfter) BeforeDigest=$($report.CanonicalTransactionState.BeforeDigest) AfterDigest=$($report.CanonicalTransactionState.AfterDigest)"
+}
 if ($null -ne $report.PopulatedSharedState) {
     Write-Host "POPULATED_SHARED_STATE ExistedBefore=$($report.PopulatedSharedState.ExistedBefore) ExistedAfter=$($report.PopulatedSharedState.ExistedAfter) EntryCountBefore=$($report.PopulatedSharedState.EntryCountBefore) EntryCountAfter=$($report.PopulatedSharedState.EntryCountAfter) BeforeDigest=$($report.PopulatedSharedState.BeforeDigest) AfterDigest=$($report.PopulatedSharedState.AfterDigest)"
 }

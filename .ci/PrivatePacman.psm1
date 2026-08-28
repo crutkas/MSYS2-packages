@@ -939,7 +939,6 @@ function Get-PrivatePacmanTreeSnapshotCore {
                 continue
             }
 
-            $item = Get-Item -Force -LiteralPath $child
             $attributes = [IO.File]::GetAttributes($child)
             $isDirectory = ($attributes -band [IO.FileAttributes]::Directory) -ne 0
             $isReparse = ($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
@@ -975,6 +974,7 @@ function Get-PrivatePacmanTreeSnapshotCore {
             $length = $null
             $sha256 = $null
             if ($isReparse) {
+                $item = Get-Item -Force -LiteralPath $child
                 $rawTarget = [string]$item.LinkTarget
                 try {
                     $resolved = $item.ResolveLinkTarget($true)
@@ -2396,12 +2396,18 @@ function Invoke-PrivatePacmanUpgrade {
                 -RejectReparsePoint
         )
         $watchers = @(Start-PrivatePacmanWatchers -ProtectedRoot $protected)
-        $protectedBefore = @(foreach ($protectedEntry in $protected) {
-            $snapshot = Get-PrivatePacmanTreeSnapshotCore `
-                -Path $protectedEntry.Path `
-                -AllowMissing `
-                -RejectReparsePoint
-            $fileName = "protected-$([Array]::IndexOf($protected, $protectedEntry))-before.json"
+        $protectedBefore = @(for ($index = 0; $index -lt $protected.Count; $index++) {
+            $protectedEntry = $protected[$index]
+            $snapshot = if ($protectedEntry.IsCanonicalSharedRoot) {
+                $protectedPreflight[$index]
+            }
+            else {
+                Get-PrivatePacmanTreeSnapshotCore `
+                    -Path $protectedEntry.Path `
+                    -AllowMissing `
+                    -RejectReparsePoint
+            }
+            $fileName = "protected-$index-before.json"
             Write-PrivatePacmanJson `
                 -Path ([IO.Path]::Combine($canonicalLayout.EvidenceDirectory, $fileName)) `
                 -Value $snapshot
