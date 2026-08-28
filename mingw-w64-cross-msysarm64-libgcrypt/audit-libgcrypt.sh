@@ -33,15 +33,60 @@ require_file() {
   test -f "$1" || fail "missing file: $1"
 }
 
+report_contains_forbidden_path() {
+  local report="$1"
+  local forbidden
+  local slash
+  local backslash
+
+  if grep -Eqi \
+      '([a-z]:[/\\](users|msys64|runner|agent|a[/\\]_temp)|/cygdrive/[a-z]/|/[a-z]/a/_temp/|/home/|/tmp/|mingw-w64-cross-msysarm64-libgcrypt[/\\](src|pkg)|libgcrypt-(rehearsal|final|output|reproducibility)|isolated-root|runner_temp|github_workspace)' \
+      "${report}"; then
+    return 0
+  fi
+  while IFS= read -r forbidden; do
+    [[ -n "${forbidden}" ]] || continue
+    slash="${forbidden//\\//}"
+    backslash="${forbidden//\//\\}"
+    if grep -Fqi -e "${forbidden}" -e "${slash}" -e "${backslash}" "${report}"; then
+      return 0
+    fi
+  done <<<"${AUDIT_FORBIDDEN_PATHS:-}"
+  return 1
+}
+
 audit_host_paths() {
   local binary="$1"
   local name
   name="$(basename "${binary}")"
-  "${strings}" -a "${binary}" >"${report_dir}/${name}.strings.txt"
-  if grep -Eqi 'mingw-w64-cross-msysarm64-libgcrypt[/\\](src|pkg)|libgcrypt-rehearsal' \
-      "${report_dir}/${name}.strings.txt"; then
+  "${strings}" -a "${binary}" >"${report_dir}/${name}.strings.ascii.txt"
+  "${strings}" -a -e l "${binary}" >"${report_dir}/${name}.strings.utf16le.txt"
+  cat "${report_dir}/${name}.strings.ascii.txt" \
+    "${report_dir}/${name}.strings.utf16le.txt" \
+    >"${report_dir}/${name}.strings.txt"
+  if report_contains_forbidden_path "${report_dir}/${name}.strings.txt"; then
     fail "host or staging path embedded in ${binary}"
   fi
+}
+
+audit_binary_safe_path_scanner() {
+  local ascii_fixture="${report_dir}/path-negative-ascii.bin"
+  local utf16_fixture="${report_dir}/path-negative-utf16le.bin"
+  local ascii_report="${report_dir}/path-negative-ascii.strings.txt"
+  local utf16_report="${report_dir}/path-negative-utf16le.strings.txt"
+
+  printf '\x00prefix\x00C:\\Users\\runneradmin\\build\\libgcrypt\x00suffix\x00' \
+    >"${ascii_fixture}"
+  printf 'C:\\Users\\runneradmin\\build\\libgcrypt' |
+    iconv -f UTF-8 -t UTF-16LE >"${utf16_fixture}"
+  "${strings}" -a "${ascii_fixture}" >"${ascii_report}"
+  "${strings}" -a -e l "${utf16_fixture}" >"${utf16_report}"
+  report_contains_forbidden_path "${ascii_report}" ||
+    fail "ASCII binary path fixture was not rejected"
+  report_contains_forbidden_path "${utf16_report}" ||
+    fail "UTF-16LE binary path fixture was not rejected"
+  printf 'ascii=pass\nutf16le=pass\nstatus=green\n' \
+    >"${report_dir}/binary-safe-path-summary.txt"
 }
 
 audit_pseudo_reloc() {
@@ -158,6 +203,8 @@ audit_archive() {
   "${nm}" -s "${archive}" >"${report_dir}/${name}.symbols.txt"
   grep -Fq 'Archive index:' "${report_dir}/${name}.symbols.txt" ||
     fail "archive is missing its symbol index: ${archive}"
+  printf 'members=%s\narmap=present\n' "${members}" \
+    >"${report_dir}/${name}.armap.txt"
 
   "${objdump}" -f "${archive}" >"${report_dir}/${name}.file.txt"
   formats="$(grep -c 'file format pe-aarch64-little' "${report_dir}/${name}.file.txt" || true)"
@@ -196,10 +243,11 @@ for symbol in gcry_check_version gcry_control gcry_md_hash_buffer gcry_cipher_op
 done
 
 mapfile -d '' archives < <(find "${root}/lib" -maxdepth 1 -type f -name '*.a' -print0)
-(( ${#archives[@]} >= 2 )) || fail "missing import or static archive"
+(( ${#archives[@]} == 2 )) || fail "expected exactly one import and one static archive"
 for archive in "${archives[@]}"; do
   audit_archive "${archive}"
 done
+audit_binary_safe_path_scanner
 
 grep -Fxq 'prefix=/usr' "${root}/lib/pkgconfig/libgcrypt.pc" ||
   fail "pkg-config prefix is not target /usr"
@@ -266,7 +314,7 @@ if [[ -n "${smoke_source}" ]]; then
   fi
 fi
 
-printf 'target=%s\nroot=%s\npe_count=%s\narchive_count=%s\nstatus=green\n' \
+printf 'target=%s\nroot=%s\npe_count=%s\narchive_count=%s\nbinary_safe_paths=green\nstatus=green\n' \
   "${target}" "${root}" "${#pe_files[@]}" "${#archives[@]}" \
   >"${report_dir}/summary.txt"
 cat "${report_dir}/summary.txt"

@@ -16,7 +16,9 @@ pacman_bin="${PACMAN_BIN:-pacman}"
 packages=()
 
 rm -rf "${evidence_dir}"
-mkdir -p "${evidence_dir}/pkginfo" "${evidence_dir}/splits"
+mkdir -p "${evidence_dir}/pkginfo" "${evidence_dir}/mtree" \
+  "${evidence_dir}/buildinfo" "${evidence_dir}/ownership" \
+  "${evidence_dir}/splits"
 
 fail() {
   echo "package-audit: $*" >&2
@@ -38,6 +40,18 @@ file_sha256() {
   else
     printf 'absent\n'
   fi
+}
+
+tree_manifest() {
+  local tree="$1"
+  local output="$2"
+  {
+    find "${tree}" -type f -print0 |
+      LC_ALL=C sort -z |
+      xargs -0 -r sha256sum
+    find "${tree}" -type l -printf 'symlink %l %p\n' |
+      LC_ALL=C sort
+  } >"${output}"
 }
 
 pacman_path() {
@@ -76,6 +90,16 @@ for package in "${packages[@]}"; do
   split="${evidence_dir}/splits/${name}"
   mkdir -p "${split}"
   bsdtar -xOf "${package}" .PKGINFO >"${evidence_dir}/pkginfo/${name}.PKGINFO"
+  bsdtar -xOf "${package}" .BUILDINFO \
+    >"${evidence_dir}/buildinfo/${name}.BUILDINFO"
+  bsdtar -xOf "${package}" .MTREE |
+    gzip -dc >"${evidence_dir}/mtree/${name}.MTREE"
+  test -s "${evidence_dir}/buildinfo/${name}.BUILDINFO" ||
+    fail "empty package BUILDINFO: ${name}"
+  test -s "${evidence_dir}/mtree/${name}.MTREE" ||
+    fail "empty package MTREE: ${name}"
+  grep -Fq '#mtree' "${evidence_dir}/mtree/${name}.MTREE" ||
+    fail "invalid package MTREE: ${name}"
   grep -Fxq 'arch = x86_64' "${evidence_dir}/pkginfo/${name}.PKGINFO" ||
     fail "wrong package architecture: ${name}"
   bsdtar -xf "${package}" -C "${split}"
@@ -167,13 +191,58 @@ done
 for package_name in "${base}" "${base}-devel" "${base}-tools"; do
   grep -Eq "^${package_name}[[:space:]]" "${evidence_dir}/installed.txt" ||
     fail "transaction did not install ${package_name}"
+  LC_ALL=C "${pacman_cmd[@]}" -Ql "${package_name}" \
+    >"${evidence_dir}/ownership/${package_name}.installed-files.txt"
+  LC_ALL=C "${pacman_cmd[@]}" -Qkk "${package_name}" \
+    >"${evidence_dir}/mtree/${package_name}.initial-Qkk.txt"
+  grep -Eq ', 0 altered files$' \
+    "${evidence_dir}/mtree/${package_name}.initial-Qkk.txt" ||
+    fail "initial installed-file integrity failed for ${package_name}"
 done
+
+runtime_dll="${root}/opt/${target}/usr/bin/msys-gcrypt-20.dll"
+test -f "${runtime_dll}" || fail "installed runtime DLL is missing"
+runtime_dll_sha256="$(file_sha256 "${runtime_dll}")"
+printf 'corrupt' >>"${runtime_dll}"
+if [[ "$(file_sha256 "${runtime_dll}")" = "${runtime_dll_sha256}" ]]; then
+  fail "runtime corruption fixture did not alter the DLL"
+fi
+set +e
+LC_ALL=C "${pacman_cmd[@]}" -Qkk "${base}" \
+  >"${evidence_dir}/mtree/${base}.corrupted-Qkk.txt" 2>&1
+corruption_status=$?
+set -e
+(( corruption_status == 1 )) ||
+  fail "corruption check returned unexpected status ${corruption_status}"
+grep -Fq 'msys-gcrypt-20.dll (SHA256 checksum mismatch)' \
+  "${evidence_dir}/mtree/${base}.corrupted-Qkk.txt" ||
+  fail "pacman did not identify the corrupted runtime DLL checksum"
+grep -Eq ': [0-9]+ total files, 1 altered file$' \
+  "${evidence_dir}/mtree/${base}.corrupted-Qkk.txt" ||
+  fail "pacman did not report exactly one altered runtime file"
+runtime_package="$(pacman_path "${packages[0]}")"
+"${pacman_cmd[@]}" -U "${runtime_package}" \
+  >"${evidence_dir}/corruption-reinstall.log" 2>&1
+test "$(file_sha256 "${runtime_dll}")" = "${runtime_dll_sha256}" ||
+  fail "runtime DLL was not restored byte-for-byte"
+LC_ALL=C "${pacman_cmd[@]}" -Qkk "${base}" \
+  >"${evidence_dir}/mtree/${base}.recovered-Qkk.txt"
+grep -Eq ', 0 altered files$' \
+  "${evidence_dir}/mtree/${base}.recovered-Qkk.txt" ||
+  fail "reinstalled runtime DLL did not pass integrity verification"
+printf 'detected=1\nrestored_sha256=%s\nstatus=green\n' \
+  "${runtime_dll_sha256}" >"${evidence_dir}/corruption-recovery.txt"
 
 "${pacman_cmd[@]}" -Rns "${base}-devel" "${base}-tools" "${base}" \
   >"${evidence_dir}/remove.log" 2>&1
 for package_name in "${base}" "${base}-devel" "${base}-tools"; do
   if "${pacman_cmd[@]}" -Q "${package_name}" >/dev/null 2>&1; then
     fail "transaction did not remove ${package_name}"
+  fi
+done
+for relative in "${!owners[@]}"; do
+  if [[ -e "${root}/${relative}" || -L "${root}/${relative}" ]]; then
+    fail "owned payload remained after removal: ${relative}"
   fi
 done
 
@@ -184,6 +253,16 @@ done
 "${pacman_cmd[@]}" -U "${reinstall_packages[@]}" \
   >"${evidence_dir}/reinstall.log" 2>&1
 "${pacman_cmd[@]}" -Q >"${evidence_dir}/reinstalled.txt"
+for package_name in "${base}" "${base}-devel" "${base}-tools"; do
+  LC_ALL=C "${pacman_cmd[@]}" -Qkk "${package_name}" \
+    >"${evidence_dir}/mtree/${package_name}.reinstalled-Qkk.txt"
+  grep -Eq ', 0 altered files$' \
+    "${evidence_dir}/mtree/${package_name}.reinstalled-Qkk.txt" ||
+    fail "reinstalled-file integrity failed for ${package_name}"
+done
+tree_manifest "${root}" "${evidence_dir}/private-root.manifest"
+sha256sum "${evidence_dir}/private-root.manifest" \
+  >"${evidence_dir}/private-root.manifest.sha256"
 
 shared_db_after="$(db_manifest)"
 printf '%s\n' "${shared_db_after}" >"${evidence_dir}/shared-db.after.sha256"
@@ -199,6 +278,6 @@ for package in "${packages[@]}"; do
   stat -c '%n %s bytes' "${package}"
 done >"${evidence_dir}/archives.txt"
 
-printf 'packages=3\nownership_overlap=0\ntransaction=install-remove-reinstall\nshared_db_unchanged=1\nstatus=green\n' \
+printf 'packages=3\nmtree=green\nownership_overlap=0\ncorruption_recovery=green\ntransaction=install-remove-reinstall\nprivate_root_sealed=1\nshared_db_unchanged=1\nstatus=green\n' \
   >"${evidence_dir}/summary.txt"
 cat "${evidence_dir}/summary.txt"

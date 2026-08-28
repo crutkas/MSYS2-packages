@@ -7,8 +7,8 @@ _package_target_usr="${_package_target_root}/usr"
 _target_root="${MSYSARM64_TARGET_ROOT:-${_package_target_root}}"
 _target_usr="${_target_root}/usr"
 _tools_bin="${MSYSARM64_TOOLS_BIN:-/opt/bin}"
-# Immutable a527 runtime identity. Final packages must be rebuilt with the
-# reviewed fixed binutils before publication.
+# Immutable a527 diagnostic runtime identity. Final candidates must be rebuilt
+# from scratch after the corrected runtime is locked and natively admitted.
 _runtime_version=3.6.10.r0.ga527ace21
 _runtime_pkgrel=1
 _gcc_version=15.0.1dev
@@ -61,13 +61,13 @@ source=(
 sha256sums=('7ce33c2492221a0436f96a8500215e9f3e3dcb5fd26a757cd415e7a843babd5e'
             'SKIP'
             '2c6ed2ec757eb0ce3cdabdafcdd8929a454cdb66bc43f6529c70fdea17eabd55'
-            '909dd3dfcb6648de52dfd64ab1a4596b74bd877abc1e6db3f449d1e67103e681'
-            '15dcbc99b8ad4c7b0a72db50fbe6f4599079fed4b856b092f2e35d4bc17d724b'
+            'd00163edd684d7ac946a698df404458d3dd17b27c821de05ae4af6a1782a55fb'
+            'a9fcab47d4859449e45613ae8dead328575c4259e9fec38304afb67410b23a73'
             '59bbf47759a56001ec50edc694bcac9b23a095ce035c18f5c90cbcef0def4780'
             '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9'
             'a2103549e801f2473f6d8dba71f270ce12174f695331d83981476449b22072f0'
             '6705e5c5f74ba7b5c219625edd3bb245df53b89569f18b4ff3d7352d4a30cc2a'
-            '4d352d56a65b230551de4ccbe625f0b0fe3ee7e95f7d0f2ff07eebd1c8c9df67')
+            'b7e7df47ffb5dca4414557a50d0566b851f239deca97f6e14d042c1c03311f39')
 # These might be signed by any of these keys: https://gnupg.org/signature_key.html
 validpgpkeys=('5B80C5754298F0CB55D8ED6ABCEF7E294B092E28'
               '6DAA6E64A76D2840571B4902528897B826403ADA'

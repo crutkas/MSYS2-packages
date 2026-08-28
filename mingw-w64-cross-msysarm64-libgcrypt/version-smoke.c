@@ -1,6 +1,8 @@
 #include <gcrypt.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 int
 main(void)
@@ -17,10 +19,16 @@ main(void)
   if (!version)
     return 2;
 
-  gcry_md_hash_buffer(GCRY_MD_SHA256, digest, "abc", 3);
-  if (memcmp(digest, expected, sizeof(expected)) != 0)
+  if (gcry_control(GCRYCTL_SELFTEST, 0) != 0)
     return 3;
 
-  printf("libgcrypt=%s api=%s sha256=ok\n", version, GCRYPT_VERSION);
+  gcry_md_hash_buffer(GCRY_MD_SHA256, digest, "abc", 3);
+  if (memcmp(digest, expected, sizeof(expected)) != 0)
+    return 4;
+
+  printf("libgcrypt=%s api=%s selftest=ok sha256=ok\n", version, GCRYPT_VERSION);
+  fflush(stdout);
+  if (getenv("LIBGCRYPT_NATIVE_HOLD"))
+    sleep(15);
   return 0;
 }
