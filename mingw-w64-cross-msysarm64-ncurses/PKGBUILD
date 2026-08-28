@@ -160,6 +160,18 @@ build() {
 
   (
     cd "${target_build}"
+    local probe_source="${target_build}/configure-probe.c"
+    local probe_exe="${target_build}/configure-probe.exe"
+
+    printf 'int main(void){return 0;}\n' > "${probe_source}"
+    "${_target}-gcc" \
+      --sysroot="${target_prefix}" \
+      -specs="${target_specs}" \
+      -Wl,-u,_pei386_runtime_relocator \
+      "${probe_source}" \
+      -o "${probe_exe}"
+    rm -f "${probe_source}" "${probe_exe}"
+
     CC="${_target}-gcc" \
     CXX="${_target}-g++" \
     AR="${_target}-ar" \
