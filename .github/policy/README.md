@@ -150,8 +150,33 @@ therefore cannot be pre-cleared by `-c` or `GIT_CONFIG_KEY_n`. An earlier
 version of this document claimed that forced configuration neutralised "every
 remaining command-execution vector"; that claim was false and is withdrawn.
 
-The actual control is an **allow-list scan of the local configuration** that runs
-before any command that reads the worktree. The protected base checkout is
+The actual control is an **allow-list scan of the full effective configuration**
+that runs before any command that reads the worktree. The scan uses
+`git config --list --show-scope -z`, not a single-scope listing, and it asserts
+on the scope structure rather than merely reading values out of it: the `system`
+and `global` scopes must be **absent** (the child environment is rebuilt from
+scratch, so their presence would mean the rebuild failed), the only scopes
+permitted are `local`, `worktree` and `command`, and the `command` scope must
+equal exactly the policy's own forced settings.
+
+An earlier version scanned `git config --local --list` only. That was
+scope-blind: Git honours per-checkout configuration at
+`.git/worktrees/<name>/config.worktree`, which a `--local` listing does not show,
+so a `filter.<n>.clean` placed in that scope was invisible to the scan and would
+still execute. Measured: the key is invisible to `--local --list`, visible to
+`--show-scope`, and the driver is live — `git add` in that checkout runs the
+process. Not claimed: execution through the exact production `status` command in
+a linked worktree; local scope fires under `status`, but the linked-worktree case
+did not fire across five trigger shapes. The scope-blindness and the process
+execution are both real; that one chain is not demonstrated.
+
+Dropping `extensions.worktreeConfig` from the key allow-list would
+have closed that one instance while leaving the class open, because the scan
+would have stayed scope-blind and any future permitted scope-adding key would
+reopen it. Scanning every scope is the control; the key is no longer permitted
+either, and a test proves the scope scan still denies when the key *is* permitted.
+
+The protected base checkout is
 produced by the pinned `actions/checkout` step from a trusted SHA, so its config
 is predictable, and any key outside the modelled set denies. The scan is
 intrinsic to the command — `status` is gated on the scan having passed in both
@@ -317,3 +342,25 @@ Run the standard-library-only suites from the repository root:
 python -B -m unittest discover .github/policy/tests -v
 pwsh -NoProfile -File .github/policy/tests/private-root.tests.ps1
 ```
+
+> **`private-root.tests.ps1` is NOT a Pester file.** Despite the `.tests.ps1`
+> name it is a standalone assertion script and must be invoked directly, as
+> above. `Invoke-Pester` discovers **zero** tests in it and reports
+> `Tests Passed: 0` with **exit code 0** — so a CI job that wired it through
+> Pester would report success while running nothing at all. Run directly it
+> executes 103 assertions and exits 0. The script now throws if the Pester
+> module is loaded, so the mistake fails loudly instead of passing silently.
+
+## Trusted Git image
+
+`TRUSTED_GIT_IMAGES` contains only drive-letter-rooted paths. A UNC entry is
+refused because it routes image resolution through the network redirector, so
+the "trusted" image would be whatever a remote server serves — the
+arbitrary-code-execution equivalence the check exists to prevent. Extended-length
+(`\\?\`) and device (`\\.\`) prefixes are refused because they bypass path
+normalisation. Both of those forms *resolve to themselves*, so "resolves to
+itself" is **not** a sufficient definition of canonicality on its own; a
+drive-letter root is required as well. An earlier version of this document
+described the check as enforcing canonicality when it only enforced
+resolves-to-itself; that wording was inaccurate and the predicate has been
+tightened to match the promise.

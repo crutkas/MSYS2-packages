@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -813,6 +814,148 @@ class CheckoutConfigExecutionTests(unittest.TestCase):
             validator._INERT_CONFIG_PROVEN.clear()
             validator.assert_inert_local_config(checkout)
 
+    def test_worktree_scope_key_is_denied_by_the_scope_scan_itself(self):
+        """NC-1: the scan must be scope-aware, not merely miss the extension.
+
+        Dropping `extensions.worktreeconfig` from the allow-list closes this
+        instance and leaves the class open. To prove the SCOPE assertion is the
+        control, the extension is temporarily permitted so it cannot be the
+        reason for the denial.
+        """
+        try:
+            image = validator._git_image()
+        except PolicyError:
+            self.skipTest("no trusted git image on this host")
+        environment = validator._git_environment()
+        with tempfile.TemporaryDirectory() as directory:
+            main = pathlib.Path(directory) / "main"
+            main.mkdir()
+
+            def raw(root, *arguments):
+                return subprocess.run(
+                    [image, "-C", str(root), *arguments],
+                    capture_output=True, text=True, env=environment, check=False,
+                )
+
+            raw(main, "init", "-q")
+            (main / "f.txt").write_text("hello\n", encoding="utf-8")
+            raw(main, "add", "-A")
+            raw(main, "-c", "user.email=a@b.c", "-c", "user.name=a",
+                "commit", "-qm", "x")
+            raw(main, "config", "--local", "extensions.worktreeConfig", "true")
+            linked = pathlib.Path(directory) / "linked"
+            added = raw(main, "worktree", "add", "-q", str(linked))
+            if added.returncode != 0:
+                self.skipTest("git worktree unavailable")
+            raw(linked, "config", "--worktree", "filter.evil.clean", "cmd.exe /c echo")
+
+            # A --local listing genuinely cannot see the worktree-scope key.
+            local = raw(
+                linked, "--no-pager", "config", "--local", "--list", "-z"
+            ).stdout
+            local_keys = {
+                entry.split("\n", 1)[0].lower()
+                for entry in local.split("\0")
+                if entry
+            }
+            self.assertNotIn("filter.evil.clean", local_keys)
+
+            saved = validator.CONFIG_KEY_ALLOWED_RE
+            try:
+                validator.CONFIG_KEY_ALLOWED_RE = re.compile(
+                    "^(?:"
+                    + "|".join(
+                        validator.CONFIG_KEY_ALLOWLIST
+                        + (r"extensions\.worktreeconfig",)
+                    )
+                    + ")$",
+                    re.IGNORECASE,
+                )
+                validator._INERT_CONFIG_PROVEN.clear()
+                with self.assertRaises(PolicyError) as raised:
+                    validator.assert_inert_local_config(linked)
+            finally:
+                validator.CONFIG_KEY_ALLOWED_RE = saved
+            self.assertEqual(raised.exception.code, "BASE_CHECKOUT_CONFIG")
+            self.assertIn("filter.evil.clean", raised.exception.message)
+            self.assertIn("worktree scope", raised.exception.message)
+
+    def scoped(self, *pairs):
+        return "\0".join(
+            part for scope, entry in pairs for part in (scope, entry)
+        )
+
+    def with_stub_listing(self, listing):
+        saved = validator._run_git
+        validator._run_git = lambda checkout, command: listing
+        validator._INERT_CONFIG_PROVEN.clear()
+        try:
+            with self.assertRaises(PolicyError) as raised:
+                validator.assert_inert_local_config(pathlib.Path("C:\\stub"))
+        finally:
+            validator._run_git = saved
+        return raised.exception
+
+    def forced_pairs(self):
+        return [
+            ("command", setting.split("=", 1)[0] + "\n" + setting.split("=", 1)[1])
+            for setting in validator.GIT_FORCED_CONFIG
+        ]
+
+    def test_ambient_scopes_are_asserted_absent_not_merely_observed(self):
+        for scope in ("system", "global"):
+            listing = self.scoped(
+                ("local", "core.bare\nfalse"),
+                (scope, "core.pager\ncmd.exe"),
+                *self.forced_pairs(),
+            )
+            with self.subTest(scope=scope):
+                error = self.with_stub_listing(listing)
+                self.assertEqual(error.code, "BASE_CHECKOUT_CONFIG")
+                self.assertIn("failed to suppress ambient configuration",
+                              error.message)
+
+    def test_unmodelled_scope_is_denied(self):
+        listing = self.scoped(
+            ("local", "core.bare\nfalse"),
+            ("submodule", "core.pager\ncmd.exe"),
+            *self.forced_pairs(),
+        )
+        error = self.with_stub_listing(listing)
+        self.assertIn("unmodelled configuration scope", error.message)
+
+    def test_command_scope_must_be_exactly_the_forced_settings(self):
+        extra = self.scoped(
+            ("local", "core.bare\nfalse"),
+            *self.forced_pairs(),
+            ("command", "filter.evil.clean\ncmd.exe"),
+        )
+        error = self.with_stub_listing(extra)
+        self.assertIn("command-scope configuration is not exactly", error.message)
+
+        missing = self.scoped(
+            ("local", "core.bare\nfalse"),
+            *self.forced_pairs()[:-1],
+        )
+        error = self.with_stub_listing(missing)
+        self.assertIn("command-scope configuration is not exactly", error.message)
+
+    def test_unpaired_scope_stream_is_denied(self):
+        error = self.with_stub_listing("local\0core.bare\nfalse\0local")
+        self.assertIn("unpaired record stream", error.message)
+
+    def test_scan_reads_every_scope_not_just_local(self):
+        source = (POLICY_DIR / "validator.py").read_text(encoding="utf-8")
+        self.assertIn('"--show-scope"', source)
+        self.assertNotIn('"config", "--local", "--list"', source)
+        # The scope-adding extension must not be permitted by the allow-list.
+        self.assertIsNone(
+            validator.CONFIG_KEY_ALLOWED_RE.fullmatch("extensions.worktreeconfig")
+        )
+        self.assertIsNone(
+            validator.CONFIG_KEY_ALLOWED_RE.fullmatch("extensions.worktreeConfig")
+        )
+
     def test_config_scan_precedes_every_worktree_command(self):
         source = (POLICY_DIR / "validator.py").read_text(encoding="utf-8")
         self.assertIn("WORKTREE_GIT_COMMANDS", source)
@@ -958,6 +1101,61 @@ class TrustedGitImageTests(unittest.TestCase):
             self.assertEqual(raised.exception.code, "BASE_CHECKOUT_GIT")
         finally:
             validator.TRUSTED_GIT_IMAGES = saved
+
+    def test_unc_and_extended_length_entries_are_refused(self):
+        """A UNC image would be served by a remote host over the redirector.
+
+        Both UNC and extended-length forms resolve to themselves, so
+        "resolves to itself" is not sufficient canonicality; a drive-letter
+        root is required.
+        """
+        try:
+            real = validator._git_image()
+        except PolicyError:
+            self.skipTest("no trusted git image on this host")
+        cases = {
+            "unc": "\\\\localhost\\C$" + real[2:],
+            "unc-forward": "//localhost/C$" + real[2:].replace("\\", "/"),
+            "extended-length": "\\\\?\\" + real,
+            "device": "\\\\.\\" + real,
+        }
+        for label, candidate in cases.items():
+            with self.subTest(label=label):
+                saved = validator.TRUSTED_GIT_IMAGES
+                try:
+                    validator.TRUSTED_GIT_IMAGES = (candidate,)
+                    with self.assertRaises(PolicyError) as raised:
+                        validator._git_image()
+                    self.assertEqual(raised.exception.code, "BASE_CHECKOUT_GIT")
+                    self.assertIn("drive-letter", raised.exception.message)
+                finally:
+                    validator.TRUSTED_GIT_IMAGES = saved
+
+    def test_shipped_allowlist_is_drive_letter_rooted_only(self):
+        for candidate in validator.TRUSTED_GIT_IMAGES:
+            with self.subTest(candidate=candidate):
+                self.assertRegex(candidate, r"^[A-Za-z]:\\")
+                self.assertNotIn("\\\\", candidate)
+                self.assertNotIn("/", candidate)
+
+    def test_powershell_suite_is_never_wired_through_pester(self):
+        # `private-root.tests.ps1` is a standalone assertion script, not a
+        # Pester file. Invoke-Pester discovers ZERO tests in it and reports
+        # "Tests Passed: 0" with EXIT CODE 0, so a CI job wired through Pester
+        # would report success while running nothing at all. Measured: naive
+        # shape -> Total=0, Result=Passed, exit 0. The guard converts that to
+        # Result=Failed, exit 1.
+        script = POLICY_DIR / "tests" / "private-root.tests.ps1"
+        source = script.read_text(encoding="utf-8")
+        self.assertIn("Get-Module -Name Pester", source)
+        self.assertIn("standalone assertion script, not a Pester file", source)
+        # The guard must run before any assertion work, and must throw.
+        guard = source.index("Get-Module -Name Pester")
+        self.assertLess(guard, source.index("function Assert-True"))
+        self.assertIn("throw", source[guard : guard + 400])
+        readme = (POLICY_DIR / "README.md").read_text(encoding="utf-8")
+        self.assertIn("NOT a Pester file", readme)
+        self.assertIn("exit code 0", readme)
 
     def test_non_repository_checkout_fails_closed(self):
         # The original exploit forged origin/HEAD/tree/cleanliness in a

@@ -4,6 +4,17 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# THIS IS NOT A PESTER FILE. It is a standalone assertion script and must be run
+# directly:
+#     pwsh -NoProfile -File .github/policy/tests/private-root.tests.ps1
+# Invoke-Pester discovers ZERO tests here and reports "Tests Passed: 0" with
+# EXIT CODE 0 -- a CI job wired through Pester would report success while
+# running nothing at all. The guard below makes that mistake loud instead of
+# silent.
+if ($null -ne (Get-Module -Name Pester)) {
+    throw 'private-root.tests.ps1 is a standalone assertion script, not a Pester file; run it directly with pwsh -File. Pester discovers zero tests here and would report success while running nothing.'
+}
+
 $modulePath = (Resolve-Path (Join-Path $PSScriptRoot '..\PrivateRoot.psm1')).Path
 Import-Module $modulePath -Force -ErrorAction Stop
 
@@ -30,19 +41,29 @@ function Assert-Throws {
         [scriptblock] $Action,
 
         [Parameter(Mandatory)]
-        [string] $Label
+        [string] $Label,
+
+        # Optional substring the rejection reason must contain. Without it a
+        # fixture that throws for an unrelated reason would look like a kill,
+        # which is how a masked guard survives unnoticed.
+        [string] $Match
     )
 
     $script:assertions++
     $threw = $false
+    $reason = ''
     try {
         & $Action | Out-Null
     }
     catch {
         $threw = $true
+        $reason = $_.Exception.Message
     }
     if (-not $threw) {
         throw "Expected rejection: $Label"
+    }
+    if ($Match -and ($reason -notlike "*$Match*")) {
+        throw "Rejected for the wrong reason: $Label -- wanted '$Match', got '$reason'"
     }
 }
 
@@ -242,7 +263,8 @@ try {
     }
 
     # A non-canonical trusted image entry must be refused.
-    $psModule = Get-Module PrivateRoot
+    $psm = Get-Module PrivateRoot
+    $psModule = $psm
     $savedImages = & $psModule { $script:PolicyTrustedGitImages }
     try {
         $imageDir = Split-Path -Parent (Get-PolicyGitImage)
@@ -256,9 +278,29 @@ try {
         Assert-Throws -Label 'relative git image is refused' -Action {
             Get-PolicyGitImage
         }
+        # A UNC image would be served by a remote host over the redirector, and
+        # an extended-length prefix bypasses normalisation. Both resolve to
+        # themselves, so a drive-letter root is required as well.
+        $real = $savedImages | Where-Object { [IO.File]::Exists($_) } | Select-Object -First 1
+        if ($real) {
+            foreach ($bad in @(
+                    ('\\localhost\C$' + $real.Substring(2)),
+                    ('\\?\' + $real),
+                    ('\\.\' + $real),
+                    ('//localhost/C$' + $real.Substring(2).Replace('\', '/')))) {
+                & $psModule { param($v) $script:PolicyTrustedGitImages = $v } @($bad)
+                Assert-Throws -Label 'UNC or device git image is refused' -Action {
+                    Get-PolicyGitImage
+                }
+            }
+        }
     }
     finally {
         & $psModule { param($v) $script:PolicyTrustedGitImages = $v } $savedImages
+    }
+    foreach ($shipped in $savedImages) {
+        Assert-True -Condition ($shipped -cmatch '^[A-Za-z]:\\') -Label 'shipped image is drive-letter rooted'
+        Assert-True -Condition (-not $shipped.Contains('\\\\')) -Label 'shipped image is not UNC'
     }
 
     # An attacker-planted permissive directory must be REFUSED, and must not be
@@ -434,6 +476,105 @@ try {
             Assert-PolicyInertLocalConfig -Workspace $family
         }
     }
+
+    # NC-1: a per-checkout configuration scope is honoured by Git but invisible
+    # to a single-scope listing. The scan must be scope-aware.
+    $wtMain = Join-Path $testRoot 'wt-main'
+    [void] [IO.Directory]::CreateDirectory($wtMain)
+    Invoke-FixtureGit -Root $wtMain -GitArgs @('init', '-q')
+    [IO.File]::WriteAllText((Join-Path $wtMain 'f.txt'), "hello`n")
+    Invoke-FixtureGit -Root $wtMain -GitArgs @('add', '-A')
+    Invoke-FixtureGit -Root $wtMain -GitArgs @('-c', 'user.email=a@b.c', '-c', 'user.name=a', 'commit', '-qm', 'x')
+    Invoke-FixtureGit -Root $wtMain -GitArgs @('config', '--local', 'extensions.worktreeConfig', 'true')
+    $wtLinked = Join-Path $testRoot 'wt-linked'
+    Invoke-FixtureGit -Root $wtMain -GitArgs @('worktree', 'add', '-q', $wtLinked)
+    Invoke-FixtureGit -Root $wtLinked -GitArgs @('config', '--worktree', 'filter.evil.clean', 'cmd.exe /c echo')
+    Assert-Throws -Label 'per-checkout scope key is denied' -Action {
+        Assert-PolicyInertLocalConfig -Workspace $wtLinked
+    }
+    # Prove the SCOPE scan is the control, not the extension omission: permit
+    # the extension and the scoped key must still be refused.
+    $savedAllow = & $psm { $script:PolicyConfigKeyAllowList }
+    try {
+        & $psm { param($v) $script:PolicyConfigKeyAllowList = $v } `
+            ($savedAllow + @('extensions\.worktreeconfig'))
+        Assert-Throws -Label 'scope scan denies even when the extension is permitted' -Action {
+            Assert-PolicyInertLocalConfig -Workspace $wtLinked
+        }
+    }
+    finally {
+        & $psm { param($v) $script:PolicyConfigKeyAllowList = $v } $savedAllow
+    }
+
+    # The scan must assert that ambient scopes are GONE, not merely read values.
+    $moduleSource = [IO.File]::ReadAllText($modulePath)
+    Assert-True -Condition ($moduleSource.Contains('--show-scope')) -Label 'scan reads every configuration scope'
+    Assert-True -Condition ($moduleSource.Contains('PolicyForbiddenConfigScopes')) -Label 'ambient scopes are asserted absent'
+    Assert-True -Condition ($moduleSource.Contains('command-scope configuration is not exactly')) -Label 'command scope is asserted exact'
+    Assert-True -Condition (-not ($moduleSource -cmatch "config', '--local', '--list'")) -Label 'no single-scope listing remains'
+
+    # Each scope guard is exercised on its own against a synthetic listing, so a
+    # kill is attributable to that guard rather than to a neighbour. A source
+    # string check would not notice a guard whose body had been neutered.
+    $originalInvokePolicyGit = & $psm { ${function:Invoke-PolicyGit} }
+    try {
+        & $psm {
+            $script:StubConfigListing = ''
+            Set-Item -Path function:Invoke-PolicyGit -Value {
+                param($WorkingDirectory, $GitArguments, $TimeoutMilliseconds)
+                return $script:StubConfigListing
+            }
+        }
+        $forcedRecords = @()
+        foreach ($setting in (& $psm { $script:PolicyForcedConfig })) {
+            $parts = $setting.Split('=', 2)
+            $forcedRecords += @('command', ($parts[0] + "`n" + $parts[1]))
+        }
+        function Invoke-ScopedScan {
+            param([string[]] $Records)
+            & $psm { param($v) $script:StubConfigListing = $v } (($Records -join [char]0) + [char]0)
+            Assert-PolicyInertLocalConfig -Workspace 'C:\stub'
+        }
+
+        # Positive control: the synthetic shape itself must be admitted, or every
+        # negative below would pass for the wrong reason.
+        Invoke-ScopedScan -Records (@('local', "core.bare`nfalse") + $forcedRecords)
+        Assert-True -Condition $true -Label 'synthetic pristine listing is admitted'
+
+        foreach ($scope in @('system', 'global')) {
+            Assert-Throws -Label "ambient $scope scope is asserted absent" `
+                -Match 'failed to suppress ambient configuration' -Action {
+                Invoke-ScopedScan -Records (@('local', "core.bare`nfalse", $scope, "core.pager`ncmd.exe") + $forcedRecords)
+            }
+        }
+        Assert-Throws -Label 'unmodelled scope is denied' `
+            -Match 'unmodelled configuration scope' -Action {
+            Invoke-ScopedScan -Records (@('local', "core.bare`nfalse", 'submodule', "core.pager`ncmd.exe") + $forcedRecords)
+        }
+        Assert-Throws -Label 'extra command-scope key is denied' `
+            -Match 'not exactly the policy forced settings' -Action {
+            Invoke-ScopedScan -Records (@('local', "core.bare`nfalse") + $forcedRecords + @('command', "filter.evil.clean`ncmd.exe"))
+        }
+        Assert-Throws -Label 'missing forced command-scope key is denied' `
+            -Match 'not exactly the policy forced settings' -Action {
+            Invoke-ScopedScan -Records (@('local', "core.bare`nfalse") + $forcedRecords[0..($forcedRecords.Count - 3)])
+        }
+        Assert-Throws -Label 'unpaired record stream is denied' `
+            -Match 'unpaired record stream' -Action {
+            Invoke-ScopedScan -Records @('local', "core.bare`nfalse", 'local')
+        }
+        # A worktree-scope key still meets the key allow-list, so this proves the
+        # scan reaches that scope at all rather than only the local one.
+        Assert-Throws -Label 'per-checkout scope is reached by the scan' `
+            -Match 'unmodelled git configuration key' -Action {
+            Invoke-ScopedScan -Records (@('worktree', "filter.evil.clean`ncmd.exe") + $forcedRecords)
+        }
+    }
+    finally {
+        & $psm { param($sb) Set-Item -Path function:Invoke-PolicyGit -Value $sb } $originalInvokePolicyGit
+    }
+    # Prove the real function came back, not the stub.
+    Assert-True -Condition ((& $psm { ${function:Invoke-PolicyGit} }).ToString().Contains('ReadToEndAsync')) -Label 'production git invoker restored'
 
     # --- H-5: both pipes must be drained so the timeout is always reachable ---
     $psi = [Diagnostics.ProcessStartInfo]::new()

@@ -71,8 +71,6 @@ TRUSTED_GIT_IMAGES = (
     r"C:\Program Files\Git\bin\git.exe",
     r"C:\Program Files (x86)\Git\cmd\git.exe",
     r"C:\Program Files (x86)\Git\bin\git.exe",
-    "/usr/bin/git",
-    "/usr/local/bin/git",
 )
 
 
@@ -231,7 +229,11 @@ CONFIG_KEY_ALLOWLIST = (
     r"|untrackedcache|checkstat|trustctime|quotepath|commitgraph|multipackindex)",
     r"remote\.origin\.(?:url|fetch|tagopt|partialclonefilter|promisor)",
     r"branch\.[^.]+\.(?:remote|merge|rebase)",
-    r"extensions\.(?:objectformat|worktreeconfig|refstorage|compatobjectformat"
+    # `worktreeconfig` is deliberately ABSENT: it adds a configuration scope
+    # (.git/worktrees/<name>/config.worktree) that git honours. Removing it is
+    # not the control -- the scope assertion below is -- but permitting a
+    # scope-adding extension for no reason would be gratuitous.
+    r"extensions\.(?:objectformat|refstorage|compatobjectformat"
     r"|preciousobjects|partialclone)",
     r"gc\.auto",
     r"fetch\.(?:recursesubmodules|prune|prunetags|parallel)",
@@ -247,6 +249,16 @@ CONFIG_KEY_ALLOWLIST = (
 CONFIG_KEY_ALLOWED_RE = re.compile(
     "^(?:" + "|".join(CONFIG_KEY_ALLOWLIST) + ")$", re.IGNORECASE
 )
+# Scopes git may report under the rebuilt child environment. `system` and
+# `global` must be ABSENT -- their presence would mean the environment rebuild
+# failed and ambient configuration reached the child.
+CONFIG_SCOPES_FORBIDDEN = frozenset({"system", "global"})
+CONFIG_SCOPES_PERMITTED = frozenset({"local", "worktree", "command"})
+# A drive-letter root is required. A UNC path routes image resolution through
+# the network redirector, so the "trusted" image becomes whatever a remote
+# server serves -- the arbitrary-code-execution equivalence this check exists to
+# prevent -- and an extended-length prefix bypasses path normalisation.
+DRIVE_ROOT_RE = re.compile(r"^[A-Za-z]:\\(?!\\)")
 TRUSTED_GIT_TOKENS = frozenset(
     {
         "-C",
@@ -256,6 +268,7 @@ TRUSTED_GIT_TOKENS = frozenset(
         "config",
         "--local",
         "--list",
+        "--show-scope",
         "-z",
         "--get",
         "remote.origin.url",
@@ -322,17 +335,28 @@ def _git_image() -> str:
     There is deliberately NO environment or test override. An override that
     accepts "any absolute file" is equivalent to arbitrary code execution here:
     a native stub can forge origin, HEAD, tree, and cleanliness through this
-    same function and defeat verify_local_base entirely. The image is therefore
-    chosen only from a fixed allowlist and must be canonical -- a real file,
-    not a symlink or reparse point, whose resolved path is itself the
-    allowlisted path.
+    same function and defeat verify_local_base entirely.
+
+    The image must be a plain drive-letter path that resolves to itself. A UNC
+    path is refused because it routes image resolution through the network
+    redirector, so the "trusted" image would be whatever a remote server
+    serves; an extended-length or device prefix is refused because it bypasses
+    path normalisation. "Resolves to itself" alone is NOT sufficient
+    canonicality -- both of those forms resolve to themselves.
     """
     for candidate in TRUSTED_GIT_IMAGES:
+        normalized = candidate.replace("/", "\\")
+        # A single drive-letter root check. It subsumes a separate
+        # startswith("\\\\") test -- UNC (\\server\share) and device or
+        # extended-length (\\?\, \\.\) forms all fail this pattern -- so no
+        # second UNC guard is carried. A guard that cannot be killed on its own
+        # is decoration, not protection.
+        if DRIVE_ROOT_RE.match(normalized) is None:
+            continue
         try:
-            # os.path.realpath always returns an absolute, link-resolved path,
-            # so the canonical comparison below subsumes both an absolute-path
-            # check and a symlink check. They are deliberately not duplicated
-            # here: a guard that can only be killed by its twin is not evidence.
+            # os.path.realpath returns an absolute, link-resolved,
+            # traversal-collapsed, long-name path, so the comparison below
+            # subsumes separate isabs and islink checks. Measured, not assumed.
             if not os.path.isfile(candidate):
                 continue
             resolved = os.path.realpath(candidate)
@@ -343,8 +367,9 @@ def _git_image() -> str:
         return candidate
     raise PolicyError(
         "BASE_CHECKOUT_GIT",
-        "no canonical trusted git image is available; refusing to resolve git "
-        "through PATH or any override",
+        "no canonical drive-letter trusted git image is available; refusing to "
+        "resolve git through PATH, a UNC path, an extended-length path, or any "
+        "override",
     )
 
 
@@ -408,7 +433,8 @@ def _run_git(checkout: pathlib.Path, command: str) -> str:
         assert_inert_local_config(checkout)
     if command == "config-list":
         return _git_capture(
-            [image, "-C", target, "--no-pager", "config", "--local", "--list", "-z"],
+            [image, "-C", target, "--no-pager", "config", "--list",
+             "--show-scope", "-z"],
             checkout,
             command,
         )
@@ -461,29 +487,66 @@ _INERT_CONFIG_PROVEN: set[str] = set()
 
 
 def assert_inert_local_config(checkout: pathlib.Path) -> None:
-    """Deny any checkout whose local config could make Git execute a process.
+    """Deny any checkout whose EFFECTIVE config could make Git execute a process.
 
-    This MUST run before any command that touches the worktree. Reading the
-    config does not run filters, diff drivers, or hooks, so it is safe to do
-    first; `status` is not.
+    Scanning `--local` alone is scope-blind: git also honours worktree scope at
+    `.git/worktrees/<name>/config.worktree`, which a `--local` listing never
+    shows. Dropping the extension that enables that scope would close one
+    instance and leave the class open, so the scan reads the full effective
+    configuration with `--show-scope` and asserts over every scope.
+
+    The scope structure is ASSERTED, not merely observed: `system` and `global`
+    must be absent, which is positive evidence that the rebuilt child
+    environment actually suppressed ambient configuration, and `command` scope
+    must contain exactly the policy's own forced settings and nothing else.
     """
     key = os.path.normcase(str(checkout))
     if key in _INERT_CONFIG_PROVEN:
         return
     listing = _run_git(checkout, "config-list")
-    for entry in listing.split(chr(0)):
-        if not entry:
-            continue
-        name = entry.split("\n", 1)[0].strip()
-        if not name:
+    # With `--show-scope -z` the scope and the `key\nvalue` pair arrive as
+    # separate NUL-terminated records, in that order.
+    records = [record for record in listing.split(chr(0)) if record != ""]
+    require(
+        len(records) % 2 == 0,
+        "BASE_CHECKOUT_CONFIG",
+        "git config --show-scope produced an unpaired record stream",
+    )
+    forced = {setting.split("=", 1)[0].casefold() for setting in GIT_FORCED_CONFIG}
+    seen_scopes: set[str] = set()
+    command_keys: set[str] = set()
+    for index in range(0, len(records), 2):
+        scope = records[index].strip().casefold()
+        name = records[index + 1].split("\n", 1)[0].strip()
+        seen_scopes.add(scope)
+        require(
+            scope not in CONFIG_SCOPES_FORBIDDEN,
+            "BASE_CHECKOUT_CONFIG",
+            f"git reported {scope!r}-scope configuration key {name!r}; the "
+            "rebuilt child environment failed to suppress ambient configuration",
+        )
+        require(
+            scope in CONFIG_SCOPES_PERMITTED,
+            "BASE_CHECKOUT_CONFIG",
+            f"git reported the unmodelled configuration scope {scope!r} for {name!r}",
+        )
+        if scope == "command":
+            command_keys.add(name.casefold())
             continue
         require(
             CONFIG_KEY_ALLOWED_RE.fullmatch(name) is not None,
             "BASE_CHECKOUT_CONFIG",
             f"protected base checkout declares the unmodelled git configuration "
-            f"key {name!r}; a checkout-controlled key can execute a process "
-            "before this policy reaches a verdict",
+            f"key {name!r} in {scope} scope; a checkout-controlled key can "
+            "execute a process before this policy reaches a verdict",
         )
+    require(
+        command_keys == forced,
+        "BASE_CHECKOUT_CONFIG",
+        "command-scope configuration is not exactly the policy's forced "
+        f"settings: unexpected {sorted(command_keys - forced)}, "
+        f"missing {sorted(forced - command_keys)}",
+    )
     _INERT_CONFIG_PROVEN.add(key)
 
 
@@ -1207,8 +1270,13 @@ def _assert_trusted_resolver(
                 "is not a literal or a module-level literal constant",
             )
         # A literal is not enough: it must be an image THIS POLICY trusts, not
-        # one the helper chose for itself.
-        unknown = candidates - set(TRUSTED_GIT_IMAGES)
+        # one the helper chose for itself. Compare on the normalised Windows
+        # form so a helper writing forward slashes is judged on substance.
+        def _normalise(value: str) -> str:
+            return os.path.normcase(value.replace("/", "\\"))
+
+        trusted = {_normalise(image) for image in TRUSTED_GIT_IMAGES}
+        unknown = {value for value in candidates if _normalise(value) not in trusted}
         require(
             not unknown,
             "HELPER_DYNAMIC_EXECUTION",

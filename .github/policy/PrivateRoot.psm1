@@ -548,6 +548,17 @@ function Get-PolicyGitImage {
         answers this module exists to verify.
     #>
     foreach ($candidate in $script:PolicyTrustedGitImages) {
+        # A UNC path routes image resolution through the network redirector, so
+        # the trusted image would be whatever a remote server serves; an
+        # extended-length or device prefix bypasses path normalisation. Both
+        # resolve to themselves, so resolving-to-itself alone is NOT sufficient
+        # canonicality -- a drive-letter root is required.
+        $normalized = $candidate.Replace('/', '\')
+        # A single drive-letter root check. It subsumes separate UNC and
+        # doubled-separator tests -- \\server\share, \\?\ and \\.\ all fail this
+        # pattern -- so no second guard is carried. A guard that cannot be
+        # killed on its own is decoration, not protection.
+        if ($normalized -cnotmatch '^[A-Za-z]:\\(?!\\)') { continue }
         if (-not [IO.Path]::IsPathFullyQualified($candidate)) { continue }
         if (-not [IO.File]::Exists($candidate)) { continue }
         $info = [IO.FileInfo]::new($candidate)
@@ -561,10 +572,34 @@ function Get-PolicyGitImage {
         }
         return $candidate
     }
-    throw 'no canonical trusted git image is available.'
+    throw 'no canonical drive-letter trusted git image is available.'
 }
 
 $script:PolicyInertConfigProven = @{}
+# Single source of truth: the environment builder injects these, and the scope
+# assertion requires command scope to contain exactly these and nothing else.
+$script:PolicyForcedConfig = @(
+    'core.fsmonitor=',
+    'core.hooksPath=',
+    'core.askPass=',
+    'core.editor=false',
+    'core.pager=cat',
+    'core.sshCommand=',
+    'core.alternateRefsCommand=',
+    'core.attributesFile=',
+    'core.gitProxy=',
+    'core.symlinks=false',
+    'sequence.editor=false',
+    'diff.external=',
+    'protocol.allow=never',
+    'uploadpack.packObjectsHook=',
+    'credential.helper=',
+    'gpg.program=false',
+    'ssh.variant=simple',
+    'init.templateDir=',
+    'safe.directory=*',
+    'gc.auto=0'
+)
 
 function Invoke-PolicyGit {
     <#
@@ -634,28 +669,7 @@ function Invoke-PolicyGit {
             @('LC_ALL', 'C'))) {
         $startInfo.EnvironmentVariables[$pair[0]] = $pair[1]
     }
-    $forced = @(
-        'core.fsmonitor=',
-        'core.hooksPath=',
-        'core.askPass=',
-        'core.editor=false',
-        'core.pager=cat',
-        'core.sshCommand=',
-        'core.alternateRefsCommand=',
-        'core.attributesFile=',
-        'core.gitProxy=',
-        'core.symlinks=false',
-        'sequence.editor=false',
-        'diff.external=',
-        'protocol.allow=never',
-        'uploadpack.packObjectsHook=',
-        'credential.helper=',
-        'gpg.program=false',
-        'ssh.variant=simple',
-        'init.templateDir=',
-        'safe.directory=*',
-        'gc.auto=0'
-    )
+    $forced = $script:PolicyForcedConfig
     for ($index = 0; $index -lt $forced.Count; $index++) {
         $parts = $forced[$index].Split('=', 2)
         $startInfo.EnvironmentVariables["GIT_CONFIG_KEY_$index"] = $parts[0]
@@ -690,7 +704,9 @@ $script:PolicyConfigKeyAllowList = @(
     'core\.(repositoryformatversion|filemode|bare|logallrefupdates|symlinks|ignorecase|precomposeunicode|autocrlf|eol|hidedotfiles|longpaths|fscache|untrackedcache|checkstat|trustctime|quotepath|commitgraph|multipackindex)',
     'remote\.origin\.(url|fetch|tagopt|partialclonefilter|promisor)',
     'branch\.[^.]+\.(remote|merge|rebase)',
-    'extensions\.(objectformat|worktreeconfig|refstorage|compatobjectformat|preciousobjects|partialclone)',
+    # worktreeconfig is deliberately absent: it enables an extra configuration
+    # scope. The scope assertion below is the control, not this omission.
+    'extensions\.(objectformat|refstorage|compatobjectformat|preciousobjects|partialclone)',
     'gc\.auto',
     'fetch\.(recursesubmodules|prune|prunetags|parallel)',
     'pull\.(rebase|ff)',
@@ -702,6 +718,8 @@ $script:PolicyConfigKeyAllowList = @(
     'pack\.[^.]+',
     'feature\.[^.]+'
 )
+$script:PolicyForbiddenConfigScopes = @('system', 'global')
+$script:PolicyPermittedConfigScopes = @('local', 'worktree', 'command')
 
 function Assert-PolicyInertLocalConfig {
     <#
@@ -711,8 +729,16 @@ function Assert-PolicyInertLocalConfig {
         merge.<n>.driver, core.fsmonitor, core.pager, core.sshCommand,
         credential.helper, alias.*, include/includeIf, url.*.insteadOf -- before
         this policy reaches a verdict. Driver names are arbitrary, so they
-        cannot be pre-cleared by name. The control is an allow-list, and it must
-        run before any command that reads the worktree.
+        cannot be pre-cleared by name.
+
+        Scanning a single scope is scope-blind: a per-checkout configuration
+        file is also honoured in addition to the repository-local one, and a
+        single-scope listing never shows it. The scan therefore reads the FULL
+        EFFECTIVE configuration with --show-scope and asserts over every scope.
+        The scope structure is asserted, not merely observed: system and global
+        must be absent, which is positive evidence that the rebuilt child
+        environment suppressed ambient configuration, and command scope must be
+        exactly this module's own forced settings.
     #>
     param(
         [Parameter(Mandatory)]
@@ -720,18 +746,39 @@ function Assert-PolicyInertLocalConfig {
     )
 
     $listing = Invoke-PolicyGit -WorkingDirectory $Workspace `
-        -GitArguments @('-C', $Workspace, '--no-pager', 'config', '--local', '--list', '-z')
-    foreach ($entry in $listing.Split([char]0)) {
-        if ([string]::IsNullOrWhiteSpace($entry)) { continue }
-        $key = $entry.Split("`n")[0].Trim()
-        if ([string]::IsNullOrWhiteSpace($key)) { continue }
+        -GitArguments @('-C', $Workspace, '--no-pager', 'config', '--list', '--show-scope', '-z')
+    $records = @($listing.Split([char]0) | Where-Object { $_ -ne '' })
+    if (($records.Count % 2) -ne 0) {
+        throw 'git config --show-scope produced an unpaired record stream.'
+    }
+    $forced = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($setting in $script:PolicyForcedConfig) {
+        [void] $forced.Add($setting.Split('=', 2)[0])
+    }
+    $commandKeys = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    for ($index = 0; $index -lt $records.Count; $index += 2) {
+        $scope = $records[$index].Trim().ToLowerInvariant()
+        $key = $records[$index + 1].Split("`n")[0].Trim()
+        if ($script:PolicyForbiddenConfigScopes -contains $scope) {
+            throw "git reported '$scope'-scope configuration key '$key'; the rebuilt child environment failed to suppress ambient configuration."
+        }
+        if ($script:PolicyPermittedConfigScopes -notcontains $scope) {
+            throw "git reported the unmodelled configuration scope '$scope' for '$key'."
+        }
+        if ($scope -eq 'command') {
+            [void] $commandKeys.Add($key)
+            continue
+        }
         $allowed = $false
         foreach ($pattern in $script:PolicyConfigKeyAllowList) {
             if ($key -imatch "^$pattern$") { $allowed = $true; break }
         }
         if (-not $allowed) {
-            throw "protected base checkout declares the unmodelled git configuration key '$key'."
+            throw "protected base checkout declares the unmodelled git configuration key '$key' in $scope scope."
         }
+    }
+    if (-not $commandKeys.SetEquals($forced)) {
+        throw 'command-scope configuration is not exactly the policy forced settings.'
     }
 }
 

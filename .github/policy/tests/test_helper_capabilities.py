@@ -329,7 +329,7 @@ class SubprocessImageTests(unittest.TestCase):
             ),
             "trusted-image-then-splat": (
                 "import subprocess\n"
-                "def _git_image():\n    return '/usr/bin/git'\n"
+                "def _git_image():\n    return 'C:/Program Files/Git/cmd/git.exe'\n"
                 "subprocess.run([_git_image(), *args], env={})\n"
             ),
         }
@@ -348,7 +348,7 @@ class SubprocessImageTests(unittest.TestCase):
         source = (
             "import subprocess\n"
             "def _git_image():\n"
-            "    return '/usr/bin/git'\n"
+            "    return 'C:/Program Files/Git/cmd/git.exe'\n"
             "def _git_environment():\n"
             "    return {}\n"
             "def run(checkout):\n"
@@ -374,7 +374,7 @@ class SubprocessImageTests(unittest.TestCase):
     def test_dangerous_subcommand_still_denied_with_trusted_image(self):
         source = (
             "import subprocess\n"
-            "def _git_image():\n    return '/usr/bin/git'\n"
+            "def _git_image():\n    return 'C:/Program Files/Git/cmd/git.exe'\n"
             "subprocess.run([_git_image(), 'clone', 'x'], env={})\n"
         )
         self.assert_denied(source, "HELPER_GIT_UNMODELED")
@@ -382,7 +382,7 @@ class SubprocessImageTests(unittest.TestCase):
     def test_ambient_environment_is_still_denied(self):
         source = (
             "import os, subprocess\n"
-            "def _git_image():\n    return '/usr/bin/git'\n"
+            "def _git_image():\n    return 'C:/Program Files/Git/cmd/git.exe'\n"
             "subprocess.run([_git_image(), 'status'], env=os.environ)\n"
         )
         self.assert_denied(source, "HELPER_PROCESS_COMMAND")
@@ -390,7 +390,7 @@ class SubprocessImageTests(unittest.TestCase):
     def test_missing_environment_is_still_denied(self):
         source = (
             "import subprocess\n"
-            "def _git_image():\n    return '/usr/bin/git'\n"
+            "def _git_image():\n    return 'C:/Program Files/Git/cmd/git.exe'\n"
             "subprocess.run([_git_image(), 'status'])\n"
         )
         self.assert_denied(source, "HELPER_PROCESS_COMMAND")
@@ -436,33 +436,33 @@ class ResolverBindingTests(unittest.TestCase):
             "lambda": "_git_image = lambda: 'C:/evil/git.exe'\n",
             "assignment": "def real():\n    return 'x'\n_git_image = real\n",
             "duplicate-def": (
-                "def _git_image():\n    return '/usr/bin/git'\n"
+                "def _git_image():\n    return 'C:/Program Files/Git/cmd/git.exe'\n"
                 "def _git_image():\n    return 'C:/evil/git.exe'\n"
             ),
             "conditional-def": (
-                "if flag:\n    def _git_image():\n        return '/usr/bin/git'\n"
+                "if flag:\n    def _git_image():\n        return 'C:/Program Files/Git/cmd/git.exe'\n"
                 "else:\n    def _git_image():\n        return 'C:/evil/git.exe'\n"
             ),
             "rebind-after": (
-                "def _git_image():\n    return '/usr/bin/git'\n"
+                "def _git_image():\n    return 'C:/Program Files/Git/cmd/git.exe'\n"
                 "_git_image = other\n"
             ),
             "nested-def": (
-                "def outer():\n    def _git_image():\n        return '/usr/bin/git'\n"
+                "def outer():\n    def _git_image():\n        return 'C:/Program Files/Git/cmd/git.exe'\n"
                 "    return _git_image\n"
             ),
             "decorated": (
                 "def deco(f):\n    return f\n"
-                "@deco\ndef _git_image():\n    return '/usr/bin/git'\n"
+                "@deco\ndef _git_image():\n    return 'C:/Program Files/Git/cmd/git.exe'\n"
             ),
             "async-def": (
-                "async def _git_image():\n    return '/usr/bin/git'\n"
+                "async def _git_image():\n    return 'C:/Program Files/Git/cmd/git.exe'\n"
             ),
             "parameters": (
-                "def _git_image(which='/usr/bin/git'):\n    return which\n"
+                "def _git_image(which='C:/Program Files/Git/cmd/git.exe'):\n    return which\n"
             ),
             "global-decl": (
-                "def _git_image():\n    return '/usr/bin/git'\n"
+                "def _git_image():\n    return 'C:/Program Files/Git/cmd/git.exe'\n"
                 "def poke():\n    global _git_image\n"
             ),
             "try-finally": (
@@ -476,7 +476,7 @@ class ResolverBindingTests(unittest.TestCase):
                 self.assert_denied(self.launch(prelude))
 
     def test_resolver_returning_a_trusted_image_is_accepted(self):
-        source = self.launch("def _git_image():\n    return '/usr/bin/git'\n")
+        source = self.launch("def _git_image():\n    return 'C:/Program Files/Git/cmd/git.exe'\n")
         _helper_capabilities(
             "helper.py", source.encode("utf-8"), {"git-read-local"}, True
         )
@@ -593,7 +593,7 @@ class LaunchSubstanceTests(unittest.TestCase):
 
     TRUSTED = (
         "import subprocess\n"
-        "def _git_image():\n    return '/usr/bin/git'\n"
+        "def _git_image():\n    return 'C:/Program Files/Git/cmd/git.exe'\n"
         "def _git_environment():\n    return {}\n"
     )
 
