@@ -1,0 +1,28 @@
+name: Invalid PR merge checkout
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: windows-11-arm
+    steps:
+      - name: Check out canonical push head
+        if: ${{ github.event_name == 'push' }}
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.after }}
+          persist-credentials: false
+
+      - name: Verify canonical push head
+        env:
+          EXPECTED_HEAD: ${{ github.event.after }}
+        run: python .github/arm64-workflow-policy/verify_head.py "$env:EXPECTED_HEAD"
+
+      - name: Check out synthetic PR merge
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false

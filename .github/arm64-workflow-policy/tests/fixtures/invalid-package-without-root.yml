@@ -1,0 +1,23 @@
+name: Invalid package transaction root
+
+on:
+  push:
+
+jobs:
+  check:
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.after }}
+          persist-credentials: false
+
+      - name: Verify canonical push head
+        env:
+          EXPECTED_HEAD: ${{ github.event.after }}
+        run: python .github/arm64-workflow-policy/verify_head.py "$env:EXPECTED_HEAD"
+
+      - run: pacman --noconfirm -Syu
+
+      - run: |
+          makepkg --noconfirm

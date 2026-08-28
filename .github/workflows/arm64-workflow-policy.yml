@@ -1,0 +1,149 @@
+name: ARM64 workflow policy
+
+on:
+  push:
+    paths:
+      - .github/workflows/**
+      - .github/arm64-workflow-policy/**
+      - .github/arm64-workflow-locks/**
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - synchronize
+    paths:
+      - .github/workflows/**
+      - .github/arm64-workflow-policy/**
+      - .github/arm64-workflow-locks/**
+
+permissions:
+  contents: read
+
+jobs:
+  push-policy:
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out canonical push head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.after }}
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve canonical push range
+        id: push-range
+        env:
+          EVENT_BEFORE: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.event.after }}
+        run: |
+          test "$(git -C candidate rev-parse HEAD)" = "$HEAD_SHA"
+          if test "$EVENT_BEFORE" = "0000000000000000000000000000000000000000"; then
+            BASE_SHA="$(git -C candidate rev-parse "$HEAD_SHA^")"
+          else
+            BASE_SHA="$EVENT_BEFORE"
+          fi
+          test "$(git -C candidate rev-parse "$BASE_SHA^{commit}")" = "$BASE_SHA"
+          echo "base-sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Check out prior policy source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ steps.push-range.outputs.base-sha }}
+          path: policy-source
+          persist-credentials: false
+
+      - name: Verify prior policy source
+        env:
+          BASE_SHA: ${{ steps.push-range.outputs.base-sha }}
+        run: test "$(git -C policy-source rev-parse HEAD)" = "$BASE_SHA"
+
+      - name: Run focused policy tests
+        run: |
+          test_root=policy-source
+          if test ! -f "$test_root/.github/arm64-workflow-policy/validate.py"; then
+            test_root=candidate
+          fi
+          python3 -m unittest discover \
+            -s "$test_root/.github/arm64-workflow-policy/tests" \
+            -v
+
+      - name: Validate changed policy surfaces
+        env:
+          BASE_SHA: ${{ steps.push-range.outputs.base-sha }}
+          HEAD_SHA: ${{ github.event.after }}
+        run: |
+          validator=policy-source/.github/arm64-workflow-policy/validate.py
+          if test ! -f "$validator"; then
+            validator=candidate/.github/arm64-workflow-policy/validate.py
+          fi
+          python3 "$validator" changes \
+            --repository candidate \
+            --base-sha "$BASE_SHA" \
+            --head-sha "$HEAD_SHA"
+
+  same-repository-pr-policy:
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out canonical policy source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: policy-source
+          persist-credentials: false
+
+      - name: Check out exact same-repository PR head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact same-repository PR head
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          test "$(git -C policy-source rev-parse HEAD)" = "$BASE_SHA"
+          test "$(git -C candidate rev-parse HEAD)" = "$HEAD_SHA"
+
+      - name: Validate changed policy surfaces
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          validator=policy-source/.github/arm64-workflow-policy/validate.py
+          if test ! -f "$validator"; then
+            validator=candidate/.github/arm64-workflow-policy/validate.py
+          fi
+          python3 "$validator" changes \
+            --repository candidate \
+            --base-sha "$BASE_SHA" \
+            --head-sha "$HEAD_SHA"
+
+      - name: Run focused canonical policy tests
+        run: |
+          test_root=policy-source
+          if test ! -f "$test_root/.github/arm64-workflow-policy/validate.py"; then
+            test_root=candidate
+          fi
+          python3 -m unittest discover \
+            -s "$test_root/.github/arm64-workflow-policy/tests" \
+            -v
+
+  reject-fork-pr:
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Reject untrusted campaign workflow changes
+        run: |
+          echo "::error::ARM64 campaign workflow changes require a same-repository PR head"
+          exit 1

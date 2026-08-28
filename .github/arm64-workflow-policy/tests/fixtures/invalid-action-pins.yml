@@ -1,0 +1,30 @@
+name: Invalid Action pins
+
+on:
+  push:
+
+jobs:
+  check:
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.after }}
+          persist-credentials: false
+
+      - name: Verify canonical push head
+        env:
+          EXPECTED_HEAD: ${{ github.event.after }}
+        run: python .github/arm64-workflow-policy/verify_head.py "$env:EXPECTED_HEAD"
+
+      - uses: al-cheb/configure-pagefile-action@a3b6ebd6b634da88790d9c58d4b37a7f4a7b8708
+
+      - uses: ./.github/actions/unreviewed
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arm64-packages-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.event.after }}
+          path: artifacts/*.pkg.tar.zst
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: false
