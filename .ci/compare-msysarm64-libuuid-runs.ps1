@@ -61,7 +61,7 @@ function Test-EvidenceSeal {
     $componentRoot = Split-Path -Parent $SealPath
     $sealValue = (Get-Content -LiteralPath $SealPath -Raw).Trim()
     if ($sealValue -notmatch
-        '^([0-9a-f]{64})  evidence-manifest\.sha256$') {
+        '^([0-9a-f]{64})(?:  | \*)evidence-manifest\.sha256$') {
         throw "Invalid evidence seal format: $SealPath"
     }
     $manifestHash = $Matches[1]
@@ -72,7 +72,7 @@ function Test-EvidenceSeal {
         throw "Evidence manifest seal mismatch: $SealPath"
     }
     foreach ($line in Get-Content -LiteralPath $manifestPath) {
-        if ($line -notmatch '^([0-9a-f]{64})  (.+)$') {
+        if ($line -notmatch '^([0-9a-f]{64})(?:  | \*)(.+)$') {
             throw "Invalid evidence manifest line in $manifestPath`: $line"
         }
         $expectedHash = $Matches[1]
