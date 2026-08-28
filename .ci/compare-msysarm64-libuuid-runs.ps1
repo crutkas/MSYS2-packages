@@ -475,6 +475,7 @@ function Get-RunBundle {
         'build/lifecycle/corruption-recovery-imports.tsv',
         'build/lifecycle/corruption-recovery-pseudo-relocs.tsv',
         'build/lifecycle/input-snapshot.sha256',
+        'build/lifecycle/input-snapshot.seal',
         'build/lifecycle/path-scan.json'
     )
     $privateDeterministic = [ordered]@{}
@@ -496,25 +497,25 @@ function Get-RunBundle {
     $nativeRoot = $extractPaths['MSYS-libuuid-native-attestation']
     $nativeSeals = @(Get-ChildItem -LiteralPath $nativeRoot -Recurse -File `
         -Filter 'evidence.seal')
-    $attestationPaths = @(Get-ChildItem -LiteralPath $nativeRoot -Recurse `
-        -File -Filter 'process-attestation.json')
-    $modulePaths = @(Get-ChildItem -LiteralPath $nativeRoot -Recurse -File `
-        -Filter 'loaded-modules.tsv')
-    $nativePathScans = @(Get-ChildItem -LiteralPath $nativeRoot -Recurse `
-        -File -Filter 'path-scan.json')
-    if ($nativeSeals.Count -ne 1 -or
-        $attestationPaths.Count -ne 1 -or
-        $modulePaths.Count -ne 1 -or
-        $nativePathScans.Count -ne 1) {
+    if ($nativeSeals.Count -ne 1) {
         throw "$Role native attestation is incomplete"
     }
     $nativeSeal = $nativeSeals[0]
+    $sealedNativeRoot = Split-Path -Parent $nativeSeal.FullName
+    if ([IO.Path]::GetFullPath($sealedNativeRoot) -ne
+        [IO.Path]::GetFullPath($nativeRoot)) {
+        throw "$Role native artifact root is not the sealed root"
+    }
     $verifiedNativeSeal = Test-EvidenceSeal `
         -SealPath $nativeSeal.FullName
-    $attestationPath = $attestationPaths[0]
-    $modulePath = $modulePaths[0]
+    $attestationPath = Get-Item -LiteralPath (
+        Join-Path $sealedNativeRoot 'process-attestation.json')
+    $modulePath = Get-Item -LiteralPath (
+        Join-Path $sealedNativeRoot 'loaded-modules.tsv')
+    $nativePathScanPath = Get-Item -LiteralPath (
+        Join-Path $sealedNativeRoot 'path-scan.json')
     $nativePathScan = Get-Content `
-        -LiteralPath $nativePathScans[0].FullName -Raw |
+        -LiteralPath $nativePathScanPath.FullName -Raw |
         ConvertFrom-Json
     if ($nativePathScan.scanner_sha256 -ne $script:expectedScannerSha256 -or
         $nativePathScan.result -ne 'pass' -or

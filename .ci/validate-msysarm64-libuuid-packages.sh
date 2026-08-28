@@ -334,6 +334,7 @@ pwsh.exe \
     host-db-files.sha256 \
     host-db-snapshot.txt \
     input-snapshot.sha256 \
+    input-snapshot.seal \
     package-state.txt \
     pacman.log \
     path-scan.json \

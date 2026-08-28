@@ -277,7 +277,7 @@ function Invoke-PathScan {
         Get-PathVariants -Path $_
     } | Sort-Object -Unique)
     $genericPattern =
-        '(?:[A-Z]:(?:\\+|/)(?:Users|a)(?:\\+|/)|/(?:cygdrive/[a-z]|[a-z])/(?:Users|a)/)'
+        '(?:[A-Z]:(?:\\+|/)(?:Users|a)(?:\\+|/)|/(?:cygdrive/[a-z]|[a-z])/(?:Users|a)/|/(?:tmp|var/tmp|home)/)'
     $findings = [Collections.Generic.List[object]]::new()
     [long]$totalBytes = 0
     foreach ($file in $files) {
@@ -363,6 +363,13 @@ if ($SelfTest) {
                 [Text.Encoding]::ASCII.GetBytes('/d/a/project/private') +
                 @(0, 0, 0, 0)))
         [IO.File]::WriteAllBytes(
+            (Join-Path $testRoot 'msys-logical-alias.bin'),
+            [byte[]](
+                @(0, 5, 0) +
+                [Text.Encoding]::ASCII.GetBytes(
+                   '/tmp/libuuid-private/generated.obj') +
+                @(0, 7, 0)))
+        [IO.File]::WriteAllBytes(
             (Join-Path $testRoot 'explicit-root.unknown'),
             [byte[]](
                 @(0, 17, 0) +
@@ -384,9 +391,9 @@ if ($SelfTest) {
             -Forbidden @('Q:\sealed\private') `
             -ReportPath $report `
             -AllowLeaks
-        if ($testResult.files_enumerated -ne 7 -or
-            $testResult.files_scanned -ne 7 -or
-            $testResult.leak_count -lt 6 -or
+        if ($testResult.files_enumerated -ne 8 -or
+            $testResult.files_scanned -ne 8 -or
+            $testResult.leak_count -lt 7 -or
             @($testResult.findings.encoding | Where-Object {
                 $_ -eq 'ascii'
             }).Count -lt 4 -or
