@@ -210,6 +210,42 @@ MSYS=winsymlinks:sys pacman_root -U \
   "${runtime_archives[0]}" "${devel_archives[0]}"
 validate_install first-install
 
+corrupt_file="${key_files[1]}"
+corrupt_sha256="$(
+  sha256sum "${transaction_root}${corrupt_file}" | awk '{ print $1 }'
+)"
+rm -f "${transaction_root}${corrupt_file}"
+[[ ! -e "${transaction_root}${corrupt_file}" ]]
+set +e
+pacman_root -Qk "${devel_name}" \
+  > "${evidence_dir}/corruption-qk.txt" 2>&1
+corruption_rc=$?
+set -e
+[[ "${corruption_rc}" -ne 0 ]]
+grep -F '1 missing file' "${evidence_dir}/corruption-qk.txt"
+sed -i \
+  -e "s|${transaction_root}|<transaction-root>|g" \
+  "${evidence_dir}/corruption-qk.txt"
+MSYS=winsymlinks:sys pacman_root -U \
+  "${runtime_archives[0]}" "${devel_archives[0]}"
+[[ "$(
+  sha256sum "${transaction_root}${corrupt_file}" | awk '{ print $1 }'
+)" == "${corrupt_sha256}" ]]
+printf '%s  %s\n' \
+  "${corrupt_sha256}" \
+  "${corrupt_file}" \
+  > "${evidence_dir}/corruption-recovery-file.sha256"
+validate_install corruption-recovery
+diff -u \
+  "${report_root}/first-install/summary.tsv" \
+  "${report_root}/corruption-recovery/summary.tsv"
+diff -u \
+  "${report_root}/first-install/imports.tsv" \
+  "${report_root}/corruption-recovery/imports.tsv"
+diff -u \
+  "${report_root}/first-install/pseudo-relocs.tsv" \
+  "${report_root}/corruption-recovery/pseudo-relocs.tsv"
+
 pacman_root -R "${devel_name}" "${runtime_name}"
 for package in "${runtime_name}" "${devel_name}"; do
   ! pacman_root -Q "${package}" > /dev/null 2>&1
@@ -246,6 +282,15 @@ cp \
   "${report_root}/first-install/pseudo-relocs.tsv" \
   "${evidence_dir}/first-install-pseudo-relocs.tsv"
 cp \
+  "${report_root}/corruption-recovery/summary.tsv" \
+  "${evidence_dir}/corruption-recovery-summary.tsv"
+cp \
+  "${report_root}/corruption-recovery/imports.tsv" \
+  "${evidence_dir}/corruption-recovery-imports.tsv"
+cp \
+  "${report_root}/corruption-recovery/pseudo-relocs.tsv" \
+  "${evidence_dir}/corruption-recovery-pseudo-relocs.tsv"
+cp \
   "${report_root}/reinstall/summary.tsv" \
   "${evidence_dir}/reinstall-summary.tsv"
 cp \
@@ -260,18 +305,28 @@ sed \
   -e "s|${toolchain_dir}|<toolchain-inputs>|g" \
   "${transaction_root}/var/log/pacman.log" \
   > "${evidence_dir}/pacman.log"
-if grep -IRF \
-    -e "${transaction_root}" \
-    -e "${toolchain_dir}" \
-    -e "${PWD}" \
-    "${evidence_dir}"; then
-  echo 'private path leaked into lifecycle evidence' >&2
-  exit 1
-fi
-printf 'private-path-leaks\t0\n' > "${evidence_dir}/path-scan.tsv"
+path_scanner="$(
+  cd "$(dirname "${BASH_SOURCE[0]}")"
+  pwd
+)/scan-msysarm64-libuuid-private-paths.ps1"
+test -f "${path_scanner}"
+pwsh.exe \
+  -NoLogo \
+  -NoProfile \
+  -NonInteractive \
+  -ExecutionPolicy Bypass \
+  -File "$(cygpath -aw "${path_scanner}")" \
+  -Paths "$(cygpath -aw "${evidence_dir}")" \
+  -ForbiddenPaths "$(cygpath -aw "${transaction_root}")" \
+  -OutputPath "$(cygpath -aw "${evidence_dir}/path-scan.json")"
 (
   cd "${evidence_dir}"
   sha256sum \
+    corruption-qk.txt \
+    corruption-recovery-file.sha256 \
+    corruption-recovery-imports.tsv \
+    corruption-recovery-pseudo-relocs.tsv \
+    corruption-recovery-summary.tsv \
     first-install-imports.tsv \
     first-install-pseudo-relocs.tsv \
     first-install-summary.tsv \
@@ -281,7 +336,7 @@ printf 'private-path-leaks\t0\n' > "${evidence_dir}/path-scan.tsv"
     input-snapshot.sha256 \
     package-state.txt \
     pacman.log \
-    path-scan.tsv \
+    path-scan.json \
     reinstall-imports.tsv \
     reinstall-pseudo-relocs.tsv \
     reinstall-summary.tsv \

@@ -512,6 +512,15 @@ Write-Utf8NoBom -Path (Join-Path $EvidenceDirectory 'base-input.sha256') `
 Copy-Item -LiteralPath $privatePacmanLog `
     -Destination (Join-Path $EvidenceDirectory 'pacman.log')
 
+$pathScanner = Join-Path `
+    $PSScriptRoot 'scan-msysarm64-libuuid-private-paths.ps1'
+$heldPathRegression = Join-Path `
+    $PSScriptRoot 'test-msysarm64-libuuid-held-path-leaks.ps1'
+& $heldPathRegression `
+    -ScannerPath $pathScanner `
+    -EvidencePath (Join-Path `
+        $EvidenceDirectory 'held-release-path-regression.json')
+
 $summary = [ordered]@{
     schema = 1
     base_name = $baseAsset.Name
@@ -533,20 +542,16 @@ $summary = [ordered]@{
     ($summary | ConvertTo-Json -Depth 4),
     [Text.UTF8Encoding]::new($false))
 
-$privatePattern =
-    '(?im)([A-Za-z]:[\\/](?:a|Users)[\\/]|/(?:tmp|cygdrive)/|/[a-z]/a/)'
-foreach ($file in Get-ChildItem -LiteralPath $EvidenceDirectory -File) {
-    $bytes = [IO.File]::ReadAllBytes($file.FullName)
-    if ($bytes -contains 0) {
-        continue
-    }
-    if ([Text.Encoding]::UTF8.GetString($bytes) -match $privatePattern) {
-        throw "Private path leaked into root evidence: $($file.Name)"
-    }
-}
-Write-Utf8NoBom `
-    -Path (Join-Path $EvidenceDirectory 'path-scan.tsv') `
-    -Lines @("private-path-leaks`t0")
+& $pathScanner -SelfTest
+& $pathScanner `
+    -Paths @($EvidenceDirectory) `
+    -ForbiddenPaths @(
+        $RootPath,
+        $inputRoot,
+        $EvidenceDirectory,
+        $env:RUNNER_TEMP
+    ) `
+    -OutputPath (Join-Path $EvidenceDirectory 'path-scan.json')
 
 $manifestPath = Join-Path $EvidenceDirectory 'evidence-manifest.sha256'
 $sealPath = Join-Path $EvidenceDirectory 'evidence.seal'

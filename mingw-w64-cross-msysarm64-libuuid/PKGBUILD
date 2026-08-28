@@ -58,8 +58,8 @@ source=(
 sha256sums=(
   'd78b37a66f5922d70edf3bdfb01a6b33d34ed3c3cafd6628203b2a2b67c8e8b3'
   'f6954765c98b956d1006e14e43ee9ce14b423e91397e251d978a6d2d5947cbd0'
-  '08f96e5c3b58f1fbfe1d1e6ecf773f58444e41de2e96e0343de432318737ee50'
-  '5b38e2904fde8db2c58813b1bbd30fec792fff2c35041a3b19e047dd6d1a7514'
+  'e7bd05b96738bbb35e9f26a7935f4580b4c7735d7b0c497274fef84def5caa29'
+  '6bb3f6495f332fa3c9acd4e8da1a3d677ae543fbb5badaf3c8cd09f51ebf8d09'
   'a01aa20d8af9ebbc436beedb9974cd5923be2d1e95eb60df60ef47742982e779'
   '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9'
 )
@@ -218,9 +218,9 @@ build() {
   export STRIP="/opt/bin/${_target}-strip"
   export WINDRES="/opt/bin/${_target}-windres"
   export CC_FOR_BUILD=/usr/bin/gcc
-  export CFLAGS="-O2 -g -pipe ${_prefix_map}"
+  export CFLAGS="-O2 -g0 -pipe ${_prefix_map}"
   export CPPFLAGS="-D__USE_LINUX_IOCTL_DEFS"
-  export LDFLAGS="-Wl,--enable-auto-import -Wl,--no-insert-timestamp"
+  export LDFLAGS="-Wl,--enable-auto-import -Wl,--no-insert-timestamp -Wl,--strip-debug"
   export lt_cv_deplibs_check_method=pass_all
 
   (

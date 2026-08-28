@@ -116,21 +116,6 @@ function Assert-SafeArchive {
     }
 }
 
-function Get-PathVariants {
-    param([Parameter(Mandatory = $true)][string]$Path)
-
-    $full = [IO.Path]::GetFullPath($Path).TrimEnd('\')
-    $forward = $full.Replace('\', '/')
-    $drive = $forward.Substring(0, 1).ToLowerInvariant()
-    $withoutDrive = $forward.Substring(2)
-    return @(
-        $full,
-        $forward,
-        "/$drive$withoutDrive",
-        "/cygdrive/$drive$withoutDrive"
-    ) | Sort-Object -Unique
-}
-
 foreach ($path in @($OutputDirectory, $EvidenceDirectory)) {
     if (Test-Path -LiteralPath $path) {
         Remove-Item -LiteralPath $path -Recurse -Force
@@ -140,7 +125,8 @@ New-Item -ItemType Directory -Force -Path `
     $OutputDirectory,
     $EvidenceDirectory,
     (Join-Path $EvidenceDirectory 'lifecycle'),
-    (Join-Path $EvidenceDirectory 'package-extract') |
+    (Join-Path $EvidenceDirectory 'package-extract'),
+    (Join-Path $EvidenceDirectory 'package-mtree') |
     Out-Null
 
 if (Test-Path -LiteralPath $packageDirectory) {
@@ -182,6 +168,8 @@ $packagePosix = Convert-ToPrivatePosix -Path $packageDirectory
 $outputPosix = Convert-ToPrivatePosix -Path $OutputDirectory
 $lifecyclePosix = Convert-ToPrivatePosix `
     -Path (Join-Path $EvidenceDirectory 'lifecycle')
+$mtreePosix = Convert-ToPrivatePosix `
+    -Path (Join-Path $EvidenceDirectory 'package-mtree')
 $canonicalizerPosix = Convert-ToPrivatePosix `
     -Path (Join-Path $SourceRoot '.ci\canonicalize-packages.sh')
 $lifecycleScriptPosix = Convert-ToPrivatePosix `
@@ -194,6 +182,7 @@ export SOURCE_DATE_EPOCH=1720080203
 package=$(Quote-Bash $packagePosix)
 output=$(Quote-Bash $outputPosix)
 lifecycle=$(Quote-Bash $lifecyclePosix)
+mtree=$(Quote-Bash $mtreePosix)
 canonicalizer=$(Quote-Bash $canonicalizerPosix)
 lifecycle_script=$(Quote-Bash $lifecycleScriptPosix)
 cd "`$package"
@@ -209,6 +198,15 @@ LIBUUID_TRANSACTION_EVIDENCE_DIR="`$lifecycle" \
   bash "`$lifecycle_script"
 mkdir -p "`$output"
 cp ./*.pkg.tar.zst "`$output/"
+for archive in "`$output/"*.pkg.tar.zst; do
+  name=`$(basename "`$archive")
+  bsdtar -xOf "`$archive" .MTREE > "`$mtree/`$name.MTREE"
+  test -s "`$mtree/`$name.MTREE"
+done
+(
+  cd "`$mtree"
+  sha256sum ./*.MTREE > package-mtree.sha256
+)
 sha256sum "`$output/"*.pkg.tar.zst
 "@
 
@@ -273,51 +271,58 @@ $evidenceBuildReport = Join-Path $EvidenceDirectory 'build-report'
 Copy-Item -LiteralPath $buildReport `
     -Destination $evidenceBuildReport -Recurse
 
-$forbidden = [Collections.Generic.List[string]]::new()
-foreach ($path in @(
-    $RootPath,
-    $SourceRoot,
-    $sourcePackageDirectory,
-    $packageDirectory,
-    $OutputDirectory,
-    $EvidenceDirectory,
-    $env:GITHUB_WORKSPACE,
-    $env:RUNNER_TEMP
-) | Where-Object { $_ }) {
-    foreach ($variant in Get-PathVariants -Path $path) {
-        if (-not $forbidden.Contains($variant)) {
-            $forbidden.Add($variant)
+$pathScanner = Join-Path `
+    $SourceRoot '.ci\scan-msysarm64-libuuid-private-paths.ps1'
+$binaryRoots = @(
+    (Join-Path $packageDirectory 'src\build-aarch64-pc-msys'),
+    (Join-Path $packageDirectory 'src\stage-aarch64-pc-msys'),
+    (Join-Path $packageDirectory 'src\libuuid-report'),
+    (Join-Path $packageDirectory 'src\libuuid-check-report')
+)
+foreach ($root in $binaryRoots) {
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+        throw "Expected emitted-output root is absent: $root"
+    }
+}
+$binaryArtifacts = @($binaryRoots | ForEach-Object {
+    Get-ChildItem -LiteralPath $_ -Recurse -File |
+        Where-Object {
+            $_.Extension -in @('.a', '.dll', '.exe', '.o', '.obj')
         }
-    }
+} | Sort-Object FullName -Unique)
+if ($binaryArtifacts.Count -lt 31) {
+    throw "Emitted binary coverage is unexpectedly small: $(
+        $binaryArtifacts.Count)"
 }
-
-$leaks = [Collections.Generic.List[string]]::new()
-foreach ($file in Get-ChildItem -LiteralPath $EvidenceDirectory -Recurse -File) {
-    $bytes = [IO.File]::ReadAllBytes($file.FullName)
-    if ($bytes -contains 0) {
-        continue
-    }
-    $text = [Text.Encoding]::UTF8.GetString($bytes)
-    foreach ($value in $forbidden) {
-        if ($text.Contains($value, [StringComparison]::OrdinalIgnoreCase)) {
-            $relative = $file.FullName.Substring($EvidenceDirectory.Length + 1).
-                Replace('\', '/')
-            $leaks.Add("$relative`t$value")
-        }
-    }
-    if ($text -match '(?im)(^|[\s''"])/(tmp|cygdrive)/' -or
-        $text -match '(?im)(^|[\s''"])/[a-z]/a/') {
-        $relative = $file.FullName.Substring($EvidenceDirectory.Length + 1).
-            Replace('\', '/')
-        $leaks.Add("$relative`t<generic-private-path>")
-    }
-}
-if ($leaks.Count -ne 0) {
-    throw "Private paths leaked into evidence: $($leaks -join '; ')"
-}
+$coverageLines = @($binaryArtifacts | ForEach-Object {
+    $relative = $_.FullName.Substring($packageDirectory.Length + 1).
+        Replace('\', '/')
+    $hash = (Get-FileHash -Algorithm SHA256 $_.FullName).
+        Hash.ToLowerInvariant()
+    "$hash  $relative"
+})
 Write-Utf8NoBom `
-    -Path (Join-Path $EvidenceDirectory 'path-scan.tsv') `
-    -Lines @("private-path-leaks`t0")
+    -Path (Join-Path $EvidenceDirectory 'binary-coverage.sha256') `
+    -Lines $coverageLines
+$scanPaths = @($EvidenceDirectory, $OutputDirectory) +
+    @($binaryArtifacts.FullName)
+$forbiddenPaths = @(
+    @(
+        $RootPath,
+        $SourceRoot,
+        $sourcePackageDirectory,
+        $packageDirectory,
+        $OutputDirectory,
+        $EvidenceDirectory,
+        $env:GITHUB_WORKSPACE,
+        $env:RUNNER_TEMP
+    ) | Where-Object { $_ }
+)
+& $pathScanner -SelfTest
+& $pathScanner `
+    -Paths $scanPaths `
+    -ForbiddenPaths $forbiddenPaths `
+    -OutputPath (Join-Path $EvidenceDirectory 'path-scan.json')
 
 $summary = [ordered]@{
     schema = 1
@@ -329,6 +334,11 @@ $summary = [ordered]@{
             size = $_.Length
             sha256 = (Get-FileHash -Algorithm SHA256 $_.FullName).
                 Hash.ToLowerInvariant()
+            mtree_sha256 = (
+                Get-FileHash -Algorithm SHA256 (
+                    Join-Path `
+                        $EvidenceDirectory "package-mtree\$($_.Name).MTREE")
+            ).Hash.ToLowerInvariant()
         }
     })
 }

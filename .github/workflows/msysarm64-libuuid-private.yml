@@ -8,10 +8,14 @@ on:
       - .ci/build-msysarm64-libuuid-private.ps1
       - .ci/canonicalize-packages.sh
       - .ci/check-msysarm64-libuuid-shared-root.ps1
+      - .ci/check-msysarm64-libuuid-commit-trailers.ps1
       - .ci/compare-msysarm64-libuuid-runs.ps1
+      - .ci/finalize-msysarm64-libuuid-evidence.ps1
       - .ci/install-msysarm64-libuuid-toolchain.ps1
       - .ci/msysarm64-libuuid-host-packages.sha256
       - .ci/run-msysarm64-libuuid-native-smoke.ps1
+      - .ci/scan-msysarm64-libuuid-private-paths.ps1
+      - .ci/test-msysarm64-libuuid-held-path-leaks.ps1
       - .ci/validate-msysarm64-libuuid-packages.sh
       - .github/workflows/msysarm64-libuuid-private.yml
       - mingw-w64-cross-msysarm64-libuuid/**
@@ -22,10 +26,14 @@ on:
       - .ci/build-msysarm64-libuuid-private.ps1
       - .ci/canonicalize-packages.sh
       - .ci/check-msysarm64-libuuid-shared-root.ps1
+      - .ci/check-msysarm64-libuuid-commit-trailers.ps1
       - .ci/compare-msysarm64-libuuid-runs.ps1
+      - .ci/finalize-msysarm64-libuuid-evidence.ps1
       - .ci/install-msysarm64-libuuid-toolchain.ps1
       - .ci/msysarm64-libuuid-host-packages.sha256
       - .ci/run-msysarm64-libuuid-native-smoke.ps1
+      - .ci/scan-msysarm64-libuuid-private-paths.ps1
+      - .ci/test-msysarm64-libuuid-held-path-leaks.ps1
       - .ci/validate-msysarm64-libuuid-packages.sh
       - .github/workflows/msysarm64-libuuid-private.yml
       - mingw-w64-cross-msysarm64-libuuid/**
@@ -54,9 +62,19 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          fetch-depth: 0
           path: source
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify owned commit trailers
+        shell: pwsh
+        working-directory: source
+        run: |
+          .\.ci\check-msysarm64-libuuid-commit-trailers.ps1 `
+            -BaseSha '42f1fb808363203a83c7f6f935ab7e4bdffbe127' `
+            -ExpectedHeadSha '${{ github.event.pull_request.head.sha || github.sha }}' `
+            -EvidenceDirectory '${{ runner.temp }}\libuuid-private-evidence\commit'
 
       - name: Seal shared runner root before build
         shell: pwsh
@@ -91,6 +109,16 @@ jobs:
           .\source\.ci\check-msysarm64-libuuid-shared-root.ps1 `
             -Phase After `
             -EvidenceDirectory '${{ runner.temp }}\libuuid-private-evidence\shared'
+
+      - name: Finalize private evidence seal
+        shell: pwsh
+        run: |
+          .\source\.ci\finalize-msysarm64-libuuid-evidence.ps1 `
+            -EvidenceDirectory '${{ runner.temp }}\libuuid-private-evidence' `
+            -ForbiddenPaths @(
+              '${{ runner.temp }}',
+              '${{ github.workspace }}'
+            )
 
       - name: Upload canonical packages
         if: ${{ success() }}
@@ -136,6 +164,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          fetch-depth: 0
           path: source
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}

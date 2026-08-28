@@ -27,8 +27,10 @@ Every emitted PE is also checked by the exact producer scanner pinned from
 fixed-binutils commit `3356eec1411983cc252b04afac32bca5f3b8d824`.
 Pseudo-reloc flags 12, 21, legacy v1, and unknown values fail closed. Fork CI
 installs the full toolchain and both packages into an isolated root, removes
-and reinstalls the libuuid pair, then runs both smoke executables natively on
-a Windows 11 ARM runner.
+and reinstalls the libuuid pair, then can run both smoke executables natively
+on a Windows 11 ARM runner. Native evidence produced with the held a527 runtime
+is diagnostic only; release admission requires a rerun with the corrected
+runtime.
 
 The devel package intentionally does not ship util-linux's static
 `libuuid.a`. The target w32api package already owns that path for its Windows
@@ -65,3 +67,7 @@ $env:MSYS = 'winsymlinks:sys'
 Validate archive entry paths and SHA-256 values before the transaction. A
 release is consumable by APR only when its notes identify immutable base,
 host, target, source, scanner, and action inputs plus downloadable evidence.
+The frozen `2.40.2-1` release and denied commit
+`986089dfe6f2c46ad9ad699b36a7d89c0a35f53e` are permanently noncanonical.
+The `2.40.2-2` successor is not consumable until a fresh independent audit
+explicitly admits a new immutable release.

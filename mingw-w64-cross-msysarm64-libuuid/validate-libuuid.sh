@@ -37,6 +37,14 @@ import_archive="${target_root}/usr/lib/libuuid.dll.a"
 pkgconfig="${target_root}/usr/lib/pkgconfig/uuid.pc"
 dynamic_smoke="${report_dir}/libuuid-smoke.exe"
 static_smoke="${report_dir}/libuuid-static-smoke.exe"
+smoke_source_root="$(dirname "${smoke_source}")"
+smoke_cflags=(
+  -O2
+  -g0
+  "-ffile-prefix-map=${smoke_source_root}=."
+  "-fdebug-prefix-map=${smoke_source_root}=."
+  "-fmacro-prefix-map=${smoke_source_root}=."
+)
 
 for tool in "${cc}" "${ar}" "${nm}" "${objcopy}" "${objdump}"; do
   [[ -x "${tool}" ]] || {
@@ -290,11 +298,13 @@ for archive in "${archives[@]}"; do
 done
 
 if ! "${cc}" \
+    "${smoke_cflags[@]}" \
     --sysroot="${target_sysroot}" \
     -I"${target_root}/usr/include" \
     -L"${target_root}/usr/lib" \
     -Wl,--no-insert-timestamp \
     -Wl,--no-undefined \
+    -Wl,--strip-debug \
     -Wl,-t \
     "${smoke_source}" \
     -luuid \
@@ -318,10 +328,12 @@ fi
 
 if [[ -n "${static_archive}" ]]; then
   if ! "${cc}" \
+      "${smoke_cflags[@]}" \
       --sysroot="${target_sysroot}" \
       -I"${target_root}/usr/include" \
       -Wl,--no-insert-timestamp \
       -Wl,--no-undefined \
+      -Wl,--strip-debug \
       -Wl,-t \
       "${smoke_source}" \
       "${static_archive}" \

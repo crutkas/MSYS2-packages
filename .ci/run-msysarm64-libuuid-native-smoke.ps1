@@ -596,6 +596,7 @@ $attestation = [ordered]@{
     schema = 1
     repository = $repository
     commit = $actualHeadSha
+    admission = 'diagnostic-a527-runtime'
     runner = $env:RUNNER_NAME
     processor = $arm64Processors[0].Name
     controller = $controller
@@ -622,19 +623,19 @@ Write-Utf8NoBom `
     -Path (Join-Path $evidenceDirectory 'input-snapshot.sha256') `
     -Lines @($inputManifest | Sort-Object)
 
-$privatePattern = '(?im)([A-Za-z]:[\\/](?:a|Users)[\\/]|/(?:tmp|cygdrive)/|/[a-z]/a/)'
-foreach ($file in Get-ChildItem -LiteralPath $evidenceDirectory -File) {
-    $bytes = [IO.File]::ReadAllBytes($file.FullName)
-    if ($bytes -contains 0) {
-        continue
-    }
-    if ([Text.Encoding]::UTF8.GetString($bytes) -match $privatePattern) {
-        throw "Private path leaked into native evidence: $($file.Name)"
-    }
-}
-Write-Utf8NoBom `
-    -Path (Join-Path $evidenceDirectory 'path-scan.tsv') `
-    -Lines @("private-path-leaks`t0")
+$pathScanner = Join-Path `
+    $sourceRoot '.ci\scan-msysarm64-libuuid-private-paths.ps1'
+& $pathScanner -SelfTest
+& $pathScanner `
+    -Paths @($libuuidRoot, $develRoot, $evidenceDirectory) `
+    -ForbiddenPaths @(
+        $work,
+        $ArtifactDirectory,
+        $evidenceDirectory,
+        $env:RUNNER_TEMP,
+        $env:GITHUB_WORKSPACE
+    ) `
+    -OutputPath (Join-Path $evidenceDirectory 'path-scan.json')
 
 $manifestPath = Join-Path $evidenceDirectory 'evidence-manifest.sha256'
 $sealPath = Join-Path $evidenceDirectory 'evidence.seal'

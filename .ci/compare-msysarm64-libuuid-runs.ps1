@@ -20,6 +20,26 @@ $ProgressPreference = 'SilentlyContinue'
 
 $repository = 'crutkas/MSYS2-packages'
 $apiRoot = "https://api.github.com/repos/$repository"
+$systemTar = Join-Path $env:SystemRoot 'System32\tar.exe'
+if (-not (Test-Path -LiteralPath $systemTar -PathType Leaf)) {
+    throw "Missing archive tool: $systemTar"
+}
+$sourceRoot = Split-Path -Parent $PSScriptRoot
+$currentHead = (git -C $sourceRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $currentHead -ne $ExpectedHeadSha) {
+    throw "Cross-run verifier head mismatch: $currentHead"
+}
+git -C $sourceRoot diff --quiet $ExpectedHeadSha -- `
+    '.ci/compare-msysarm64-libuuid-runs.ps1' `
+    '.ci/scan-msysarm64-libuuid-private-paths.ps1'
+if ($LASTEXITCODE -ne 0) {
+    throw 'Cross-run verifier or binary-safe scanner differs from expected head'
+}
+$scannerPath = Join-Path `
+    $PSScriptRoot 'scan-msysarm64-libuuid-private-paths.ps1'
+$expectedScannerSha256 = (
+    Get-FileHash -Algorithm SHA256 $scannerPath
+).Hash.ToLowerInvariant()
 $token = (& gh auth token).Trim()
 if ($LASTEXITCODE -ne 0 -or -not $token) {
     throw 'GitHub authentication is required to preserve Actions artifacts'
@@ -55,6 +75,101 @@ function Get-RelativePath {
     return $Path.Substring($Root.Length + 1).Replace('\', '/')
 }
 
+function Expand-SafeZip {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+
+    $root = [IO.Path]::GetFullPath($Destination).TrimEnd('\') + '\'
+    $seen = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::OrdinalIgnoreCase)
+    $archive = [IO.Compression.ZipFile]::OpenRead($Path)
+    try {
+        foreach ($entry in $archive.Entries) {
+            $normalized = $entry.FullName.Replace('\', '/')
+            if (-not $normalized -or
+                $normalized.StartsWith('/') -or
+                $normalized -match '^[A-Za-z]:' -or
+                $normalized.Split('/') -contains '..' -or
+                -not $seen.Add($normalized)) {
+                throw "Unsafe or duplicate ZIP entry: $normalized"
+            }
+            $unixMode = ($entry.ExternalAttributes -shr 16) -band 0xf000
+            if ($unixMode -eq 0xa000) {
+                throw "ZIP symlink entries are forbidden: $normalized"
+            }
+            $destinationPath = [IO.Path]::GetFullPath(
+                (Join-Path $Destination $normalized.Replace('/', '\')))
+            if (-not $destinationPath.StartsWith(
+                $root,
+                [StringComparison]::OrdinalIgnoreCase)) {
+                throw "ZIP entry escapes extraction root: $normalized"
+            }
+            if ($normalized.EndsWith('/')) {
+                New-Item -ItemType Directory -Force -Path $destinationPath |
+                    Out-Null
+                continue
+            }
+            $parent = Split-Path -Parent $destinationPath
+            New-Item -ItemType Directory -Force -Path $parent | Out-Null
+            $input = $entry.Open()
+            $output = [IO.File]::Open(
+                $destinationPath,
+                [IO.FileMode]::CreateNew,
+                [IO.FileAccess]::Write,
+                [IO.FileShare]::None)
+            try {
+                $input.CopyTo($output)
+            }
+            finally {
+                $output.Dispose()
+                $input.Dispose()
+            }
+        }
+    }
+    finally {
+        $archive.Dispose()
+    }
+}
+
+function Get-PackageMtree {
+    param(
+        [Parameter(Mandatory = $true)][string]$PackagePath,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+
+    $entries = @(& $script:systemTar -tf $PackagePath)
+    if ($LASTEXITCODE -ne 0 -or
+        @($entries | Where-Object { $_ -eq '.MTREE' }).Count -ne 1) {
+        throw "Package does not contain exactly one .MTREE: $PackagePath"
+    }
+    foreach ($entry in $entries) {
+        $normalized = $entry.Replace('\', '/')
+        if (-not $normalized -or
+            $normalized.StartsWith('/') -or
+            $normalized -match '^[A-Za-z]:' -or
+            $normalized.Split('/') -contains '..') {
+            throw "Unsafe package archive entry: $entry"
+        }
+    }
+    $links = @(& $script:systemTar -tvf $PackagePath |
+        Where-Object { $_ -match '^[lh]' })
+    if ($LASTEXITCODE -ne 0 -or $links.Count -ne 0) {
+        throw "Package links are forbidden: $PackagePath"
+    }
+    New-Item -ItemType Directory -Path $Destination | Out-Null
+    & $systemTar -xf $PackagePath -C $Destination .MTREE
+    if ($LASTEXITCODE -ne 0) {
+        throw "Cannot extract package .MTREE: $PackagePath"
+    }
+    $mtree = Join-Path $Destination '.MTREE'
+    if (-not (Test-Path -LiteralPath $mtree -PathType Leaf)) {
+        throw "Package .MTREE extraction is incomplete: $PackagePath"
+    }
+    return $mtree
+}
+
 function Test-EvidenceSeal {
     param([Parameter(Mandatory = $true)][string]$SealPath)
 
@@ -71,6 +186,7 @@ function Test-EvidenceSeal {
             Hash.ToLowerInvariant() -ne $manifestHash) {
         throw "Evidence manifest seal mismatch: $SealPath"
     }
+    $listedPaths = [Collections.Generic.List[string]]::new()
     foreach ($line in Get-Content -LiteralPath $manifestPath) {
         if ($line -notmatch '^([0-9a-f]{64})(?:  | \*)(.+)$') {
             throw "Invalid evidence manifest line in $manifestPath`: $line"
@@ -92,6 +208,23 @@ function Test-EvidenceSeal {
                 Hash.ToLowerInvariant() -ne $expectedHash) {
             throw "Evidence manifest entry mismatch: $relative"
         }
+        $canonicalRelative = $relative.Replace('\', '/')
+        if ($listedPaths.Contains($canonicalRelative)) {
+            throw "Duplicate evidence manifest entry: $canonicalRelative"
+        }
+        $listedPaths.Add($canonicalRelative)
+    }
+    $actualPaths = @(Get-ChildItem -LiteralPath $componentRoot -Recurse -File |
+        Where-Object {
+            $_.FullName -notin @($manifestPath, $SealPath)
+        } |
+        ForEach-Object {
+            Get-RelativePath -Root $componentRoot -Path $_.FullName
+        } |
+        Sort-Object)
+    if ((@($listedPaths | Sort-Object) -join "`n") -ne
+        ($actualPaths -join "`n")) {
+        throw "Evidence manifest coverage is incomplete: $SealPath"
     }
     return [ordered]@{
         seal_sha256 = (
@@ -170,7 +303,7 @@ function Get-RunBundle {
 
         $extractPath = Join-Path $ScratchRoot "$Role-$name"
         New-Item -ItemType Directory -Path $extractPath | Out-Null
-        [IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $extractPath)
+        Expand-SafeZip -Path $zipPath -Destination $extractPath
         $extractPaths[$name] = $extractPath
         $artifactRecords.Add([ordered]@{
             name = $name
@@ -187,25 +320,101 @@ function Get-RunBundle {
     if ($packages.Count -ne 2) {
         throw "$Role run contains $($packages.Count) package files"
     }
+    $evidenceRoot = $extractPaths['MSYS-libuuid-private-evidence']
     $packageRecords = @($packages | ForEach-Object {
+        $mtreeEvidence = Join-Path `
+            $evidenceRoot "build\package-mtree\$($_.Name).MTREE"
+        if (-not (Test-Path -LiteralPath $mtreeEvidence -PathType Leaf)) {
+            throw "$Role build evidence is missing $($_.Name).MTREE"
+        }
+        $mtreeExtract = Join-Path `
+            $ScratchRoot "$Role-mtree-$($_.BaseName)"
+        $actualMtree = Get-PackageMtree `
+            -PackagePath $_.FullName `
+            -Destination $mtreeExtract
+        $mtreeSha256 = (
+            Get-FileHash -Algorithm SHA256 $actualMtree
+        ).Hash.ToLowerInvariant()
+        if ((Get-FileHash -Algorithm SHA256 $mtreeEvidence).
+            Hash.ToLowerInvariant() -ne $mtreeSha256) {
+            throw "$Role package .MTREE evidence differs from package bytes"
+        }
         [ordered]@{
             name = $_.Name
             size = $_.Length
             sha256 = (Get-FileHash -Algorithm SHA256 $_.FullName).
                 Hash.ToLowerInvariant()
+            mtree_sha256 = $mtreeSha256
         }
     })
 
-    $evidenceRoot = $extractPaths['MSYS-libuuid-private-evidence']
-    $pathScans = @(Get-ChildItem -LiteralPath $evidenceRoot -Recurse -File `
-        -Filter 'path-scan.tsv')
-    if ($pathScans.Count -lt 3) {
+    $jsonPathScans = @(Get-ChildItem -LiteralPath $evidenceRoot -Recurse `
+        -File -Filter 'path-scan.json')
+    $expectedPathScans = @(
+        'path-scan.json',
+        'root/path-scan.json',
+        'build/path-scan.json',
+        'build/lifecycle/path-scan.json'
+    )
+    $actualPathScans = @($jsonPathScans | ForEach-Object {
+        Get-RelativePath -Root $evidenceRoot -Path $_.FullName
+    } | Sort-Object)
+    if (($actualPathScans -join "`n") -ne
+        (@($expectedPathScans | Sort-Object) -join "`n")) {
         throw "$Role private evidence is missing zero-leak reports"
     }
-    foreach ($scan in $pathScans) {
-        if ((Get-Content -LiteralPath $scan.FullName -Raw).Trim() -ne
-            "private-path-leaks`t0") {
-            throw "$Role private evidence contains a failed path scan"
+    foreach ($scan in $jsonPathScans) {
+        $result = Get-Content -LiteralPath $scan.FullName -Raw |
+            ConvertFrom-Json
+        if ($result.scanner_sha256 -ne $script:expectedScannerSha256 -or
+            $result.result -ne 'pass' -or $result.leak_count -ne 0 -or
+            $result.files_scanned -lt 1 -or
+            $result.files_enumerated -ne $result.files_scanned) {
+            throw "$Role private binary-safe path scan failed"
+        }
+    }
+    $heldRegressionPath = Join-Path `
+        $evidenceRoot 'root\held-release-path-regression.json'
+    $heldRegression = Get-Content -LiteralPath $heldRegressionPath -Raw |
+        ConvertFrom-Json
+    $expectedHeldHashes = @(
+        '425444b6744ee3897e44e1a7f2de1b1903506ff208fd40cd0a80c12589a885de',
+        '9b4e044699ff8779373efc8a070b6b5ac029f09b3621ecf9cd7bf47a9955c0eb'
+    )
+    if ($heldRegression.result -ne 'expected-rejection' -or
+        $heldRegression.scanner_sha256 -ne $script:expectedScannerSha256 -or
+        $heldRegression.files_enumerated -ne 45 -or
+        $heldRegression.files_scanned -ne 45 -or
+        $heldRegression.leak_count -ne 188 -or
+        $heldRegression.unique_leak_values -ne 20 -or
+        @($heldRegression.value_sha256).Count -ne 20 -or
+        (@($heldRegression.assets.sha256 | Sort-Object) -join "`n") -ne
+            (@($expectedHeldHashes | Sort-Object) -join "`n")) {
+        throw "$Role held-release path regression is not canonical"
+    }
+    foreach ($valueHash in $heldRegression.value_sha256) {
+        if ($valueHash -notmatch '^[0-9a-f]{64}$') {
+            throw "$Role held-release finding hash is malformed"
+        }
+    }
+
+    $buildSummary = Get-Content -LiteralPath (
+        Join-Path $evidenceRoot 'build\build-summary.json') -Raw |
+        ConvertFrom-Json
+    if ($buildSummary.commit -ne $script:ExpectedHeadSha -or
+        $buildSummary.package_count -ne 2 -or
+        @($buildSummary.packages).Count -ne 2) {
+        throw "$Role build summary identity is wrong"
+    }
+    foreach ($package in $packageRecords) {
+        $summaryRecord = @($buildSummary.packages | Where-Object {
+            $_.name -eq $package.name
+        })
+        if ($summaryRecord.Count -ne 1 -or
+            $summaryRecord[0].size -ne $package.size -or
+            $summaryRecord[0].sha256 -ne $package.sha256 -or
+            $summaryRecord[0].mtree_sha256 -ne $package.mtree_sha256) {
+            throw "$Role build summary differs for $($package.name)"
         }
     }
     $comparisons = @(Get-ChildItem -LiteralPath $evidenceRoot -Recurse -File `
@@ -219,8 +428,24 @@ function Get-RunBundle {
             ConvertFrom-Json).stable) {
         throw "$Role shared-root comparison is missing or unstable"
     }
-    $privateSeals = @(Get-ChildItem -LiteralPath $evidenceRoot -Recurse -File `
-        -Filter 'evidence.seal' | Sort-Object FullName | ForEach-Object {
+    $sealFiles = @(Get-ChildItem -LiteralPath $evidenceRoot -Recurse -File `
+        -Filter 'evidence.seal' | Sort-Object FullName)
+    $expectedSealPaths = @(
+        'evidence.seal',
+        'commit/evidence.seal',
+        'root/evidence.seal',
+        'build/evidence.seal',
+        'build/lifecycle/evidence.seal',
+        'shared/evidence.seal'
+    )
+    $actualSealPaths = @($sealFiles | ForEach-Object {
+        Get-RelativePath -Root $evidenceRoot -Path $_.FullName
+    } | Sort-Object)
+    if (($actualSealPaths -join "`n") -ne
+        (@($expectedSealPaths | Sort-Object) -join "`n")) {
+        throw "$Role private evidence component set is incomplete"
+    }
+    $privateSeals = @($sealFiles | ForEach-Object {
             $verified = Test-EvidenceSeal -SealPath $_.FullName
             [ordered]@{
                 path = Get-RelativePath `
@@ -231,18 +456,26 @@ function Get-RunBundle {
                 value = $verified.value
             }
         })
-    if ($privateSeals.Count -lt 3) {
-        throw "$Role private evidence is missing component seals"
-    }
     $deterministicSuffixes = @(
+        'commit/commit-trailers.json',
         'root/base-input.sha256',
         'root/host-packages.sha256',
         'root/target-packages.sha256',
         'root/source-inputs.sha256',
         'root/package-state.txt',
         'root/root-summary.json',
+        'root/path-scan.json',
+        'root/held-release-path-regression.json',
         'build/build-summary.json',
-        'build/lifecycle/input-snapshot.sha256'
+        'build/path-scan.json',
+        'build/package-mtree/package-mtree.sha256',
+        'build/lifecycle/corruption-qk.txt',
+        'build/lifecycle/corruption-recovery-file.sha256',
+        'build/lifecycle/corruption-recovery-summary.tsv',
+        'build/lifecycle/corruption-recovery-imports.tsv',
+        'build/lifecycle/corruption-recovery-pseudo-relocs.tsv',
+        'build/lifecycle/input-snapshot.sha256',
+        'build/lifecycle/path-scan.json'
     )
     $privateDeterministic = [ordered]@{}
     foreach ($suffix in $deterministicSuffixes) {
@@ -267,9 +500,12 @@ function Get-RunBundle {
         -File -Filter 'process-attestation.json')
     $modulePaths = @(Get-ChildItem -LiteralPath $nativeRoot -Recurse -File `
         -Filter 'loaded-modules.tsv')
+    $nativePathScans = @(Get-ChildItem -LiteralPath $nativeRoot -Recurse `
+        -File -Filter 'path-scan.json')
     if ($nativeSeals.Count -ne 1 -or
         $attestationPaths.Count -ne 1 -or
-        $modulePaths.Count -ne 1) {
+        $modulePaths.Count -ne 1 -or
+        $nativePathScans.Count -ne 1) {
         throw "$Role native attestation is incomplete"
     }
     $nativeSeal = $nativeSeals[0]
@@ -277,10 +513,22 @@ function Get-RunBundle {
         -SealPath $nativeSeal.FullName
     $attestationPath = $attestationPaths[0]
     $modulePath = $modulePaths[0]
+    $nativePathScan = Get-Content `
+        -LiteralPath $nativePathScans[0].FullName -Raw |
+        ConvertFrom-Json
+    if ($nativePathScan.scanner_sha256 -ne $script:expectedScannerSha256 -or
+        $nativePathScan.result -ne 'pass' -or
+        $nativePathScan.leak_count -ne 0 -or
+        $nativePathScan.files_scanned -lt 1 -or
+        $nativePathScan.files_enumerated -ne
+            $nativePathScan.files_scanned) {
+        throw "$Role native binary-safe path scan failed"
+    }
     $attestation = Get-Content -LiteralPath $attestationPath.FullName -Raw |
         ConvertFrom-Json
-    if (@($attestation.processes).Count -ne 2) {
-        throw "$Role native attestation does not contain two processes"
+    if ($attestation.admission -ne 'diagnostic-a527-runtime' -or
+        @($attestation.processes).Count -ne 2) {
+        throw "$Role native attestation status or process set is invalid"
     }
     foreach ($process in $attestation.processes) {
         if ($process.exit_code -ne 0 -or
@@ -378,6 +626,14 @@ function Get-RunBundle {
             native_inputs = $attestation.native_inputs
             scanner_tools = $attestation.scanner_tools
             custom_modules = @($customModuleRecords | Sort-Object process, module)
+            path_scan = [ordered]@{
+                scanner_sha256 = $nativePathScan.scanner_sha256
+                files_enumerated = $nativePathScan.files_enumerated
+                files_scanned = $nativePathScan.files_scanned
+                leak_count = $nativePathScan.leak_count
+                result = $nativePathScan.result
+                encodings = $nativePathScan.encodings
+            }
         }
     }
 }
@@ -419,6 +675,7 @@ $equality = [ordered]@{
     repository = $repository
     expected_head_sha = $ExpectedHeadSha
     packages_byte_identical = $true
+    package_mtree_byte_identical = $true
     deterministic_private_evidence_equal = $true
     native_process_module_semantics_equal = $true
     packages = $push.packages
@@ -431,6 +688,11 @@ $equalityPath = Join-Path $OutputDirectory 'cross-run-equality.json'
     [Text.UTF8Encoding]::new($false))
 
 Remove-Item -LiteralPath $scratch -Recurse -Force
+& $scannerPath -SelfTest
+& $scannerPath `
+    -Paths @($OutputDirectory) `
+    -ForbiddenPaths @() `
+    -OutputPath (Join-Path $OutputDirectory 'release-path-scan.json')
 $manifestPath = Join-Path $OutputDirectory 'evidence-manifest.sha256'
 $sealPath = Join-Path $OutputDirectory 'evidence.seal'
 $manifest = Get-ChildItem -LiteralPath $OutputDirectory -File |
