@@ -26,7 +26,7 @@ pkgname=(
   mingw-w64-cross-msysarm64-libuuid-devel
 )
 pkgver=2.40.2
-pkgrel=1
+pkgrel=2
 pkgdesc="Native libuuid for aarch64-pc-msys"
 arch=('x86_64')
 url="https://www.kernel.org/pub/linux/utils/util-linux/"
@@ -58,9 +58,9 @@ source=(
 sha256sums=(
   'd78b37a66f5922d70edf3bdfb01a6b33d34ed3c3cafd6628203b2a2b67c8e8b3'
   'f6954765c98b956d1006e14e43ee9ce14b423e91397e251d978a6d2d5947cbd0'
-  'bf981feb33b570b71ddbe3f5502a78178ea0838c07b5fc6dc85c7bf4dc3b04ed'
+  '08f96e5c3b58f1fbfe1d1e6ecf773f58444e41de2e96e0343de432318737ee50'
   '5b38e2904fde8db2c58813b1bbd30fec792fff2c35041a3b19e047dd6d1a7514'
-  'f2d4176be48692937fddfb17db9632cc4a01d2930e7a62cae045b81cd6095fa7'
+  'a01aa20d8af9ebbc436beedb9974cd5923be2d1e95eb60df60ef47742982e779'
   '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9'
 )
 
@@ -332,6 +332,21 @@ build() {
       "opt/${_target}/usr/lib/libuuid.dll.a" \
       "opt/${_target}/usr/lib/pkgconfig/uuid.pc"
   ) > "${_report}/package-manifest.sha256"
+
+  for _log in configure.log build.log install.log; do
+    sed -E -i \
+      -e "s|${srcdir}|<source-root>|g" \
+      -e "s|${startdir}|<package-root>|g" \
+      -e 's|/tmp/[^[:space:]'"'"'"]+|<temporary>|g' \
+      "${_report}/${_log}"
+    if grep -F "${srcdir}" "${_report}/${_log}" ||
+        grep -E '/[a-z]/a/|/cygdrive/|[A-Za-z]:[\\/]' \
+          "${_report}/${_log}"; then
+      printf 'ERROR: private path remains in %s\n' \
+        "${_report}/${_log}" >&2
+      return 1
+    fi
+  done
 }
 
 check() {

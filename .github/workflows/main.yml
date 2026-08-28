@@ -16,7 +16,9 @@ jobs:
         (github.repository != 'crutkas/MSYS2-packages' ||
          github.event_name != 'push' ||
          (github.ref_type != 'tag' &&
-          github.ref_name != 'crutkas-package-aarch64-static-libgcc'))
+          github.ref_name != 'crutkas-package-aarch64-static-libgcc')) &&
+        github.ref_name != 'crutkas-arm64-msys-libuuid' &&
+        github.head_ref != 'crutkas-arm64-msys-libuuid'
       }}
     env:
       CI_BASE_REPOSITORY: https://github.com/${{ github.repository }}.git
@@ -49,7 +51,7 @@ jobs:
           git config --global core.autocrlf false
           git config --global core.eol lf
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: temp
           fetch-depth: 0
@@ -72,8 +74,7 @@ jobs:
             'crutkas-congenial-system',
             'crutkas-aarch64-gcc-layer'
           )
-          $nativePackageBranches = @('crutkas-arm64-msys-libuuid')
-          $match = @($gccBootstrapBranches + $nativePackageBranches) |
+          $match = $gccBootstrapBranches |
             Where-Object { $branchCandidates -contains $_ } |
             Select-Object -First 1
           if (-not $match) {
@@ -83,16 +84,11 @@ jobs:
           }
 
           $baseRef = switch ($match) {
-            'crutkas-arm64-msys-libuuid' { 'crutkas-aarch64-gcc-layer' }
             'crutkas-aarch64-gcc-layer' { 'crutkas-package-aarch64-static-libgcc' }
             'crutkas-congenial-system' { 'crutkas-package-aarch64-static-libgcc' }
             default { 'master' }
           }
-          $mode = if ($nativePackageBranches -contains $match) {
-            'native-package'
-          } else {
-            'gcc-bootstrap'
-          }
+          $mode = 'gcc-bootstrap'
           $prefixes = 'mingw-w64-cross-cygwinarm64- mingw-w64-cross-msysarm64-'
 
           "enabled=1" >> $env:GITHUB_OUTPUT
@@ -228,11 +224,6 @@ jobs:
             }
           }
 
-      - name: Install released AArch64 MSYS toolchain
-        if: ${{ steps.arm64-settings.outputs.mode == 'native-package' }}
-        shell: pwsh
-        run: .\temp\.ci\install-msysarm64-libuuid-toolchain.ps1
-
       - name: Move Checkout
         run: |
           $path = "${{ steps.facts.outputs.drive }}\_"
@@ -253,90 +244,33 @@ jobs:
 
       - name: "Upload binaries"
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.msystem }}-packages
           path: ${{ steps.facts.outputs.drive }}/_/artifacts/*.pkg.tar.*
 
       - name: "Upload debug logs"
         if: ${{ failure() && !cancelled() }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.msystem }}-libstdcxx-debug
           path: |
             ${{ steps.facts.outputs.drive }}/_/mingw-w64-cross-msysarm64-libstdcxx-headers/src/libstdcxx-headers-report/*
             ${{ steps.facts.outputs.drive }}/_/mingw-w64-cross-msysarm64-gcc/src/gcc-report/*
-            ${{ steps.facts.outputs.drive }}/_/mingw-w64-cross-msysarm64-libuuid/src/libuuid-report/*
-            ${{ steps.facts.outputs.drive }}/_/mingw-w64-cross-msysarm64-libuuid/src/libuuid-transaction-report/*
-
-      - name: Upload libuuid validation evidence
-        if: ${{ steps.arm64-settings.outputs.mode == 'native-package' && !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: MSYS-libuuid-evidence
-          if-no-files-found: warn
-          path: |
-            ${{ steps.facts.outputs.drive }}/_/mingw-w64-cross-msysarm64-libuuid/src/libuuid-report/*
-            ${{ steps.facts.outputs.drive }}/_/mingw-w64-cross-msysarm64-libuuid/src/libuuid-transaction-report/*
-
-  native-libuuid-smoke:
-    if: >-
-      ${{
-        needs.build.result == 'success' &&
-        github.repository == 'crutkas/MSYS2-packages' &&
-        (github.ref_name == 'crutkas-arm64-msys-libuuid' ||
-         github.head_ref == 'crutkas-arm64-msys-libuuid')
-      }}
-    needs: build
-    runs-on: windows-11-arm
-    timeout-minutes: 45
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - uses: msys2/setup-msys2@v2
-        id: native-msys2
-        with:
-          cache: false
-          msystem: MSYS
-          update: true
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: MSYS-packages
-          path: artifacts
-
-      - name: Run native ARM64 libuuid smoke
-        shell: pwsh
-        run: |
-          .\.ci\run-msysarm64-libuuid-native-smoke.ps1 `
-            -ArtifactDirectory .\artifacts `
-            -MsysRoot '${{ steps.native-msys2.outputs.msys2-location }}'
-
-      - name: Upload native smoke evidence
-        if: ${{ always() }}
-        uses: actions/upload-artifact@v4
-        with:
-          if-no-files-found: error
-          name: MSYS-libuuid-native-smoke
-          path: artifacts/native-smoke-evidence/*
-
   package-grokker:
     if: ${{ !(github.repository == 'crutkas/MSYS2-packages' && github.head_ref == 'crutkas-package-aarch64-static-libgcc') }}
     runs-on: ubuntu-latest
     needs: build
 
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         id: artifacts
         continue-on-error: true
         with:
           name: MSYS-packages
           path: artifacts
       - name: Grok packages
-        uses: jeremyd2019/package-grokker/grok-artifacts@main
+        uses: jeremyd2019/package-grokker/grok-artifacts@3028d539ec65a74cabafb2b7deff1f91f273af72
         if: steps.artifacts.outcome == 'success'
         with:
           repo: msys

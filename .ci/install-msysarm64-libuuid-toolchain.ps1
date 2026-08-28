@@ -1,27 +1,195 @@
+[CmdletBinding()]
 param(
-    [switch]$DownloadOnly
+    [Parameter(Mandatory = $true)]
+    [string]$RootPath,
+
+    [Parameter(Mandatory = $true)]
+    [string]$EvidenceDirectory
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+$ProgressPreference = 'SilentlyContinue'
 
 $repository = $env:GITHUB_REPOSITORY
 $branchCandidates = @($env:GITHUB_REF_NAME, $env:GITHUB_HEAD_REF) |
     Where-Object { $_ }
 if ($repository -ne 'crutkas/MSYS2-packages') {
-    throw "Refusing fork-only toolchain install in $repository"
+    throw "Refusing fork-only root materialization in $repository"
 }
 if ($branchCandidates -notcontains 'crutkas-arm64-msys-libuuid') {
-    throw "Refusing libuuid toolchain install for refs: $($branchCandidates -join ', ')"
+    throw "Refusing libuuid root for refs: $($branchCandidates -join ', ')"
 }
 if ($env:RUNNER_ARCH -ne 'X64') {
-    throw "The cross-build job requires an X64 runner, not $env:RUNNER_ARCH"
+    throw "The private build requires an X64 runner, not $env:RUNNER_ARCH"
+}
+if (Test-Path -LiteralPath $RootPath) {
+    throw "Private root already exists: $RootPath"
 }
 
-$destination = Join-Path $env:RUNNER_TEMP 'msysarm64-libuuid-toolchain'
-New-Item -ItemType Directory -Force -Path $destination | Out-Null
+$systemTar = Join-Path $env:SystemRoot 'System32\tar.exe'
+if (-not (Test-Path -LiteralPath $systemTar -PathType Leaf)) {
+    throw "Missing Windows archive tool: $systemTar"
+}
 
-$releaseAssets = @(
+function Write-Utf8NoBom {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
+        [string[]]$Lines
+    )
+
+    [IO.File]::WriteAllLines(
+        $Path,
+        $Lines,
+        [Text.UTF8Encoding]::new($false))
+}
+
+function Invoke-Download {
+    param(
+        [Parameter(Mandatory = $true)][string]$Uri,
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Sha256
+    )
+
+    & curl.exe --fail --location --retry 5 --silent --show-error `
+        --output $Path $Uri
+    if ($LASTEXITCODE -ne 0) {
+        throw "Download failed: $Uri"
+    }
+    $actual = (Get-FileHash -Algorithm SHA256 $Path).Hash.ToLowerInvariant()
+    if ($actual -ne $Sha256) {
+        throw "SHA-256 mismatch for $([IO.Path]::GetFileName($Path)): $actual"
+    }
+}
+
+function Assert-SafeArchive {
+    param(
+        [Parameter(Mandatory = $true)][string]$Archive,
+        [string]$RequiredPrefix
+    )
+
+    $entries = @(& $script:systemTar -tf $Archive)
+    if ($LASTEXITCODE -ne 0 -or $entries.Count -eq 0) {
+        throw "Cannot list archive safely: $Archive"
+    }
+    foreach ($entry in $entries) {
+        $normalized = $entry.Replace('\', '/')
+        if (-not $normalized -or
+            $normalized.StartsWith('/') -or
+            $normalized -match '^[A-Za-z]:' -or
+            $normalized.Split('/') -contains '..') {
+            throw "Unsafe archive entry in $Archive`: $entry"
+        }
+        if ($RequiredPrefix -and
+            $normalized -ne $RequiredPrefix.TrimEnd('/') -and
+            -not $normalized.StartsWith($RequiredPrefix)) {
+            throw "Archive entry escapes required prefix in $Archive`: $entry"
+        }
+    }
+    foreach ($line in @(& $script:systemTar -tvf $Archive |
+        Where-Object { $_ -match '^[lh]' })) {
+        if ($line.StartsWith('h')) {
+            if ($line -notmatch '\s(?<path>\S+)\s+link to\s+(?<target>\S+)$') {
+                throw "Unparseable archive hardlink in $Archive`: $line"
+            }
+            $target = $Matches.target.Replace('\', '/')
+            if ($target.StartsWith('/') -or
+                $target -match '^[A-Za-z]:' -or
+                $target.Split('/') -contains '..') {
+                throw "Unsafe archive hardlink in $Archive`: $line"
+            }
+            if ($RequiredPrefix -and
+                $target -ne $RequiredPrefix.TrimEnd('/') -and
+                -not $target.StartsWith($RequiredPrefix)) {
+                throw "Archive hardlink escapes required prefix: $line"
+            }
+            continue
+        }
+        if ($line -notmatch '\s(?<path>\S+)\s+->\s+(?<target>\S+)$') {
+            throw "Unparseable archive symlink in $Archive`: $line"
+        }
+        $linkPath = $Matches.path.Replace('\', '/')
+        $target = $Matches.target.Replace('\', '/')
+        if ($target.StartsWith('/') -or $target -match '^[A-Za-z]:') {
+            throw "Unsafe archive symlink in $Archive`: $line"
+        }
+        $linkParts = $linkPath.Split('/')
+        $segments = [Collections.Generic.List[string]]::new()
+        if ($linkParts.Count -gt 1) {
+            foreach ($segment in $linkParts[0..($linkParts.Count - 2)]) {
+                if ($segment) {
+                    $segments.Add($segment)
+                }
+            }
+        }
+        foreach ($segment in $target.Split('/')) {
+            if (-not $segment -or $segment -eq '.') {
+                continue
+            }
+            if ($segment -eq '..') {
+                if ($segments.Count -eq 0) {
+                    throw "Archive symlink escapes root in $Archive`: $line"
+                }
+                $segments.RemoveAt($segments.Count - 1)
+            }
+            else {
+                $segments.Add($segment)
+            }
+        }
+        $resolvedArchivePath = $segments -join '/'
+        if ($RequiredPrefix -and
+            $resolvedArchivePath -ne $RequiredPrefix.TrimEnd('/') -and
+            -not $resolvedArchivePath.StartsWith($RequiredPrefix)) {
+            throw "Archive symlink escapes required prefix: $line"
+        }
+    }
+}
+
+function Invoke-PrivateBash {
+    param(
+        [Parameter(Mandatory = $true)][string]$Script,
+        [Parameter(Mandatory = $true)][string]$LogPath
+    )
+
+    $bash = Join-Path $script:RootPath 'usr\bin\bash.exe'
+    $oldMsystem = $env:MSYSTEM
+    $oldChere = $env:CHERE_INVOKING
+    $oldPathType = $env:MSYS2_PATH_TYPE
+    try {
+        $env:MSYSTEM = 'MSYS'
+        $env:CHERE_INVOKING = '1'
+        $env:MSYS2_PATH_TYPE = 'inherit'
+        $output = @(& $bash --noprofile --norc -c $Script 2>&1)
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $env:MSYSTEM = $oldMsystem
+        $env:CHERE_INVOKING = $oldChere
+        $env:MSYS2_PATH_TYPE = $oldPathType
+    }
+    Write-Utf8NoBom -Path $LogPath -Lines @($output | ForEach-Object {
+        $_.ToString()
+    })
+    if ($exitCode -ne 0) {
+        throw "Private MSYS command failed with exit code $exitCode"
+    }
+    if ($output -match 'command failed to execute correctly') {
+        throw 'Private package transaction reported a failed install script'
+    }
+    return $output
+}
+
+$baseAsset = [pscustomobject]@{
+    Name = 'msys2-base-x86_64-20260611.tar.zst'
+    Uri = 'https://repo.msys2.org/distrib/x86_64/msys2-base-x86_64-20260611.tar.zst'
+    Size = 54503668
+    Sha256 = 'ace898d250d7302a24259a0288d69354649365af9cc64c8bcc2f219bc1e28374'
+}
+
+$targetAssets = @(
     [pscustomobject]@{
         Name = 'mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst'
         Uri = 'https://github.com/crutkas/MSYS2-packages/releases/download/cygwinarm64-binutils-pr21-3356eec-20260827/mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst'
@@ -89,73 +257,197 @@ $releaseAssets = @(
     }
 )
 
-foreach ($asset in $releaseAssets) {
-    $path = Join-Path $destination $asset.Name
-    & curl.exe --fail --location --retry 5 --silent --show-error `
-        --output $path $asset.Uri
-    if ($LASTEXITCODE -ne 0) {
-        throw "Download failed: $($asset.Uri)"
+$sourceAssets = @(
+    [pscustomobject]@{
+        Name = 'util-linux-2.40.2.tar.xz'
+        Uri = 'https://www.kernel.org/pub/linux/utils/util-linux/v2.40/util-linux-2.40.2.tar.xz'
+        Sha256 = 'd78b37a66f5922d70edf3bdfb01a6b33d34ed3c3cafd6628203b2a2b67c8e8b3'
+    },
+    [pscustomobject]@{
+        Name = 'check-aarch64-pseudo-relocs-3356eec.ps1'
+        Uri = 'https://raw.githubusercontent.com/crutkas/MSYS2-packages/3356eec1411983cc252b04afac32bca5f3b8d824/.ci/check-aarch64-pseudo-relocs.ps1'
+        Sha256 = '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9'
+    }
+)
+
+$inputRoot = Join-Path (Split-Path -Parent $RootPath) 'libuuid-private-inputs'
+$hostDirectory = Join-Path $inputRoot 'host'
+$targetDirectory = Join-Path $inputRoot 'target'
+$sourceDirectory = Join-Path $inputRoot 'source'
+foreach ($path in @($inputRoot, $EvidenceDirectory)) {
+    if (Test-Path -LiteralPath $path) {
+        Remove-Item -LiteralPath $path -Recurse -Force
+    }
+}
+New-Item -ItemType Directory -Force -Path `
+    $hostDirectory, $targetDirectory, $sourceDirectory, $EvidenceDirectory |
+    Out-Null
+
+$basePath = Join-Path $inputRoot $baseAsset.Name
+Invoke-Download -Uri $baseAsset.Uri -Path $basePath -Sha256 $baseAsset.Sha256
+if ((Get-Item -LiteralPath $basePath).Length -ne $baseAsset.Size) {
+    throw 'Immutable MSYS base size mismatch'
+}
+Assert-SafeArchive -Archive $basePath -RequiredPrefix 'msys64/'
+
+$hostManifestPath = Join-Path $PSScriptRoot 'msysarm64-libuuid-host-packages.sha256'
+$hostRecords = @()
+foreach ($line in Get-Content -LiteralPath $hostManifestPath) {
+    if ($line -notmatch '^([0-9a-f]{64})  ([A-Za-z0-9+_.~-]+\.pkg\.tar\.(?:zst|xz))$') {
+        throw "Invalid host manifest line: $line"
+    }
+    $hostRecords += [pscustomobject]@{
+        Sha256 = $Matches[1]
+        Name = $Matches[2]
+    }
+}
+if ($hostRecords.Count -ne 138 -or
+    @($hostRecords.Name | Sort-Object -Unique).Count -ne 138) {
+    throw 'Host package manifest must contain 138 unique records'
+}
+
+$curlArguments = @(
+    '--parallel',
+    '--parallel-max', '8',
+    '--fail',
+    '--retry', '5',
+    '--silent',
+    '--show-error',
+    '--output-dir', $hostDirectory
+)
+foreach ($record in $hostRecords) {
+    $curlArguments += '--remote-name'
+    $curlArguments += "https://repo.msys2.org/msys/x86_64/$($record.Name)"
+}
+& curl.exe @curlArguments
+if ($LASTEXITCODE -ne 0) {
+    throw 'Host package download failed'
+}
+foreach ($record in $hostRecords) {
+    $path = Join-Path $hostDirectory $record.Name
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw "Missing host package: $($record.Name)"
     }
     $actual = (Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant()
-    if ($actual -ne $asset.Sha256) {
-        throw "SHA-256 mismatch for $($asset.Name): $actual"
+    if ($actual -ne $record.Sha256) {
+        throw "Host package SHA-256 mismatch: $($record.Name)"
+    }
+    Assert-SafeArchive -Archive $path
+}
+
+foreach ($asset in $targetAssets) {
+    $path = Join-Path $targetDirectory $asset.Name
+    Invoke-Download -Uri $asset.Uri -Path $path -Sha256 $asset.Sha256
+    Assert-SafeArchive -Archive $path
+}
+foreach ($asset in $sourceAssets) {
+    $path = Join-Path $sourceDirectory $asset.Name
+    Invoke-Download -Uri $asset.Uri -Path $path -Sha256 $asset.Sha256
+}
+
+$fixedBinutils = Join-Path $targetDirectory $targetAssets[0].Name
+$fixedListing = @(& $systemTar -tvf $fixedBinutils |
+    Where-Object { $_ -match 'opt/bin/aarch64-pc-msys-' })
+if ($fixedListing.Count -ne 20) {
+    throw "Expected 20 fixed-binutils aliases, found $($fixedListing.Count)"
+}
+foreach ($line in $fixedListing) {
+    if ($line -notmatch ' -> aarch64-pc-cygwin-[A-Za-z0-9+.~-]+\.exe$') {
+        throw "Unsafe or unexpected fixed-binutils alias: $line"
     }
 }
-if ($DownloadOnly) {
-    $releaseAssets | ForEach-Object {
-        $path = Join-Path $destination $_.Name
-        [pscustomobject]@{
-            Name = $_.Name
-            Size = (Get-Item -LiteralPath $path).Length
-            Sha256 = (Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant()
+
+$extractParent = "$RootPath.extract"
+if (Test-Path -LiteralPath $extractParent) {
+    Remove-Item -LiteralPath $extractParent -Recurse -Force
+}
+New-Item -ItemType Directory -Path $extractParent | Out-Null
+& $systemTar -xf $basePath -C $extractParent
+if ($LASTEXITCODE -ne 0) {
+    throw 'Immutable MSYS base extraction failed'
+}
+$extractedRoot = Join-Path $extractParent 'msys64'
+if (-not (Test-Path -LiteralPath (Join-Path $extractedRoot 'usr\bin\bash.exe'))) {
+    throw 'Immutable MSYS base did not produce the expected root'
+}
+$allowedExtractedRoot = [IO.Path]::GetFullPath($extractedRoot).
+    TrimEnd('\') + '\'
+foreach ($link in Get-ChildItem -LiteralPath $extractedRoot -Recurse -Force |
+    Where-Object {
+        $_.Attributes -band [IO.FileAttributes]::ReparsePoint
+    }) {
+    foreach ($target in @($link.Target)) {
+        if ([IO.Path]::IsPathRooted($target)) {
+            throw "Base archive produced an absolute link: $($link.FullName)"
+        }
+        $resolved = [IO.Path]::GetFullPath(
+            (Join-Path $link.DirectoryName $target))
+        if (-not $resolved.StartsWith(
+            $allowedExtractedRoot,
+            [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Base archive link escapes private root: $($link.FullName)"
         }
     }
-    return
 }
-"MSYSARM64_TOOLCHAIN_DIR=$destination" >> $env:GITHUB_ENV
+Move-Item -LiteralPath $extractedRoot -Destination $RootPath
+Remove-Item -LiteralPath $extractParent -Force
 
-$expectedPackages = @(
-    'mingw-w64-cross-cygwinarm64-binutils',
-    'mingw-w64-cross-cygwinarm64-libstdc++-headers',
-    'mingw-w64-cross-cygwinarm64-gcc-libs-stage1',
-    'mingw-w64-cross-cygwinarm64-gcc-stage1',
-    'mingw-w64-cross-msysarm64-headers',
-    'mingw-w64-cross-msysarm64-windows-default-manifest',
-    'mingw-w64-cross-msysarm64-sysroot',
-    'mingw-w64-cross-msysarm64-runtime',
-    'mingw-w64-cross-msysarm64-runtime-devel',
-    'mingw-w64-cross-msysarm64-w32api-runtime',
-    'mingw-w64-cross-msysarm64-libstdc++-headers',
-    'mingw-w64-cross-msysarm64-gcc-libs',
-    'mingw-w64-cross-msysarm64-gcc'
+$hostCache = Join-Path $RootPath 'var\cache\pacman\pkg\host'
+$targetCache = Join-Path $RootPath 'var\cache\pacman\pkg\target'
+$emptyHooks = Join-Path $RootPath 'var\empty-hooks'
+New-Item -ItemType Directory -Force -Path $hostCache, $targetCache, $emptyHooks |
+    Out-Null
+Get-ChildItem -LiteralPath $hostDirectory -File | Copy-Item -Destination $hostCache
+Get-ChildItem -LiteralPath $targetDirectory -File | Copy-Item -Destination $targetCache
+
+$syncDatabase = Join-Path $RootPath 'var\lib\pacman\sync'
+if (Test-Path -LiteralPath $syncDatabase) {
+    Remove-Item -LiteralPath $syncDatabase -Recurse -Force
+}
+$privateConfig = @(
+    '[options]',
+    'RootDir = /',
+    'DBPath = /var/lib/pacman/',
+    'CacheDir = /var/cache/pacman/pkg/',
+    'LogFile = /var/log/pacman.log',
+    'GPGDir = /etc/pacman.d/gnupg/',
+    'Architecture = x86_64',
+    'SigLevel = Never',
+    'LocalFileSigLevel = Never'
 )
-$pacman = 'C:\msys64\usr\bin\pacman.exe'
-foreach ($package in $expectedPackages) {
-    & $pacman -Q $package *> $null
-    if ($LASTEXITCODE -eq 0) {
-        throw "Toolchain package unexpectedly preinstalled: $package"
-    }
-}
+Write-Utf8NoBom -Path (Join-Path $RootPath 'etc\pacman.conf') `
+    -Lines $privateConfig
+$privatePacmanLog = Join-Path $RootPath 'var\log\pacman.log'
+$basePacmanLogSha256 = (
+    Get-FileHash -Algorithm SHA256 $privatePacmanLog
+).Hash.ToLowerInvariant()
+Write-Utf8NoBom -Path $privatePacmanLog -Lines @()
 
-$packagePaths = @()
-$packagePaths += $releaseAssets | ForEach-Object {
-    Join-Path $destination $_.Name
-}
+$hostUpgrade = @'
+set -euo pipefail
+export PATH=/usr/bin
+MSYS='winsymlinks:sys' pacman \
+  --noconfirm \
+  --hookdir /var/empty-hooks \
+  -U /var/cache/pacman/pkg/host/*.pkg.tar.zst
+'@
+Invoke-PrivateBash -Script $hostUpgrade `
+    -LogPath (Join-Path $EvidenceDirectory 'host-upgrade.log') |
+    Out-Null
 
-$oldMsys = $env:MSYS
-try {
-    $env:MSYS = 'winsymlinks:sys'
-    & $pacman --noconfirm -U @packagePaths
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Atomic AArch64 MSYS toolchain installation failed'
-    }
-}
-finally {
-    $env:MSYS = $oldMsys
-}
+$targetInstall = @'
+set -euo pipefail
+export PATH=/usr/bin
+MSYS='winsymlinks:sys' pacman \
+  --noconfirm \
+  --hookdir /var/empty-hooks \
+  -U /var/cache/pacman/pkg/target/*.pkg.tar.zst
+'@
+Invoke-PrivateBash -Script $targetInstall `
+    -LogPath (Join-Path $EvidenceDirectory 'target-install.log') |
+    Out-Null
 
-$bash = 'C:\msys64\usr\bin\bash.exe'
-$preflight = @'
+$verifyRoot = @'
 set -euo pipefail
 export PATH=/opt/bin:/usr/bin
 expected=(
@@ -176,28 +468,17 @@ expected=(
 for identity in "${expected[@]}"; do
   package=${identity% *}
   test "$(pacman -Q "$package")" = "$identity"
+  pacman -Qk "$package"
 done
-test -L /opt/aarch64-pc-msys/bin/ar.exe
-test -L /opt/aarch64-pc-msys/bin/nm.exe
-test -L /opt/aarch64-pc-msys/bin/ranlib.exe
-test "$(aarch64-pc-msys-gcc -dumpmachine)" = aarch64-pc-msys
-for tool in gcc g++ ar as dlltool ld nm objcopy objdump ranlib readelf strip windres; do
-  test "$(type -P "aarch64-pc-msys-$tool")" = "/opt/bin/aarch64-pc-msys-$tool"
-  case "$tool" in
-    gcc|g++)
-      test "$(pacman -Qoq "/opt/bin/aarch64-pc-msys-$tool.exe")" = \
-        mingw-w64-cross-msysarm64-gcc
-      ;;
-    *)
-      test -L "/opt/bin/aarch64-pc-msys-$tool.exe"
-      test "$(readlink "/opt/bin/aarch64-pc-msys-$tool.exe")" = \
-        "aarch64-pc-cygwin-$tool.exe"
-      test "$(pacman -Qoq "/opt/bin/aarch64-pc-msys-$tool.exe")" = \
-        mingw-w64-cross-cygwinarm64-binutils
-      test "$(pacman -Qoq "$(realpath "/opt/bin/aarch64-pc-msys-$tool.exe")")" = \
-        mingw-w64-cross-cygwinarm64-binutils
-      ;;
-  esac
+for tool in \
+  addr2line ar as c++filt dlltool dllwrap elfedit gprof ld ld.bfd nm \
+  objcopy objdump ranlib readelf size strings strip windmc windres
+do
+  alias_path="/opt/bin/aarch64-pc-msys-$tool.exe"
+  test -L "$alias_path"
+  test "$(readlink "$alias_path")" = "aarch64-pc-cygwin-$tool.exe"
+  test "$(pacman -Qoq "$alias_path")" = \
+    mingw-w64-cross-cygwinarm64-binutils
 done
 test "$(sha256sum /opt/bin/aarch64-pc-msys-ld.exe | awk '{ print $1 }')" = \
   075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f
@@ -205,18 +486,90 @@ for tool in ar nm ranlib; do
   test "$(pacman -Qoq "/opt/aarch64-pc-msys/bin/$tool.exe")" = \
     mingw-w64-cross-msysarm64-gcc
 done
-for input in libmsys-2.0.a libkernel32.a libgcc.a; do
-  path=$(aarch64-pc-msys-gcc -print-file-name="$input")
-  test -f "$path"
-  aarch64-pc-msys-objdump -f "$path" | grep -F 'architecture: aarch64'
-done
-macros=$(aarch64-pc-msys-gcc -dM -E - < /dev/null)
-for macro in __aarch64__ __CYGWIN__ __MSYS__ _WIN64; do
-  grep -Eq "^#define $macro([[:space:]]|$)" <<< "$macros"
-done
-! grep -Eq '^#define (__x86_64__|_M_X64)([[:space:]]|$)' <<< "$macros"
+test "$(aarch64-pc-msys-gcc -dumpmachine)" = aarch64-pc-msys
+pacman -Q | LC_ALL=C sort
 '@
-& $bash -lc $preflight
-if ($LASTEXITCODE -ne 0) {
-    throw 'Installed AArch64 MSYS toolchain preflight failed'
+$packageState = Invoke-PrivateBash -Script $verifyRoot `
+    -LogPath (Join-Path $EvidenceDirectory 'root-verification.log')
+Write-Utf8NoBom -Path (Join-Path $EvidenceDirectory 'package-state.txt') `
+    -Lines @($packageState | Where-Object { $_ -match '^[A-Za-z0-9+_.~-]+ ' })
+
+Copy-Item -LiteralPath $hostManifestPath `
+    -Destination (Join-Path $EvidenceDirectory 'host-packages.sha256')
+Write-Utf8NoBom -Path (Join-Path $EvidenceDirectory 'target-packages.sha256') `
+    -Lines @($targetAssets | Sort-Object Name | ForEach-Object {
+        "$($_.Sha256)  $($_.Name)"
+    })
+Write-Utf8NoBom -Path (Join-Path $EvidenceDirectory 'source-inputs.sha256') `
+    -Lines @($sourceAssets | Sort-Object Name | ForEach-Object {
+        "$($_.Sha256)  $($_.Name)"
+    })
+Write-Utf8NoBom -Path (Join-Path $EvidenceDirectory 'base-input.sha256') `
+    -Lines @("$($baseAsset.Sha256)  $($baseAsset.Name)")
+Copy-Item -LiteralPath $privatePacmanLog `
+    -Destination (Join-Path $EvidenceDirectory 'pacman.log')
+
+$summary = [ordered]@{
+    schema = 1
+    base_name = $baseAsset.Name
+    base_size = $baseAsset.Size
+    base_sha256 = $baseAsset.Sha256
+    base_pacman_log_sha256 = $basePacmanLogSha256
+    host_package_count = $hostRecords.Count
+    target_package_count = $targetAssets.Count
+    source_input_count = $sourceAssets.Count
+    fixed_linker_sha256 =
+        '075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f'
+    shared_root_used = $false
+    private_config_sha256 = (
+        Get-FileHash -Algorithm SHA256 (Join-Path $RootPath 'etc\pacman.conf')
+    ).Hash.ToLowerInvariant()
+}
+[IO.File]::WriteAllText(
+    (Join-Path $EvidenceDirectory 'root-summary.json'),
+    ($summary | ConvertTo-Json -Depth 4),
+    [Text.UTF8Encoding]::new($false))
+
+$privatePattern =
+    '(?im)([A-Za-z]:[\\/](?:a|Users)[\\/]|/(?:tmp|cygdrive)/|/[a-z]/a/)'
+foreach ($file in Get-ChildItem -LiteralPath $EvidenceDirectory -File) {
+    $bytes = [IO.File]::ReadAllBytes($file.FullName)
+    if ($bytes -contains 0) {
+        continue
+    }
+    if ([Text.Encoding]::UTF8.GetString($bytes) -match $privatePattern) {
+        throw "Private path leaked into root evidence: $($file.Name)"
+    }
+}
+Write-Utf8NoBom `
+    -Path (Join-Path $EvidenceDirectory 'path-scan.tsv') `
+    -Lines @("private-path-leaks`t0")
+
+$manifestPath = Join-Path $EvidenceDirectory 'evidence-manifest.sha256'
+$sealPath = Join-Path $EvidenceDirectory 'evidence.seal'
+$manifestLines = Get-ChildItem -LiteralPath $EvidenceDirectory -File |
+    Where-Object { $_.FullName -notin @($manifestPath, $sealPath) } |
+    Sort-Object Name |
+    ForEach-Object {
+        $hash = (Get-FileHash -Algorithm SHA256 $_.FullName).
+            Hash.ToLowerInvariant()
+        "$hash  $($_.Name)"
+    }
+Write-Utf8NoBom -Path $manifestPath -Lines @($manifestLines)
+$seal = (Get-FileHash -Algorithm SHA256 $manifestPath).Hash.ToLowerInvariant()
+Write-Utf8NoBom -Path $sealPath `
+    -Lines @("$seal  evidence-manifest.sha256")
+
+if ($env:GITHUB_ENV) {
+    "LIBUUID_PRIVATE_ROOT=$RootPath" >> $env:GITHUB_ENV
+    "MSYSARM64_TOOLCHAIN_DIR=$targetDirectory" >> $env:GITHUB_ENV
+    "LIBUUID_SOURCE_INPUT_DIR=$sourceDirectory" >> $env:GITHUB_ENV
+    "LIBUUID_ROOT_EVIDENCE=$EvidenceDirectory" >> $env:GITHUB_ENV
+}
+
+[pscustomobject]@{
+    Root = $RootPath
+    EvidenceSeal = $seal
+    HostPackages = $hostRecords.Count
+    TargetPackages = $targetAssets.Count
 }

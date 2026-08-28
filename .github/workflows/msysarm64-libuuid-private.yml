@@ -1,0 +1,162 @@
+name: Native ARM64 MSYS libuuid private
+
+on:
+  push:
+    branches:
+      - crutkas-arm64-msys-libuuid
+    paths:
+      - .ci/build-msysarm64-libuuid-private.ps1
+      - .ci/canonicalize-packages.sh
+      - .ci/check-msysarm64-libuuid-shared-root.ps1
+      - .ci/compare-msysarm64-libuuid-runs.ps1
+      - .ci/install-msysarm64-libuuid-toolchain.ps1
+      - .ci/msysarm64-libuuid-host-packages.sha256
+      - .ci/run-msysarm64-libuuid-native-smoke.ps1
+      - .ci/validate-msysarm64-libuuid-packages.sh
+      - .github/workflows/msysarm64-libuuid-private.yml
+      - mingw-w64-cross-msysarm64-libuuid/**
+  pull_request:
+    branches:
+      - crutkas-aarch64-gcc-layer
+    paths:
+      - .ci/build-msysarm64-libuuid-private.ps1
+      - .ci/canonicalize-packages.sh
+      - .ci/check-msysarm64-libuuid-shared-root.ps1
+      - .ci/compare-msysarm64-libuuid-runs.ps1
+      - .ci/install-msysarm64-libuuid-toolchain.ps1
+      - .ci/msysarm64-libuuid-host-packages.sha256
+      - .ci/run-msysarm64-libuuid-native-smoke.ps1
+      - .ci/validate-msysarm64-libuuid-packages.sh
+      - .github/workflows/msysarm64-libuuid-private.yml
+      - mingw-w64-cross-msysarm64-libuuid/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: msysarm64-libuuid-private-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: >-
+      ${{
+        github.repository == 'crutkas/MSYS2-packages' &&
+        ((github.event_name == 'push' &&
+          github.ref == 'refs/heads/crutkas-arm64-msys-libuuid') ||
+         (github.event_name == 'pull_request' &&
+          github.head_ref == 'crutkas-arm64-msys-libuuid'))
+      }}
+    name: Immutable private MSYS build
+    runs-on: windows-2025
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: source
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Seal shared runner root before build
+        shell: pwsh
+        run: |
+          .\source\.ci\check-msysarm64-libuuid-shared-root.ps1 `
+            -Phase Before `
+            -EvidenceDirectory '${{ runner.temp }}\libuuid-private-evidence\shared'
+
+      - name: Materialize immutable private MSYS root
+        shell: pwsh
+        run: |
+          .\source\.ci\install-msysarm64-libuuid-toolchain.ps1 `
+            -RootPath '${{ runner.temp }}\libuuid-private-msys' `
+            -EvidenceDirectory '${{ runner.temp }}\libuuid-private-evidence\root'
+
+      - name: Build and validate in private root
+        shell: pwsh
+        run: |
+          .\source\.ci\build-msysarm64-libuuid-private.ps1 `
+            -RootPath $env:LIBUUID_PRIVATE_ROOT `
+            -SourceRoot '${{ github.workspace }}\source' `
+            -OutputDirectory '${{ github.workspace }}\artifacts' `
+            -EvidenceDirectory '${{ runner.temp }}\libuuid-private-evidence\build' `
+            -SourceInputDirectory $env:LIBUUID_SOURCE_INPUT_DIR `
+            -ToolchainDirectory $env:MSYSARM64_TOOLCHAIN_DIR `
+            -ExpectedHeadSha '${{ github.event.pull_request.head.sha || github.sha }}'
+
+      - name: Verify shared runner root unchanged
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          .\source\.ci\check-msysarm64-libuuid-shared-root.ps1 `
+            -Phase After `
+            -EvidenceDirectory '${{ runner.temp }}\libuuid-private-evidence\shared'
+
+      - name: Upload canonical packages
+        if: ${{ success() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          if-no-files-found: error
+          name: MSYS-libuuid-packages
+          path: artifacts/*.pkg.tar.zst
+          retention-days: 30
+
+      - name: Upload private build evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          if-no-files-found: warn
+          include-hidden-files: true
+          name: MSYS-libuuid-private-evidence
+          path: ${{ runner.temp }}/libuuid-private-evidence
+          retention-days: 30
+
+  package-grokker:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: MSYS-libuuid-packages
+          path: artifacts
+
+      - name: Grok packages
+        uses: jeremyd2019/package-grokker/grok-artifacts@3028d539ec65a74cabafb2b7deff1f91f273af72
+        with:
+          repo: msys
+          path: artifacts
+
+  native:
+    needs: build
+    runs-on: windows-11-arm
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: source
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: MSYS-libuuid-packages
+          path: artifacts
+
+      - name: Run native ARM64 process and module attestation
+        shell: pwsh
+        run: |
+          .\source\.ci\run-msysarm64-libuuid-native-smoke.ps1 `
+            -ArtifactDirectory '${{ github.workspace }}\artifacts' `
+            -ExpectedHeadSha '${{ github.event.pull_request.head.sha || github.sha }}'
+
+      - name: Upload native attestation evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          if-no-files-found: error
+          name: MSYS-libuuid-native-attestation
+          path: artifacts/native-smoke-evidence
+          retention-days: 30

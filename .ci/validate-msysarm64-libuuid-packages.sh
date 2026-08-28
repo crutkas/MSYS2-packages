@@ -9,8 +9,8 @@ toolchain_dir=$(
 )
 runtime_name=mingw-w64-cross-msysarm64-libuuid
 devel_name=mingw-w64-cross-msysarm64-libuuid-devel
-runtime_archives=("${runtime_name}-2.40.2-1-x86_64.pkg.tar."*)
-devel_archives=("${devel_name}-2.40.2-1-x86_64.pkg.tar."*)
+runtime_archives=("${runtime_name}-2.40.2-2-x86_64.pkg.tar."*)
+devel_archives=("${devel_name}-2.40.2-2-x86_64.pkg.tar."*)
 [[ "${#runtime_archives[@]}" -eq 1 ]]
 [[ "${#devel_archives[@]}" -eq 1 ]]
 
@@ -168,9 +168,9 @@ validate_install() {
   local smoke_source="${transaction_root}/opt/aarch64-pc-msys/share/msys-sysroot/libuuid/libuuid-smoke.c"
 
   [[ "$(pacman_root -Q "${runtime_name}")" == \
-    "${runtime_name} 2.40.2-1" ]]
+    "${runtime_name} 2.40.2-2" ]]
   [[ "$(pacman_root -Q "${devel_name}")" == \
-    "${devel_name} 2.40.2-1" ]]
+    "${devel_name} 2.40.2-2" ]]
   pacman_root -Qk "${runtime_name}" "${devel_name}"
 
   [[ "$(pacman_root -Qoq "${transaction_root}${key_files[0]}")" == \
@@ -255,7 +255,20 @@ cp \
   "${report_root}/reinstall/pseudo-relocs.tsv" \
   "${evidence_dir}/reinstall-pseudo-relocs.tsv"
 pacman_root -Q | LC_ALL=C sort > "${evidence_dir}/package-state.txt"
-cp "${transaction_root}/var/log/pacman.log" "${evidence_dir}/pacman.log"
+sed \
+  -e "s|${transaction_root}|<transaction-root>|g" \
+  -e "s|${toolchain_dir}|<toolchain-inputs>|g" \
+  "${transaction_root}/var/log/pacman.log" \
+  > "${evidence_dir}/pacman.log"
+if grep -IRF \
+    -e "${transaction_root}" \
+    -e "${toolchain_dir}" \
+    -e "${PWD}" \
+    "${evidence_dir}"; then
+  echo 'private path leaked into lifecycle evidence' >&2
+  exit 1
+fi
+printf 'private-path-leaks\t0\n' > "${evidence_dir}/path-scan.tsv"
 (
   cd "${evidence_dir}"
   sha256sum \
@@ -268,6 +281,7 @@ cp "${transaction_root}/var/log/pacman.log" "${evidence_dir}/pacman.log"
     input-snapshot.sha256 \
     package-state.txt \
     pacman.log \
+    path-scan.tsv \
     reinstall-imports.tsv \
     reinstall-pseudo-relocs.tsv \
     reinstall-summary.tsv \

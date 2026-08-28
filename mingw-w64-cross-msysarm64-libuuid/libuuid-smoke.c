@@ -1,5 +1,7 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <uuid/uuid.h>
 
 int
@@ -17,5 +19,8 @@ main(void)
     return 2;
 
   printf("libuuid-smoke:%s\n", text);
+  fflush(stdout);
+  if (getenv("LIBUUID_SMOKE_ATTEST") != NULL)
+    sleep(15);
   return 0;
 }

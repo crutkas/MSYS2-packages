@@ -38,3 +38,30 @@ the package-owned `libuuid.dll.a`. A util-linux static archive is still built,
 its target armap and every member are audited, and it is linked into the
 non-installed static smoke fixture before being excluded from package
 ownership.
+
+## Safe installation
+
+Do not install these packages with a bare `pacman -U` command or into a shared
+MSYS root. Start with an already materialized, empty-use private root whose
+toolchain prerequisites are hash-pinned, then use that root's own pacman
+client with every libalpm path explicit:
+
+```powershell
+$privateRoot = 'C:\absolute\path\to\private-msys'
+$env:MSYS = 'winsymlinks:sys'
+& "$privateRoot\usr\bin\pacman.exe" `
+  --root $privateRoot `
+  --dbpath "$privateRoot\var\lib\pacman" `
+  --cachedir "$privateRoot\var\cache\pacman\pkg" `
+  --logfile "$privateRoot\var\log\pacman.log" `
+  --config "$privateRoot\etc\pacman.conf" `
+  --hookdir "$privateRoot\var\empty-hooks" `
+  --gpgdir "$privateRoot\etc\pacman.d\gnupg" `
+  --noconfirm -U `
+  mingw-w64-cross-msysarm64-libuuid-2.40.2-2-x86_64.pkg.tar.zst `
+  mingw-w64-cross-msysarm64-libuuid-devel-2.40.2-2-x86_64.pkg.tar.zst
+```
+
+Validate archive entry paths and SHA-256 values before the transaction. A
+release is consumable by APR only when its notes identify immutable base,
+host, target, source, scanner, and action inputs plus downloadable evidence.
