@@ -127,6 +127,7 @@ status=\$?
 if [ \$status -eq 0 ] && [ -n "\$out" ]; then
   case "\$out" in
     try|try.exe|try.exe.exe)
+      shim_root=\$(pwd)
       src=
       for candidate in "\$out" "\$out.exe" "\$out.exe.exe"; do
         if [ -f "\$candidate" ]; then
@@ -136,9 +137,9 @@ if [ \$status -eq 0 ] && [ -n "\$out" ]; then
       done
       if [ -n "\$src" ]; then
         cp -f "\$src" try.exe 2>/dev/null || true
-        cat > try <<'TRYEOF'
+      cat > try <<TRYEOF
 #!/bin/sh
-exec "$PWD/try.exe" "$@"
+exec "$shim_root/try.exe" "$@"
 TRYEOF
         chmod +x try 2>/dev/null || true
       fi

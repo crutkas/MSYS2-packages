@@ -119,7 +119,7 @@ def assert_rewrite_behaviour() -> None:
             raise AssertionError(f"rewrite must fail closed for {name}")
 
 
-def resolve_probe_aliases(output_name: str, directory: Path) -> tuple[bool, bool]:
+def resolve_probe_aliases(output_name: str, directory: Path, shim_root: str) -> tuple[bool, bool]:
     source = None
     for candidate in (output_name, f"{output_name}.exe", f"{output_name}.exe.exe"):
         candidate_path = directory / candidate
@@ -130,7 +130,7 @@ def resolve_probe_aliases(output_name: str, directory: Path) -> tuple[bool, bool
         return False, False
     (directory / "try.exe").write_bytes(source.read_bytes())
     (directory / "try").write_text(
-        "#!/bin/sh\nexec \"$PWD/try.exe\" \"$@\"\n",
+        f"#!/bin/sh\nexec \"{shim_root}/try.exe\" \"$@\"\n",
         encoding="ascii",
     )
     return (directory / "try").is_file(), (directory / "try.exe").is_file()
@@ -139,16 +139,17 @@ def resolve_probe_aliases(output_name: str, directory: Path) -> tuple[bool, bool
 def assert_suffix_behaviour() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = Path(tmp)
+        shim_root = (tmpdir / "shim-root").as_posix()
         for output_name in ("try", "try.exe", "try.exe.exe"):
             for candidate in ("try", "try.exe", "try.exe.exe"):
                 path = tmpdir / candidate
                 if path.exists():
                     path.unlink()
             (tmpdir / output_name).write_text("probe", encoding="ascii")
-            got_try, got_try_exe = resolve_probe_aliases(output_name, tmpdir)
+            got_try, got_try_exe = resolve_probe_aliases(output_name, tmpdir, shim_root)
             assert got_try and got_try_exe, f"wrapper failed to alias {output_name}"
             assert (tmpdir / "try").read_text(encoding="ascii") == (
-                "#!/bin/sh\nexec \"$PWD/try.exe\" \"$@\"\n"
+                f"#!/bin/sh\nexec \"{shim_root}/try.exe\" \"$@\"\n"
             ), f"wrapper shim content changed for {output_name}"
             assert (tmpdir / "try.exe").read_text(encoding="ascii") == "probe"
 
