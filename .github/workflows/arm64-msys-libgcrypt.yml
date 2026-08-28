@@ -74,9 +74,22 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:RUNNER_TEMP 'libgcrypt-output'
+          New-Item -ItemType Directory -Force `
+            $output, "$output\evidence", "$output\inputs" | Out-Null
+          "LIBGCRYPT_OUTPUT=$output" |
+            Out-File -Append -Encoding utf8 $env:GITHUB_ENV
           $release = gh api `
             "repos/crutkas/MSYS2-packages/releases/$($env:LIBGPG_ERROR_RELEASE_ID)" |
             ConvertFrom-Json
+          @(
+            "release_id=$($env:LIBGPG_ERROR_RELEASE_ID)",
+            "release_tag=$($env:LIBGPG_ERROR_RELEASE_TAG)",
+            "rest_immutable=$($release.immutable.ToString().ToLowerInvariant())",
+            "admission_state=$($env:LIBGPG_ERROR_ADMISSION_STATE)",
+            'install_attempted=0',
+            'build_attempted=0'
+          ) | Set-Content "$output\evidence\dependency-admission-preflight.txt"
           if ($env:LIBGPG_ERROR_ADMISSION_STATE -ne 'admitted-immutable-remint' -or
               $release.immutable -ne $true) {
             throw @"
