@@ -471,7 +471,8 @@ jobs:
             -DependencyArchive $deps `
             -CandidateArchive $candidates `
             -ReportDirectory $report `
-            -PrivateBaseLocalDb (Join-Path $root 'var\lib\pacman\local')
+            -PrivateBaseLocalDb (Join-Path $root 'var\lib\pacman\local') `
+            -ExpectedBaseDbEntries ([int]$m.privateBase.localDbEntryCount)
 
       - name: Upload lifecycle report
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -588,16 +589,23 @@ jobs:
             (Join-Path $extract 'opt\aarch64-pc-msys\usr\bin\msys-npth-*.dll') `
             -Destination $bundle
 
-          $objdump = Join-Path $hostRoot 'opt\aarch64-pc-cygwin\bin\objdump.exe'
-          $nm = Join-Path $hostRoot 'opt\aarch64-pc-cygwin\bin\nm.exe'
-          foreach ($tool in @($objdump, $nm)) {
+          $tools = [ordered]@{
+            '/opt/aarch64-pc-cygwin/bin/objdump.exe' =
+              (Join-Path $hostRoot 'opt\aarch64-pc-cygwin\bin\objdump.exe')
+            '/opt/aarch64-pc-cygwin/bin/nm.exe' =
+              (Join-Path $hostRoot 'opt\aarch64-pc-cygwin\bin\nm.exe')
+          }
+          foreach ($ownedPath in $tools.Keys) {
+            $tool = $tools[$ownedPath]
             if (-not (Test-Path -LiteralPath $tool)) { throw "fixed-binutils is missing $tool" }
-            $owner = & $pacman @common -Qo $tool
+            $owner = & $pacman @common -Qo $ownedPath
             if ($LASTEXITCODE -ne 0 -or
                 $owner -notmatch 'mingw-w64-cross-cygwinarm64-binutils 2\.44\.50-2') {
               throw "Fixed-binutils package does not own $tool"
             }
           }
+          $objdump = $tools['/opt/aarch64-pc-cygwin/bin/objdump.exe']
+          $nm = $tools['/opt/aarch64-pc-cygwin/bin/nm.exe']
           $env:PATH = "$(Join-Path $hostRoot 'usr\bin');$env:PATH"
 
           & (Join-Path $recipe 'native-verify.ps1') `

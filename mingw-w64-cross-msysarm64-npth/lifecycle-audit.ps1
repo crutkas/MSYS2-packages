@@ -12,11 +12,10 @@
   --assume-installed are never used - the full local dependency closure is
   installed from real archives so pacman resolves genuinely.
 
-  The shared runner database at C:\msys64 carries the 1178-entry local database
-  and pacman log; both are sealed before and after and must be byte-for-byte
-  identical afterwards. The private base's own local database is likewise sealed
-  and must be unchanged. This job only reads/compares those shared paths, it
-  never uses their tools for package work.
+  The shared runner database and pacman log are sealed before and after and must
+  be byte-for-byte identical afterwards. The immutable private base's own
+  1178-entry local database is likewise sealed and must be unchanged. This job
+  only reads/compares shared paths; it never uses their tools for package work.
 
   Pure helpers are dot-sourceable (set $LifecycleDotSource before dot-sourcing)
   so test-lifecycle-audit.ps1 can drive them offline with synthetic fixtures.
@@ -31,7 +30,7 @@ param(
   [string] $ReportDirectory,
   [string] $PrivateBaseLocalDb,
   [int] $ExpectedBaseDbEntries = 0,
-  [int] $ExpectedSharedDbEntries = 1178,
+  [int] $ExpectedSharedDbEntries = 0,
   [string] $SharedDatabase = 'C:\msys64\var\lib\pacman\local',
   [string] $SharedLog = 'C:\msys64\var\log\pacman.log'
 )
@@ -191,7 +190,7 @@ function Invoke-LifecycleAudit {
     [Parameter(Mandatory)] [string] $ReportDirectory,
     [Parameter(Mandatory)] [string] $PrivateBaseLocalDb,
     [int] $ExpectedBaseDbEntries = 0,
-    [int] $ExpectedSharedDbEntries = 1178,
+    [int] $ExpectedSharedDbEntries = 0,
     [string] $SharedDatabase = 'C:\msys64\var\lib\pacman\local',
     [string] $SharedLog = 'C:\msys64\var\log\pacman.log'
   )
@@ -213,7 +212,7 @@ function Invoke-LifecycleAudit {
   $sharedBefore = Get-TreeSeal -Path $SharedDatabase
   $sharedLogBefore = Get-FileSeal -Path $SharedLog
   $sharedEntriesBefore = Get-LocalDbEntryCount -LocalDbPath $SharedDatabase
-  if ($sharedEntriesBefore -ne $ExpectedSharedDbEntries) {
+  if ($ExpectedSharedDbEntries -gt 0 -and $sharedEntriesBefore -ne $ExpectedSharedDbEntries) {
     throw "Shared C:\msys64 local DB has $sharedEntriesBefore entries, expected $ExpectedSharedDbEntries"
   }
   $baseBefore = Get-TreeSeal -Path $PrivateBaseLocalDb
@@ -345,8 +344,9 @@ SigLevel = Never
   $sharedLogAfter | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $ReportDirectory 'shared-log-after.json')
 
   if ($sharedAfter -ne $sharedBefore) { throw 'Shared C:\msys64 package database changed during the transaction' }
-  if ($sharedEntriesAfter -ne $sharedEntriesBefore -or $sharedEntriesAfter -ne $ExpectedSharedDbEntries) {
-    throw "Shared C:\msys64 local DB entry count changed to $sharedEntriesAfter (expected $ExpectedSharedDbEntries)"
+  if ($sharedEntriesAfter -ne $sharedEntriesBefore -or
+      ($ExpectedSharedDbEntries -gt 0 -and $sharedEntriesAfter -ne $ExpectedSharedDbEntries)) {
+    throw "Shared C:\msys64 local DB entry count changed to $sharedEntriesAfter (before $sharedEntriesBefore)"
   }
   if ($sharedLogAfter.sha256 -ne $sharedLogBefore.sha256 -or $sharedLogAfter.size -ne $sharedLogBefore.size) {
     throw 'Shared C:\msys64 pacman log changed during the transaction'
@@ -356,7 +356,7 @@ SigLevel = Never
     throw "Private base local DB entry count changed to $baseEntriesAfter (expected $baseEntriesBefore)"
   }
 
-  Write-Output "Lifecycle audit passed: install/remove/reinstall verified; shared C:\msys64 database unchanged ($ExpectedSharedDbEntries entries) and private base unchanged ($baseEntriesBefore entries)."
+  Write-Output "Lifecycle audit passed: install/remove/reinstall verified; shared C:\msys64 database unchanged ($sharedEntriesBefore entries) and private base unchanged ($baseEntriesBefore entries)."
 }
 
 $script:LifecycleDotSourced = $false
