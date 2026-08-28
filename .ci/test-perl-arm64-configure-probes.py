@@ -130,7 +130,13 @@ def resolve_probe_aliases(output_name: str, directory: Path, shim_root: str) -> 
         return False, False
     (directory / "try.exe").write_bytes(source.read_bytes())
     (directory / "try").write_text(
-        f"#!/bin/sh\nexec \"{shim_root}/try.exe\" \"$@\"\n",
+        "#!/bin/sh\n"
+        "for candidate in ./try.exe \"$PWD/try.exe\" /try.exe; do\n"
+        "  if [ -f \"$candidate\" ]; then\n"
+        "    exec \"$candidate\" \"$@\"\n"
+        "  fi\n"
+        "done\n"
+        "exit 127\n",
         encoding="ascii",
     )
     return (directory / "try").is_file(), (directory / "try.exe").is_file()
@@ -149,7 +155,13 @@ def assert_suffix_behaviour() -> None:
             got_try, got_try_exe = resolve_probe_aliases(output_name, tmpdir, shim_root)
             assert got_try and got_try_exe, f"wrapper failed to alias {output_name}"
             assert (tmpdir / "try").read_text(encoding="ascii") == (
-                f"#!/bin/sh\nexec \"{shim_root}/try.exe\" \"$@\"\n"
+                "#!/bin/sh\n"
+                "for candidate in ./try.exe \"$PWD/try.exe\" /try.exe; do\n"
+                "  if [ -f \"$candidate\" ]; then\n"
+                "    exec \"$candidate\" \"$@\"\n"
+                "  fi\n"
+                "done\n"
+                "exit 127\n"
             ), f"wrapper shim content changed for {output_name}"
             assert (tmpdir / "try.exe").read_text(encoding="ascii") == "probe"
 

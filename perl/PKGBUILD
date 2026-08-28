@@ -139,7 +139,12 @@ if [ \$status -eq 0 ] && [ -n "\$out" ]; then
         cp -f "\$src" try.exe 2>/dev/null || true
       cat > try <<TRYEOF
 #!/bin/sh
-exec "$shim_root/try.exe" "$@"
+for candidate in ./try.exe "$PWD/try.exe" /try.exe; do
+  if [ -f "$candidate" ]; then
+    exec "$candidate" "$@"
+  fi
+done
+exit 127
 TRYEOF
         chmod +x try 2>/dev/null || true
       fi
