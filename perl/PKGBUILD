@@ -138,7 +138,7 @@ if [ \$status -eq 0 ] && [ -n "\$out" ]; then
         cp -f "\$src" try.exe 2>/dev/null || true
         cat > try <<'TRYEOF'
 #!/bin/sh
-exec ./try.exe "$@"
+exec "$PWD/try.exe" "$@"
 TRYEOF
         chmod +x try 2>/dev/null || true
       fi
