@@ -1,0 +1,9 @@
+*.pkg.tar.*
+*.tar.xz
+*.tar.xz.sig
+__pycache__/
+check-aarch64-pseudo-relocs.ps1
+src/
+pkg/
+gmp-report/
+repro-*/

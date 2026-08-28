@@ -1,0 +1,226 @@
+{
+  "schema": 2,
+  "package": "mingw-w64-cross-msysarm64-gmp",
+  "version": "6.3.0-2",
+  "target": "aarch64-pc-msys",
+  "personality": "MSYS",
+  "abi": {
+    "data_model": "LP64",
+    "calling_convention": "AAPCS64",
+    "exception_model": "SEH",
+    "assembly": "disabled-until-pe-coff-seh-unwind-is-proven"
+  },
+  "source": {
+    "archive": {
+      "url": "https://ftpmirror.gnu.org/gmp/gmp-6.3.0.tar.xz",
+      "size": 2094196,
+      "sha256": "a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898"
+    },
+    "signature": {
+      "url": "https://ftpmirror.gnu.org/gmp/gmp-6.3.0.tar.xz.sig",
+      "size": 374,
+      "sha256": "94def8c1a731854de684689126046ec93589147abd4cd0025f12d741d323aa82",
+      "signer": "343C2FF0FBEE5EC2EDBEF399F3599FF828C67298"
+    },
+    "signing_key": {
+      "url": "https://raw.githubusercontent.com/mozilla-firefox/firefox/56036ccaf45df86c0155e9b9cf3d9f240888db0b/build/unix/build-gcc/343C2FF0FBEE5EC2EDBEF399F3599FF828C67298.key",
+      "size": 2050,
+      "sha256": "c492d99c6407bb32d793ec3540b650adc8b8bf9829634fbce3d8709cc63db0a0",
+      "fingerprint": "343C2FF0FBEE5EC2EDBEF399F3599FF828C67298"
+    }
+  },
+  "pseudo_relocation_scanner": {
+    "url": "https://raw.githubusercontent.com/crutkas/MSYS2-packages/3356eec1411983cc252b04afac32bca5f3b8d824/.ci/check-aarch64-pseudo-relocs.ps1",
+    "size": 10569,
+    "sha256": "888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9"
+  },
+  "private_msys2_base": {
+    "archive": {
+      "url": "https://repo.msys2.org/distrib/x86_64/msys2-base-x86_64-20260611.tar.xz",
+      "size": 53555380,
+      "sha256": "a2d047e8ee213c3c6a49a8de427eb1069df12207c0422ff1b3cbb5c905c34221"
+    },
+    "signature": {
+      "url": "https://repo.msys2.org/distrib/x86_64/msys2-base-x86_64-20260611.tar.xz.sig",
+      "size": 566,
+      "sha256": "076f5623b702d5016cf0253e1d14a6bd4870a90243243e96409b227f0d5bf70f",
+      "signer": "E0AA0F031DBD80FFBA57B06D5A62D0CAB6264964",
+      "primary_key": "0EBF782C5D53F7E5FB02A66746BD761F7A49B0EC"
+    },
+    "signing_key": {
+      "url": "https://raw.githubusercontent.com/sous-chefs/cinc-omnibus/74d12b9b38bc37874a8771ca41c42a91a8133016/files/default/msys2-signing-key.asc",
+      "size": 39649,
+      "sha256": "a8ad613c9f662e3e76260e02c69b0afd7b13a33043e546eebdf195650b33d0ba",
+      "fingerprint": "0EBF782C5D53F7E5FB02A66746BD761F7A49B0EC"
+    }
+  },
+  "host_assets": [
+    {
+      "name": "gcc-15.2.0-1-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/gcc-15.2.0-1-x86_64.pkg.tar.zst",
+      "size": 53958994,
+      "sha256": "1470497cced1a6b0ab23db0322474e668db470763b6353a545a749d5c5cff391"
+    },
+    {
+      "name": "binutils-2.45-1-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/binutils-2.45-1-x86_64.pkg.tar.zst",
+      "size": 6009943,
+      "sha256": "f7ee6c80bb54eb524a0aa4c446d7a47996e989113c0554db0692ff262664c9ad"
+    },
+    {
+      "name": "make-4.4.1-3-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/make-4.4.1-3-x86_64.pkg.tar.zst",
+      "size": 514683,
+      "sha256": "af0bdba17f06fe037f0194069adaa31a8fe45f1a11381501896aea1fae37bd5d"
+    },
+    {
+      "name": "m4-1.4.21-1-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/m4-1.4.21-1-x86_64.pkg.tar.zst",
+      "size": 258635,
+      "sha256": "b561e8871c7599502d9fae7196ee965b3fed3d7af09154eb8d2f5e4d9e5e5106"
+    },
+    {
+      "name": "autoconf2.73-2.73-1-any.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/autoconf2.73-2.73-1-any.pkg.tar.zst",
+      "size": 747391,
+      "sha256": "716d0542dc12a481f1c2d5574f17f1470eb9d3226cf6e206d4e243c12fa95e1a"
+    },
+    {
+      "name": "automake1.18-1.18.1-1-any.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/automake1.18-1.18.1-1-any.pkg.tar.zst",
+      "size": 556123,
+      "sha256": "c045d9eddf900dbacae06d9e0e19e250cc32d849def7d06b833253f85e3fc941"
+    },
+    {
+      "name": "libtool-2.5.4-4-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/libtool-2.5.4-4-x86_64.pkg.tar.zst",
+      "size": 415399,
+      "sha256": "c8e812a9a32dd86c53d6e9bd5ec94977a5fc66d2ce3e691d92196aa06f616775"
+    },
+    {
+      "name": "libltdl-2.5.4-4-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/libltdl-2.5.4-4-x86_64.pkg.tar.zst",
+      "size": 41881,
+      "sha256": "cc2d1a21088e108c5fd3390b37fd7cc5d10b33596d5200f95483b684491da203"
+    },
+    {
+      "name": "diffutils-3.12-1-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/diffutils-3.12-1-x86_64.pkg.tar.zst",
+      "size": 394515,
+      "sha256": "7902c8ce3d4dd69a0f5e98dc9d5c83c17b23314ba486169db57ef6e2835ce3b6"
+    },
+    {
+      "name": "isl-0.27-1-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/isl-0.27-1-x86_64.pkg.tar.zst",
+      "size": 768472,
+      "sha256": "cdd0a4ce0bf0d9e3f3eff2b770b8143e09e126a614de8b55bb5d30fc596b92d1"
+    },
+    {
+      "name": "mpc-1.4.1-1-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/mpc-1.4.1-1-x86_64.pkg.tar.zst",
+      "size": 87944,
+      "sha256": "0f5073ec2e8be265854ee3c7cb1079b5e8e02264d53e659d8414988c6c182f16"
+    },
+    {
+      "name": "msys2-runtime-devel-3.6.9-2-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/msys2-runtime-devel-3.6.9-2-x86_64.pkg.tar.zst",
+      "size": 5900068,
+      "sha256": "5de8fd8930e166070c88667b69914418c04b571e34f065016ab40a7e9b4a76ef"
+    },
+    {
+      "name": "msys2-w32api-headers-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/msys2-w32api-headers-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst",
+      "size": 6203022,
+      "sha256": "fcadf735fb214d33c64e145f82490c8693aeb6cb6a20ee8479e9f408aa832613"
+    },
+    {
+      "name": "msys2-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/msys2-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst",
+      "size": 3042471,
+      "sha256": "a9c5c922f5191f7e73333ea2d5392811282387986b9cb7f94a7c9156f717d4b3"
+    },
+    {
+      "name": "windows-default-manifest-6.4-2-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/windows-default-manifest-6.4-2-x86_64.pkg.tar.zst",
+      "size": 3073,
+      "sha256": "865a33d80d4e88f9aee66a755c51fa4bb0d4241063fcf72e6d0738b7c90b6a33"
+    }
+  ],
+  "canonical_runtime": {
+    "package": "mingw-w64-cross-msysarm64-runtime",
+    "version": null,
+    "pkgrel": null,
+    "required_version": null,
+    "release_tag": null,
+    "asset_name": null,
+    "size": null,
+    "sha256": null,
+    "coordinator_admission_reference": null,
+    "independent_redownload_verified": false,
+    "admitted": false
+  },
+  "canonical_prerequisite_assets": [],
+  "canonical_runtime_admitted": false,
+  "build_classification": {
+    "status": "blocked-missing-corrected-runtime",
+    "admissible": false,
+    "publishable": false,
+    "consumable": false
+  },
+  "package_candidates": {
+    "records": [
+      {
+        "package": "mingw-w64-cross-msysarm64-gmp",
+        "required_version": "6.3.0-2",
+        "release_tag": null,
+        "asset_name": null,
+        "size": null,
+        "sha256": null,
+        "coordinator_admission_reference": null,
+        "independent_redownload_verified": false,
+        "admitted": false,
+        "eligible_for_admission": false
+      },
+      {
+        "package": "mingw-w64-cross-msysarm64-gmp-devel",
+        "required_version": "6.3.0-2",
+        "release_tag": null,
+        "asset_name": null,
+        "size": null,
+        "sha256": null,
+        "coordinator_admission_reference": null,
+        "independent_redownload_verified": false,
+        "admitted": false,
+        "eligible_for_admission": false
+      }
+    ]
+  },
+  "product_ownership": {
+    "repository": "build-extra",
+    "pull_request": 12,
+    "frozen_head": "3ef6d935",
+    "source_package": "gmp",
+    "source_version": "6.3.0-2",
+    "source_commit": "7a77c0c5ff81d1c979302c9cc49a62f26f68d17c",
+    "product_residual_paths": [
+      "usr/bin/msys-gmp-10.dll"
+    ],
+    "non_product_categories": [
+      "headers",
+      "import-libraries",
+      "static-libraries",
+      "tools",
+      "tests",
+      "evidence"
+    ]
+  },
+  "deny_tests": [
+    {
+      "kind": "revoked-runtime",
+      "package": "mingw-w64-cross-msysarm64-runtime",
+      "version": "3.6.10.r0.ga527ace21-1",
+      "release_tag": "msysarm64-runtime-pr10-a527-20260824",
+      "reason": "proven unload trampoline defect"
+    }
+  ]
+}
