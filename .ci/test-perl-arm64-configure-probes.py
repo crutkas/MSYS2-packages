@@ -130,7 +130,7 @@ def resolve_probe_aliases(output_name: str, directory: Path) -> tuple[bool, bool
         return False, False
     (directory / "try.exe").write_bytes(source.read_bytes())
     (directory / "try").write_text(
-        "#!/bin/sh\nexec \"$(dirname \"$0\")/try.exe\" \"$@\"\n",
+        "#!/bin/sh\nexec ./try.exe \"$@\"\n",
         encoding="ascii",
     )
     return (directory / "try").is_file(), (directory / "try.exe").is_file()
@@ -148,7 +148,7 @@ def assert_suffix_behaviour() -> None:
             got_try, got_try_exe = resolve_probe_aliases(output_name, tmpdir)
             assert got_try and got_try_exe, f"wrapper failed to alias {output_name}"
             assert (tmpdir / "try").read_text(encoding="ascii") == (
-                "#!/bin/sh\nexec \"$(dirname \"$0\")/try.exe\" \"$@\"\n"
+                "#!/bin/sh\nexec ./try.exe \"$@\"\n"
             ), f"wrapper shim content changed for {output_name}"
             assert (tmpdir / "try.exe").read_text(encoding="ascii") == "probe"
 
