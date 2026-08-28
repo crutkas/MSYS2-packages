@@ -365,6 +365,7 @@ jobs:
           }
 
           [ordered]@{
+            package_archives_equal = $true
             inner_trees_equal = $true
             input_download_seals_equal = $true
             native_smoke_equal = $true
@@ -664,7 +665,8 @@ jobs:
           $comparison = Get-Content -Raw `
             (Join-Path $downloads 'npth-compare-report\comparison-evidence.json') |
             ConvertFrom-Json
-          if (-not $comparison.inner_trees_equal -or
+          if (-not $comparison.package_archives_equal -or
+              -not $comparison.inner_trees_equal -or
               -not $comparison.input_download_seals_equal -or
               -not $comparison.native_smoke_equal -or
               -not $comparison.package_dll_bound) {
@@ -699,6 +701,7 @@ jobs:
               descends_from_parent = $ancestry
             }
             source_date_epoch = [long]$env:SOURCE_DATE_EPOCH
+            package_archives_equal = $comparison.package_archives_equal
             inner_package_trees_equal = $comparison.inner_trees_equal
             input_download_seals_equal = $comparison.input_download_seals_equal
             native_smoke_inputs_equal = $comparison.native_smoke_equal
