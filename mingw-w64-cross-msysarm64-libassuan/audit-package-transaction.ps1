@@ -25,11 +25,36 @@ param(
 $ErrorActionPreference = 'Stop'
 $env:MSYS = 'winsymlinks:sys'
 $buildInfoValidator = Join-Path $PSScriptRoot 'validate-buildinfo-path.ps1'
+$gzip = Join-Path (Split-Path -Parent $Bsdtar) 'gzip.exe'
+if (-not (Test-Path -LiteralPath $gzip)) {
+    throw "Private package tools are missing gzip: $gzip"
+}
 $expectedNames = @(
     'mingw-w64-cross-msysarm64-libassuan',
     'mingw-w64-cross-msysarm64-libassuan-devel',
     'mingw-w64-cross-msysarm64-libassuan-tools'
 )
+$expectedFiles = @{
+    'mingw-w64-cross-msysarm64-libassuan' = @(
+        'opt/aarch64-pc-msys/usr/bin/msys-assuan-9.dll',
+        'usr/share/licenses/mingw-w64-cross-msysarm64-libassuan/COPYING.LIB'
+    )
+    'mingw-w64-cross-msysarm64-libassuan-devel' = @(
+        'opt/aarch64-pc-msys/usr/include/assuan.h',
+        'opt/aarch64-pc-msys/usr/lib/libassuan.a',
+        'opt/aarch64-pc-msys/usr/lib/libassuan.dll.a',
+        'opt/aarch64-pc-msys/usr/lib/libassuan.la',
+        'opt/aarch64-pc-msys/usr/lib/pkgconfig/libassuan.pc',
+        'opt/aarch64-pc-msys/usr/share/aclocal/libassuan.m4',
+        'opt/aarch64-pc-msys/usr/share/info/assuan.info',
+        'opt/aarch64-pc-msys/usr/share/info/dir',
+        'usr/share/licenses/mingw-w64-cross-msysarm64-libassuan-devel/COPYING.LIB'
+    )
+    'mingw-w64-cross-msysarm64-libassuan-tools' = @(
+        'opt/aarch64-pc-msys/usr/bin/libassuan-config',
+        'usr/share/licenses/mingw-w64-cross-msysarm64-libassuan-tools/COPYING.LIB'
+    )
+}
 $transactionFullPath = [IO.Path]::GetFullPath($TransactionRoot)
 if ([IO.Path]::GetPathRoot($transactionFullPath) -eq $transactionFullPath -or
     [IO.Path]::GetFileName($transactionFullPath) -notmatch 'libassuan') {
@@ -172,6 +197,34 @@ function Export-ArchiveMember {
     }
 }
 
+function Export-MtreeText {
+    param(
+        [string]$Archive,
+        [string]$RawDestination,
+        [string]$TextDestination
+    )
+
+    Export-ArchiveMember -Archive $Archive -Member '.MTREE' -Destination $RawDestination
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $gzip
+    $startInfo.ArgumentList.Add('-dc')
+    $startInfo.ArgumentList.Add($RawDestination)
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.UseShellExecute = $false
+    $process = [Diagnostics.Process]::Start($startInfo)
+    $stream = [IO.File]::Create($TextDestination)
+    try {
+        $process.StandardOutput.BaseStream.CopyTo($stream)
+    }
+    finally {
+        $stream.Dispose()
+    }
+    $process.WaitForExit()
+    if ($process.ExitCode -ne 0) {
+        throw "Unable to decompress .MTREE from $Archive"
+    }
+}
+
 function Invoke-Pacman {
     param([string[]]$Arguments)
 
@@ -258,6 +311,10 @@ foreach ($archive in $CandidateArchives) {
     if ($files.Count -eq 0) {
         throw "$name has an empty payload"
     }
+    if ((($files | Sort-Object) -join "`n") -cne
+        (($expectedFiles[$name] | Sort-Object) -join "`n")) {
+        throw "$name does not own its exact required split payload"
+    }
     foreach ($file in $files) {
         if ($file -notmatch '^(opt/aarch64-pc-msys/usr/|usr/share/licenses/)') {
             throw "$name owns path outside the approved prefixes: $file"
@@ -268,11 +325,49 @@ foreach ($archive in $CandidateArchives) {
         $owners[$file] = $name
     }
 
+    $entries = @(& $Bsdtar -tf $archive)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to enumerate package archive $archive"
+    }
+    foreach ($metadata in @('.PKGINFO', '.BUILDINFO', '.MTREE')) {
+        if (@($entries | Where-Object { $_ -ceq $metadata }).Count -ne 1) {
+            throw "$name does not contain exactly one $metadata entry"
+        }
+    }
+    $duplicates = @($entries | Group-Object -CaseSensitive | Where-Object Count -gt 1)
+    if ($duplicates.Count -ne 0) {
+        throw "$name contains duplicate archive entries: $($duplicates.Name -join ', ')"
+    }
+
     $pkgInfoPath = Join-Path $ReportDirectory "$name.PKGINFO"
     Export-ArchiveMember -Archive $archive -Member '.PKGINFO' -Destination $pkgInfoPath
     $buildInfoPath = Join-Path $ReportDirectory "$name.BUILDINFO"
     Export-ArchiveMember -Archive $archive -Member '.BUILDINFO' -Destination $buildInfoPath
     & $buildInfoValidator -Path $buildInfoPath
+    $mtreeRawPath = Join-Path $ReportDirectory "$name.MTREE.gz"
+    $mtreeTextPath = Join-Path $ReportDirectory "$name.MTREE"
+    Export-MtreeText `
+        -Archive $archive `
+        -RawDestination $mtreeRawPath `
+        -TextDestination $mtreeTextPath
+    $mtreeLines = @(Get-Content -LiteralPath $mtreeTextPath)
+    if ($mtreeLines.Count -eq 0 -or $mtreeLines[0] -cne '#mtree') {
+        throw "$name has an invalid decompressed .MTREE header"
+    }
+    $unexpectedTimes = @($mtreeLines | Where-Object {
+        $_ -match ' time=' -and $_ -notmatch ' time=1786817435\.0(?: |$)'
+    })
+    if ($unexpectedTimes.Count -ne 0) {
+        throw "$name .MTREE contains nondeterministic timestamps"
+    }
+    $mtreeFiles = @($mtreeLines | ForEach-Object {
+        if ($_ -match '^\./(\S+)(?: |$)' -and $_ -notmatch ' type=dir(?: |$)') {
+            $Matches[1]
+        }
+    } | Where-Object { $_ -notin @('.BUILDINFO', '.PKGINFO') } | Sort-Object)
+    if (($mtreeFiles -join "`n") -cne (($files | Sort-Object) -join "`n")) {
+        throw "$name .MTREE file ownership differs from its archive payload"
+    }
     $hash = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
     $packageRecords += [pscustomobject]@{
         name = $name
@@ -284,6 +379,9 @@ foreach ($archive in $CandidateArchives) {
         pkginfoSha256 = (Get-FileHash -Algorithm SHA256 $pkgInfoPath).Hash.ToLowerInvariant()
         buildinfoSize = (Get-Item -LiteralPath $buildInfoPath).Length
         buildinfoSha256 = (Get-FileHash -Algorithm SHA256 $buildInfoPath).Hash.ToLowerInvariant()
+        mtreeSize = (Get-Item -LiteralPath $mtreeRawPath).Length
+        mtreeSha256 = (Get-FileHash -Algorithm SHA256 $mtreeRawPath).Hash.ToLowerInvariant()
+        mtreeTextSha256 = (Get-FileHash -Algorithm SHA256 $mtreeTextPath).Hash.ToLowerInvariant()
         files = $files.Count
         depends = @($info.depend)
         provides = @($info.provides)
@@ -348,6 +446,59 @@ foreach ($name in $expectedNames) {
     }
 }
 
+$baselineCheck = & $Pacman @common -Qkk @expectedNames 2>&1
+if ($LASTEXITCODE -ne 0) {
+    throw 'Freshly installed candidate packages failed pacman -Qkk'
+}
+$baselineCheck | Set-Content -Encoding utf8 `
+    (Join-Path $ReportDirectory 'qkk-installed.txt')
+
+$runtimeDll = Join-Path $TransactionRoot `
+    'opt\aarch64-pc-msys\usr\bin\msys-assuan-9.dll'
+$header = Join-Path $TransactionRoot 'opt\aarch64-pc-msys\usr\include\assuan.h'
+$runtimeHash = (Get-FileHash -LiteralPath $runtimeDll -Algorithm SHA256).Hash.ToLowerInvariant()
+$stream = [IO.File]::Open($runtimeDll, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite)
+try {
+    $null = $stream.Seek(-1, [IO.SeekOrigin]::End)
+    $value = $stream.ReadByte()
+    $null = $stream.Seek(-1, [IO.SeekOrigin]::End)
+    $stream.WriteByte($value -bxor 1)
+}
+finally {
+    $stream.Dispose()
+}
+$corruptCheck = & $Pacman @common -Qkk `
+    'mingw-w64-cross-msysarm64-libassuan' 2>&1
+if ($LASTEXITCODE -eq 0) {
+    throw 'pacman -Qkk did not reject the corrupted runtime DLL'
+}
+$corruptCheck | Set-Content -Encoding utf8 `
+    (Join-Path $ReportDirectory 'qkk-corrupt-runtime.txt')
+
+Remove-Item -LiteralPath $header -Force
+$missingCheck = & $Pacman @common -Qk `
+    'mingw-w64-cross-msysarm64-libassuan-devel' 2>&1
+if ($LASTEXITCODE -eq 0) {
+    throw 'pacman -Qk did not reject the missing public header'
+}
+$missingCheck | Set-Content -Encoding utf8 `
+    (Join-Path $ReportDirectory 'qk-missing-header.txt')
+
+Invoke-Pacman -Arguments ($common + @(
+    '--assume-installed', 'sh',
+    '-U'
+) + $CandidateArchives)
+if ((Get-FileHash -LiteralPath $runtimeDll -Algorithm SHA256).Hash.ToLowerInvariant() -cne
+    $runtimeHash) {
+    throw 'Candidate reinstall did not restore the exact runtime DLL'
+}
+$recoveredCheck = & $Pacman @common -Qkk @expectedNames 2>&1
+if ($LASTEXITCODE -ne 0) {
+    throw 'Candidate packages failed pacman -Qkk after corruption recovery'
+}
+$recoveredCheck | Set-Content -Encoding utf8 `
+    (Join-Path $ReportDirectory 'qkk-recovered.txt')
+
 Invoke-Pacman -Arguments ($common + @('-Rdd') + $expectedNames)
 foreach ($file in $owners.Keys) {
     if (Test-Path -LiteralPath (Join-Path $TransactionRoot $file.Replace('/', '\'))) {
@@ -370,6 +521,12 @@ foreach ($name in $expectedNames) {
         throw "$name was not reinstalled with the expected version"
     }
 }
+$finalCheck = & $Pacman @common -Qkk @expectedNames 2>&1
+if ($LASTEXITCODE -ne 0) {
+    throw 'Reinstalled candidate packages failed final pacman -Qkk'
+}
+$finalCheck | Set-Content -Encoding utf8 `
+    (Join-Path $ReportDirectory 'qkk-reinstalled.txt')
 
 Copy-Item -LiteralPath $log -Destination (Join-Path $ReportDirectory 'transaction-pacman.log')
 $sharedAfter = Get-DirectorySeal -Path $SharedDatabase

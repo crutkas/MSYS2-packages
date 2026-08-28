@@ -34,6 +34,31 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw '.BUILDINFO path policy fixtures failed'
           }
+          $errors = $null
+          [Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path .\mingw-w64-cross-msysarm64-libassuan\compare-reproducibility.ps1),
+            [ref]$null,
+            [ref]$errors) | Out-Null
+          if ($errors.Count -ne 0) {
+            throw "Reproducibility comparator has syntax errors: $errors"
+          }
+          $runtimeLock = Get-Content -Raw `
+            .\mingw-w64-cross-msysarm64-libassuan\native-runtime-lock.json |
+            ConvertFrom-Json
+          if ($runtimeLock.schemaVersion -ne 1 -or
+              $runtimeLock.approved -ne $false -or
+              $runtimeLock.replacesRuntime -cne '3.6.10.r0.ga527ace21-1') {
+            throw 'Corrected-runtime admission gate is not closed over a527'
+          }
+          foreach ($field in @(
+              'releaseId', 'releaseTag', 'tagObject', 'producerCommit',
+              'runtimeAssetId', 'runtimeUrl', 'runtimeFilename',
+              'runtimeBytes', 'runtimeSha256',
+              'runtimeDllSha256')) {
+            if ($null -ne $runtimeLock.$field) {
+              throw "Closed corrected-runtime lock unexpectedly pins $field"
+            }
+          }
 
       - name: Reject shared-client and floating-action regressions
         shell: pwsh
@@ -46,6 +71,7 @@ jobs:
               ('actions/checkout@' + 'v'),
               ('actions/upload-artifact@' + 'v'),
               ('actions/download-artifact@' + 'v'),
+              ('actions/' + 'cache@'),
               ($shared + '\usr\bin\pacman'),
               ($shared + '\usr\bin\bsdtar'),
               ($shared + '\etc\pacman.d\gnupg'))) {
@@ -57,7 +83,12 @@ jobs:
   build:
     needs: static-policy
     if: ${{ github.repository == 'crutkas/MSYS2-packages' }}
+    name: build-${{ matrix.build_lane }}
     runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        build_lane: [a, b]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
@@ -75,6 +106,11 @@ jobs:
           $validator = Join-Path $recipe 'validate-dependency-lock.ps1'
           & $validator -LockPath $lockPath -RequireApproved
           $lock = Get-Content -Raw -LiteralPath $lockPath | ConvertFrom-Json
+          $runtimeLock = Get-Content -Raw -LiteralPath `
+            (Join-Path $recipe 'native-runtime-lock.json') | ConvertFrom-Json
+          if ($runtimeLock.approved) {
+            throw 'Corrected runtime requires an atomic workflow input-materialization update'
+          }
 
           $apiHeaders = @{
             Accept = 'application/vnd.github+json'
@@ -564,8 +600,10 @@ jobs:
             '$postReportPosix' \
             '$repo/mingw-w64-cross-msysarm64-libassuan/context-smoke.c' \
             '$repo/mingw-w64-cross-msysarm64-libassuan/pipe-smoke.c' \
+            '$repo/mingw-w64-cross-msysarm64-libassuan/module-smoke.c' \
             '$transactionPosix/opt/aarch64-pc-msys' \
-            '$buildRootPosix/mingw-w64-cross-msysarm64-libassuan/src/libassuan-3.0.2/src/libassuan.vers'
+            '$buildRootPosix/mingw-w64-cross-msysarm64-libassuan/src/libassuan-3.0.2/src/libassuan.vers' \
+            '$payloadPosix'
           "@
           & $bash -c $postAudit
           if ($LASTEXITCODE -ne 0) {
@@ -580,6 +618,7 @@ jobs:
             (Join-Path $postReport 'smoke\context-dynamic.exe'),
             (Join-Path $postReport 'smoke\context-static.exe'),
             (Join-Path $postReport 'smoke\context-config.exe'),
+            (Join-Path $postReport 'smoke\module-dynamic.exe'),
             (Join-Path $postReport 'smoke\pipe-dynamic.exe'),
             (Join-Path $buildAudit 'dependency-preflight\gpg-error-link.exe')
           )
@@ -604,11 +643,28 @@ jobs:
           Copy-Item -Path `
             (Join-Path $transactionRoot 'opt\aarch64-pc-msys\usr\bin\msys-*.dll') `
             -Destination $bundle
+          Copy-Item -LiteralPath `
+            (Join-Path $env:GITHUB_WORKSPACE `
+              'mingw-w64-cross-msysarm64-libassuan\native-runtime-lock.json') `
+            -Destination $bundle
+          $runtimeArchive = Join-Path $inputs `
+            'mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst'
+          [ordered]@{
+            status = 'DIAGNOSTIC_A527_NOT_ADMITTED'
+            runtimeFilename = [IO.Path]::GetFileName($runtimeArchive)
+            runtimeBytes = (Get-Item -LiteralPath $runtimeArchive).Length
+            runtimeSha256 = (Get-FileHash -LiteralPath $runtimeArchive -Algorithm SHA256).
+              Hash.ToLowerInvariant()
+            runtimeDllSha256 = (Get-FileHash -LiteralPath `
+              (Join-Path $bundle 'msys-2.0.dll') -Algorithm SHA256).
+              Hash.ToLowerInvariant()
+          } | ConvertTo-Json | Set-Content -Encoding utf8 `
+            (Join-Path $bundle 'runtime-provenance.json')
 
       - name: Upload sealed candidate and evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: msysarm64-libassuan-candidate
+          name: msysarm64-libassuan-candidate-${{ matrix.build_lane }}
           if-no-files-found: error
           path: |
             ${{ runner.temp }}/libassuan-candidate/*.pkg.tar.zst
@@ -620,6 +676,8 @@ jobs:
             ${{ runner.temp }}/libassuan-inputs/mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst
             ${{ runner.temp }}/libassuan-inputs/libgpg-error-admission/*
             ${{ runner.temp }}/libassuan-inputs/path-leak-fixtures/*
+            ${{ runner.temp }}/libassuan-inputs/libassuan-3.0.2.tar.bz2
+            ${{ runner.temp }}/libassuan-inputs/libassuan-3.0.2.tar.bz2.sig
             ${{ runner.temp }}/libassuan-logs/*
             ${{ runner.temp }}/libassuan-transaction-report/*
             ${{ runner.temp }}/libassuan-post-package-audit/*
@@ -629,20 +687,77 @@ jobs:
       - name: Upload deterministic native smoke bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: msysarm64-libassuan-native-smoke
+          name: msysarm64-libassuan-native-smoke-${{ matrix.build_lane }}
           if-no-files-found: error
           path: ${{ runner.temp }}/libassuan-native-smoke/*
 
-  native-arm64-smoke:
+  reproducibility:
     needs: build
+    runs-on: windows-2025
+    outputs:
+      corrected-runtime-admitted: ${{ steps.runtime-gate.outputs.approved }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: msysarm64-libassuan-candidate-a
+          path: compare/a
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: msysarm64-libassuan-candidate-b
+          path: compare/b
+
+      - name: Require byte-identical independent builds
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\mingw-w64-cross-msysarm64-libassuan\compare-reproducibility.ps1 `
+            -LeftDirectory compare\a `
+            -RightDirectory compare\b `
+            -ReportPath compare\reproducibility.json
+
+      - name: Preserve closed corrected-runtime gate
+        id: runtime-gate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lock = Get-Content -Raw `
+            .\mingw-w64-cross-msysarm64-libassuan\native-runtime-lock.json |
+            ConvertFrom-Json
+          if ($lock.approved) {
+            foreach ($field in @(
+                'releaseId', 'releaseTag', 'tagObject', 'producerCommit',
+                'runtimeAssetId', 'runtimeUrl', 'runtimeFilename',
+                'runtimeBytes', 'runtimeSha256',
+                'runtimeDllSha256')) {
+              if ($null -eq $lock.$field -or [string]::IsNullOrWhiteSpace(
+                  [string]$lock.$field)) {
+                throw "Approved corrected-runtime lock is missing $field"
+              }
+            }
+          }
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT `
+            -Value "approved=$($lock.approved.ToString().ToLowerInvariant())"
+
+      - name: Upload A/B equality evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: msysarm64-libassuan-reproducibility
+          if-no-files-found: error
+          path: compare/reproducibility.json
+
+  native-a527-diagnostic:
+    needs: reproducibility
     runs-on: windows-11-arm
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: msysarm64-libassuan-native-smoke
+          name: msysarm64-libassuan-native-smoke-a
           path: smoke
 
-      - name: Run strict native ARM64 dynamic and static smoke
+      - name: Run non-admitting a527 native diagnostics
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -670,4 +785,56 @@ jobs:
             if ($LASTEXITCODE -ne 0) {
               throw "$program failed with exit code $LASTEXITCODE"
             }
+          }
+          Write-Warning 'a527 native results are diagnostic and cannot admit successor bytes'
+
+  native-arm64-final:
+    needs: reproducibility
+    if: ${{ needs.reproducibility.outputs.corrected-runtime-admitted == 'true' }}
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: msysarm64-libassuan-native-smoke-a
+          path: smoke
+
+      - name: Prove corrected-runtime native process and loaded modules
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:PROCESSOR_ARCHITECTURE -cne 'ARM64') {
+            throw "Final proof requires ARM64, found $env:PROCESSOR_ARCHITECTURE"
+          }
+          $bundle = (Resolve-Path -LiteralPath smoke).Path
+          $lock = Get-Content -Raw (Join-Path $bundle 'native-runtime-lock.json') |
+            ConvertFrom-Json
+          if (-not $lock.approved) {
+            throw 'Final native proof cannot use the closed runtime lock'
+          }
+          $provenance = Get-Content -Raw `
+            (Join-Path $bundle 'runtime-provenance.json') | ConvertFrom-Json
+          if ($provenance.status -ceq 'DIAGNOSTIC_A527_NOT_ADMITTED' -or
+              $provenance.runtimeSha256 -ceq
+                '158c505f45025a466950faa7c85c9fd85e9d32384dd27b53586ffc75d71ca78e' -or
+              $provenance.runtimeDllSha256 -ceq
+                '39359823d6a75b309e6936a4456eb7e88026b36fa30d728046fbc77ccf775993') {
+            throw 'Final native proof refuses the known a527 runtime bytes'
+          }
+          foreach ($field in @(
+              'runtimeFilename', 'runtimeBytes', 'runtimeSha256',
+              'runtimeDllSha256')) {
+            if ([string]$provenance.$field -cne [string]$lock.$field) {
+              throw "Native runtime provenance does not match admitted $field"
+            }
+          }
+          $runtime = Join-Path $bundle 'msys-2.0.dll'
+          $runtimeHash = (Get-FileHash -LiteralPath $runtime -Algorithm SHA256).
+            Hash.ToLowerInvariant()
+          if ($runtimeHash -cne $lock.runtimeDllSha256) {
+            throw 'Final native bundle does not contain the admitted runtime DLL'
+          }
+          $env:PATH = "$bundle;$env:PATH"
+          & (Join-Path $bundle 'module-dynamic.exe')
+          if ($LASTEXITCODE -ne 0) {
+            throw "Native process/module proof failed with exit code $LASTEXITCODE"
           }

@@ -11,8 +11,8 @@ _gcc_pkgrel=1
 _libgpg_error_version=1.56
 _libgpg_error_pkgrel=1
 
-# The a527 runtime is immutable. Candidate packages remain provisional until
-# the coordinator-approved fixed-binutils build passes native ARM64 CI.
+# The a527 runtime is diagnostic only. Candidate packages remain provisional
+# until a coordinator-approved replacement passes final native ARM64 proof.
 pkgbase=mingw-w64-cross-msysarm64-libassuan
 pkgname=(
   mingw-w64-cross-msysarm64-libassuan
@@ -48,14 +48,16 @@ source=(
   audit-path-leaks.sh
   context-smoke.c
   pipe-smoke.c
+  module-smoke.c
 )
 sha256sums=('d2931cdad266e633510f9970e1a2f346055e351bb19f9b78912475b8074c36f6'
-            'SKIP'
+            '5aa3c5cea6f42bcb96be9e1dd922b33ccb05e2f0565e93674e85ddcf8cd78e86'
             '9837396b27c840ae0dc100ec17e197600d63f6c2bf81a4c4dafd2aee26a0c08d'
-            '397e2fee0835bc9b924e3b19d23a3b78c207c7f2684b158b504d6e216bb97eeb'
+            'e7333b6e0cfab4098996bc483faaf713e57dfc7e5a5ffcc95d02094287bf32d9'
             '17151b44d554b9d5c7937e1180f63679a98c1c8743645caf2a138808929bf0d9'
             'e5821e9cb0da1fc74f07228364d4186c7ae09d06288a69f54c6483ada11fc8aa'
-            '17fa138b275c075a44d11aed14a43a0cb78dc5e07924f614b4b632b516134632')
+            '17fa138b275c075a44d11aed14a43a0cb78dc5e07924f614b4b632b516134632'
+            'b50ffa14e47fea70f6d3ea8567b0a0c69d14a09d7b75930d0d01d830891051f9')
 validpgpkeys=('6DAA6E64A76D2840571B4902528897B826403ADA'
               'AC8E115BF73E2D8D47FA9908E98E9B2D19C6C8BD')
 
@@ -181,8 +183,10 @@ check() {
     "${srcdir}/audit-report" \
     "${srcdir}/context-smoke.c" \
     "${srcdir}/pipe-smoke.c" \
+    "${srcdir}/module-smoke.c" \
     "/opt/${_target}" \
-    "${srcdir}/${_realname}-${pkgver}/src/libassuan.vers"
+    "${srcdir}/${_realname}-${pkgver}/src/libassuan.vers" \
+    "${srcdir}/dest"
   mkdir -p "${srcdir}/audit-report/dependency-preflight"
   cp -a "${srcdir}/dependency-preflight/." \
     "${srcdir}/audit-report/dependency-preflight/"

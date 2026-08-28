@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if (( $# != 6 )); then
-  echo "usage: $0 DESTDIR REPORT_DIR CONTEXT_SMOKE PIPE_SMOKE TARGET_ROOT EXPORT_MAP" >&2
+if (( $# != 8 )); then
+  echo "usage: $0 DESTDIR REPORT_DIR CONTEXT_SMOKE PIPE_SMOKE MODULE_SMOKE TARGET_ROOT EXPORT_MAP PAYLOAD_ROOT" >&2
   exit 2
 fi
 
@@ -10,8 +10,10 @@ dest=$1
 report=$2
 context_source=$3
 pipe_source=$4
-target_root=$5
-export_map=$6
+module_source=$5
+target_root=$6
+export_map=$7
+payload_root=$8
 target=aarch64-pc-msys
 prefix="${dest}/usr"
 objdump="${target}-objdump"
@@ -206,6 +208,9 @@ done < <(
     \( -name '*.la' -o -name '*.pc' -o -name '*.m4' -o -name '*-config' \) \
     -print0
 )
+while IFS= read -r -d '' staged_file; do
+  audit_source_paths "${staged_file}" "${staged_file#${payload_root}/}"
+done < <(find "${payload_root}" -type f -print0)
 
 audit_sysroot="${report}/consumer-sysroot"
 rm -rf "${audit_sysroot}"
@@ -258,6 +263,8 @@ consumer_flags=(
   "${consumer_flags[@]}" "${context_source}" "${pkgconf_dynamic_args[@]}"
 "${cc}" -o "${report}/smoke/pipe-dynamic.exe" \
   "${consumer_flags[@]}" "${pipe_source}" "${pkgconf_dynamic_args[@]}"
+"${cc}" -o "${report}/smoke/module-dynamic.exe" \
+  "${consumer_flags[@]}" "${module_source}" "${pkgconf_dynamic_args[@]}"
 "${cc}" -Wl,-Bstatic -o "${report}/smoke/context-static.exe" \
   "${consumer_flags[@]}" "${context_source}" "${pkgconf_static_args[@]}" \
   -Wl,-Bdynamic
@@ -271,6 +278,7 @@ done
 for smoke in \
   "${report}/smoke/context-dynamic.exe" \
   "${report}/smoke/context-config.exe" \
+  "${report}/smoke/module-dynamic.exe" \
   "${report}/smoke/pipe-dynamic.exe"; do
   dynamic_imports="${smoke%.exe}.imports-full.txt"
   "${objdump}" -p "${smoke}" > "${dynamic_imports}"
