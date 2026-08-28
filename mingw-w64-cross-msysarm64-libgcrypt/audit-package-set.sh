@@ -1,0 +1,283 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if (( $# < 3 )); then
+  echo "usage: $0 PACKAGE_DIR EVIDENCE_DIR DEPENDENCY_PACKAGE..." >&2
+  exit 64
+fi
+
+package_dir="$(cd "$1" && pwd)"
+evidence_dir="$2"
+shift 2
+dependency_packages=("$@")
+target=aarch64-pc-msys
+base=mingw-w64-cross-msysarm64-libgcrypt
+pacman_bin="${PACMAN_BIN:-pacman}"
+packages=()
+
+rm -rf "${evidence_dir}"
+mkdir -p "${evidence_dir}/pkginfo" "${evidence_dir}/mtree" \
+  "${evidence_dir}/buildinfo" "${evidence_dir}/ownership" \
+  "${evidence_dir}/splits"
+
+fail() {
+  echo "package-audit: $*" >&2
+  exit 1
+}
+
+db_manifest() {
+  local db="${1:-/var/lib/pacman/local}"
+  find "${db}" -type f -print0 |
+    sort -z |
+    xargs -0 sha256sum |
+    sha256sum |
+    cut -d' ' -f1
+}
+
+file_sha256() {
+  if [[ -f "$1" ]]; then
+    sha256sum "$1" | cut -d' ' -f1
+  else
+    printf 'absent\n'
+  fi
+}
+
+tree_manifest() {
+  local tree="$1"
+  local output="$2"
+  {
+    find "${tree}" -type f -print0 |
+      LC_ALL=C sort -z |
+      xargs -0 -r sha256sum
+    find "${tree}" -type l -printf 'symlink %l %p\n' |
+      LC_ALL=C sort
+  } >"${output}"
+}
+
+pacman_path() {
+  local path="$1"
+  if [[ -n "${PACMAN_BIN:-}" &&
+        "${path}" =~ ^/cygdrive/([[:alpha:]])(/.*)?$ ]]; then
+    printf '/%s%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+  else
+    printf '%s\n' "${path}"
+  fi
+}
+
+shared_db_before="$(db_manifest)"
+printf '%s\n' "${shared_db_before}" >"${evidence_dir}/shared-db.before.sha256"
+shared_log_before="$(file_sha256 /var/log/pacman.log)"
+printf '%s\n' "${shared_log_before}" >"${evidence_dir}/shared-pacman-log.before.sha256"
+
+for suffix in '' '-devel' '-tools'; do
+  expected="${base}${suffix}"
+  matches=()
+  while IFS= read -r -d '' candidate; do
+    if bsdtar -xOf "${candidate}" .PKGINFO |
+        grep -Fxq "pkgname = ${expected}"; then
+      matches+=("${candidate}")
+    fi
+  done < <(find "${package_dir}" -maxdepth 1 -type f \
+    -name "${base}-*.pkg.tar.*" ! -name '*-debug-*' -print0)
+  (( ${#matches[@]} == 1 )) ||
+    fail "expected one ${expected} archive, found ${#matches[@]}"
+  packages+=("${matches[0]}")
+done
+
+declare -A owners=()
+for package in "${packages[@]}"; do
+  name="$(basename "${package}")"
+  split="${evidence_dir}/splits/${name}"
+  mkdir -p "${split}"
+  bsdtar -xOf "${package}" .PKGINFO >"${evidence_dir}/pkginfo/${name}.PKGINFO"
+  bsdtar -xOf "${package}" .BUILDINFO \
+    >"${evidence_dir}/buildinfo/${name}.BUILDINFO"
+  bsdtar -xOf "${package}" .MTREE |
+    gzip -dc >"${evidence_dir}/mtree/${name}.MTREE"
+  test -s "${evidence_dir}/buildinfo/${name}.BUILDINFO" ||
+    fail "empty package BUILDINFO: ${name}"
+  test -s "${evidence_dir}/mtree/${name}.MTREE" ||
+    fail "empty package MTREE: ${name}"
+  grep -Fq '#mtree' "${evidence_dir}/mtree/${name}.MTREE" ||
+    fail "invalid package MTREE: ${name}"
+  grep -Fxq 'arch = x86_64' "${evidence_dir}/pkginfo/${name}.PKGINFO" ||
+    fail "wrong package architecture: ${name}"
+  bsdtar -xf "${package}" -C "${split}"
+
+  payload_count=0
+  while IFS= read -r -d '' path; do
+    relative="${path#${split}/}"
+    case "${relative}" in
+      .BUILDINFO|.MTREE|.PKGINFO) continue ;;
+    esac
+    [[ -f "${path}" || -L "${path}" ]] || continue
+    ((payload_count += 1))
+    if [[ -n "${owners[${relative}]:-}" ]]; then
+      fail "package overlap: ${relative} (${owners[${relative}]} and ${name})"
+    fi
+    owners["${relative}"]="${name}"
+  done < <(find "${split}" \( -type f -o -type l \) -print0)
+  (( payload_count > 1 )) || fail "empty package split: ${name}"
+  printf '%s\n' "${payload_count}" >"${evidence_dir}/pkginfo/${name}.payload-count"
+done
+
+runtime_pkginfo="${evidence_dir}/pkginfo/$(basename "${packages[0]}").PKGINFO"
+devel_pkginfo="${evidence_dir}/pkginfo/$(basename "${packages[1]}").PKGINFO"
+tools_pkginfo="${evidence_dir}/pkginfo/$(basename "${packages[2]}").PKGINFO"
+grep -Eq '^depend = aarch64-pc-msys-runtime=' "${runtime_pkginfo}" ||
+  fail "runtime dependency is not pinned"
+grep -Eq '^depend = aarch64-pc-msys-libgpg-error>=' "${runtime_pkginfo}" ||
+  fail "runtime is missing native libgpg-error dependency"
+grep -Eq '^depend = aarch64-pc-msys-libgcrypt=' "${devel_pkginfo}" ||
+  fail "devel is missing exact runtime dependency"
+grep -Eq '^depend = aarch64-pc-msys-libgcrypt=' "${tools_pkginfo}" ||
+  fail "tools is missing exact runtime dependency"
+
+merged="${evidence_dir}/merged"
+mkdir -p "${merged}"
+for split in "${evidence_dir}"/splits/*; do
+  cp -a "${split}/." "${merged}/"
+done
+target_usr="${merged}/opt/${target}/usr"
+smoke_source="$(dirname "$0")/version-smoke.c"
+test -f "${smoke_source}" || fail "missing packaged consumer smoke source"
+TARGET_TRIPLET="${target}" \
+  "$(dirname "$0")/audit-libgcrypt.sh" "${target_usr}" "${smoke_source}" \
+    "${evidence_dir}/tree-audit"
+
+root="${evidence_dir}/transaction-root"
+db="${root}/var/lib/pacman"
+cache="${root}/var/cache/pacman/pkg"
+log="${root}/var/log/pacman.log"
+hooks="${root}/etc/pacman.d/hooks"
+gpg="${root}/etc/pacman.d/gnupg"
+mkdir -p "${db}" "${cache}" "${hooks}" "${gpg}" "${root}/var/log"
+cat >"${evidence_dir}/pacman.conf" <<EOF
+[options]
+Architecture = x86_64
+SigLevel = Never
+LocalFileSigLevel = Never
+EOF
+
+pacman_root="$(pacman_path "${root}")"
+pacman_db="$(pacman_path "${db}")"
+pacman_cache="$(pacman_path "${cache}")"
+pacman_log="$(pacman_path "${log}")"
+pacman_config="$(pacman_path "${evidence_dir}/pacman.conf")"
+pacman_hooks="$(pacman_path "${hooks}")"
+pacman_gpg="$(pacman_path "${gpg}")"
+pacman_cmd=(
+  "${pacman_bin}"
+  --root "${pacman_root}"
+  --dbpath "${pacman_db}"
+  --cachedir "${pacman_cache}"
+  --logfile "${pacman_log}"
+  --config "${pacman_config}"
+  --hookdir "${pacman_hooks}"
+  --gpgdir "${pacman_gpg}"
+  --noconfirm
+)
+printf 'executable=%s\nroot=%s\ndbpath=%s\ncachedir=%s\nlogfile=%s\nconfig=%s\nhookdir=%s\ngpgdir=%s\n' \
+  "${pacman_bin}" "${pacman_root}" "${pacman_db}" "${pacman_cache}" \
+  "${pacman_log}" "${pacman_config}" "${pacman_hooks}" "${pacman_gpg}" \
+  >"${evidence_dir}/private-pacman-paths.txt"
+transaction_inputs=()
+for package in "${dependency_packages[@]}" "${packages[@]}"; do
+  transaction_inputs+=("$(pacman_path "${package}")")
+done
+"${pacman_cmd[@]}" -U "${transaction_inputs[@]}" \
+  >"${evidence_dir}/install.log" 2>&1
+"${pacman_cmd[@]}" -Q >"${evidence_dir}/installed.txt"
+for package_name in "${base}" "${base}-devel" "${base}-tools"; do
+  grep -Eq "^${package_name}[[:space:]]" "${evidence_dir}/installed.txt" ||
+    fail "transaction did not install ${package_name}"
+  LC_ALL=C "${pacman_cmd[@]}" -Ql "${package_name}" \
+    >"${evidence_dir}/ownership/${package_name}.installed-files.txt"
+  LC_ALL=C "${pacman_cmd[@]}" -Qkk "${package_name}" \
+    >"${evidence_dir}/mtree/${package_name}.initial-Qkk.txt"
+  grep -Eq ', 0 altered files$' \
+    "${evidence_dir}/mtree/${package_name}.initial-Qkk.txt" ||
+    fail "initial installed-file integrity failed for ${package_name}"
+done
+
+runtime_dll="${root}/opt/${target}/usr/bin/msys-gcrypt-20.dll"
+test -f "${runtime_dll}" || fail "installed runtime DLL is missing"
+runtime_dll_sha256="$(file_sha256 "${runtime_dll}")"
+printf 'corrupt' >>"${runtime_dll}"
+if [[ "$(file_sha256 "${runtime_dll}")" = "${runtime_dll_sha256}" ]]; then
+  fail "runtime corruption fixture did not alter the DLL"
+fi
+set +e
+LC_ALL=C "${pacman_cmd[@]}" -Qkk "${base}" \
+  >"${evidence_dir}/mtree/${base}.corrupted-Qkk.txt" 2>&1
+corruption_status=$?
+set -e
+(( corruption_status == 1 )) ||
+  fail "corruption check returned unexpected status ${corruption_status}"
+grep -Fq 'msys-gcrypt-20.dll (SHA256 checksum mismatch)' \
+  "${evidence_dir}/mtree/${base}.corrupted-Qkk.txt" ||
+  fail "pacman did not identify the corrupted runtime DLL checksum"
+grep -Eq ': [0-9]+ total files, 1 altered file$' \
+  "${evidence_dir}/mtree/${base}.corrupted-Qkk.txt" ||
+  fail "pacman did not report exactly one altered runtime file"
+runtime_package="$(pacman_path "${packages[0]}")"
+"${pacman_cmd[@]}" -U "${runtime_package}" \
+  >"${evidence_dir}/corruption-reinstall.log" 2>&1
+test "$(file_sha256 "${runtime_dll}")" = "${runtime_dll_sha256}" ||
+  fail "runtime DLL was not restored byte-for-byte"
+LC_ALL=C "${pacman_cmd[@]}" -Qkk "${base}" \
+  >"${evidence_dir}/mtree/${base}.recovered-Qkk.txt"
+grep -Eq ', 0 altered files$' \
+  "${evidence_dir}/mtree/${base}.recovered-Qkk.txt" ||
+  fail "reinstalled runtime DLL did not pass integrity verification"
+printf 'detected=1\nrestored_sha256=%s\nstatus=green\n' \
+  "${runtime_dll_sha256}" >"${evidence_dir}/corruption-recovery.txt"
+
+"${pacman_cmd[@]}" -Rns "${base}-devel" "${base}-tools" "${base}" \
+  >"${evidence_dir}/remove.log" 2>&1
+for package_name in "${base}" "${base}-devel" "${base}-tools"; do
+  if "${pacman_cmd[@]}" -Q "${package_name}" >/dev/null 2>&1; then
+    fail "transaction did not remove ${package_name}"
+  fi
+done
+for relative in "${!owners[@]}"; do
+  if [[ -e "${root}/${relative}" || -L "${root}/${relative}" ]]; then
+    fail "owned payload remained after removal: ${relative}"
+  fi
+done
+
+reinstall_packages=()
+for package in "${packages[@]}"; do
+  reinstall_packages+=("$(pacman_path "${package}")")
+done
+"${pacman_cmd[@]}" -U "${reinstall_packages[@]}" \
+  >"${evidence_dir}/reinstall.log" 2>&1
+"${pacman_cmd[@]}" -Q >"${evidence_dir}/reinstalled.txt"
+for package_name in "${base}" "${base}-devel" "${base}-tools"; do
+  LC_ALL=C "${pacman_cmd[@]}" -Qkk "${package_name}" \
+    >"${evidence_dir}/mtree/${package_name}.reinstalled-Qkk.txt"
+  grep -Eq ', 0 altered files$' \
+    "${evidence_dir}/mtree/${package_name}.reinstalled-Qkk.txt" ||
+    fail "reinstalled-file integrity failed for ${package_name}"
+done
+tree_manifest "${root}" "${evidence_dir}/private-root.manifest"
+sha256sum "${evidence_dir}/private-root.manifest" \
+  >"${evidence_dir}/private-root.manifest.sha256"
+
+shared_db_after="$(db_manifest)"
+printf '%s\n' "${shared_db_after}" >"${evidence_dir}/shared-db.after.sha256"
+test "${shared_db_before}" = "${shared_db_after}" ||
+  fail "shared pacman database changed"
+shared_log_after="$(file_sha256 /var/log/pacman.log)"
+printf '%s\n' "${shared_log_after}" >"${evidence_dir}/shared-pacman-log.after.sha256"
+test "${shared_log_before}" = "${shared_log_after}" ||
+  fail "shared pacman log changed"
+
+for package in "${packages[@]}"; do
+  sha256sum "${package}"
+  stat -c '%n %s bytes' "${package}"
+done >"${evidence_dir}/archives.txt"
+
+printf 'packages=3\nmtree=green\nownership_overlap=0\ncorruption_recovery=green\ntransaction=install-remove-reinstall\nprivate_root_sealed=1\nshared_db_unchanged=1\nstatus=green\n' \
+  >"${evidence_dir}/summary.txt"
+cat "${evidence_dir}/summary.txt"

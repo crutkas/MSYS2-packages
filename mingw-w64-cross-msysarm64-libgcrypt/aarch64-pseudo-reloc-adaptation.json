@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "upstream_handoff": {
+    "version": 2,
+    "zip_sha256": "774dc88b490589fdf8a551834b1fb772e6465926b5c0aa7cf4bf31dcefa08c9f",
+    "zip_size": 194378,
+    "portable_sha256sums_sha256": "6705e5c5f74ba7b5c219625edd3bb245df53b89569f18b4ff3d7352d4a30cc2a",
+    "checker_sha256": "9d086e655a8636e733c96a8c514942bc249dd60218fa496507c390110867d201",
+    "tests_sha256": "4e3d5ee82ee72cae6ed4e347ab0b0ba25389a12573a1b8b81ca81ca7ec9da7c3"
+  },
+  "preserved_behavior": [
+    "Pure parser/filter only; no runtime patching or relocation application.",
+    "AA64 PE architecture verification.",
+    "Machine-readable JSON schema 1 findings.",
+    "Empty and scalar flags 8, 16, 32, and 64 pass.",
+    "Flags 12, 21, and unknown values fail closed.",
+    "Malformed headers, lengths, bounds, tools, and architectures exit 2."
+  ],
+  "package_repository_adaptations": [
+    "Adds explicit v1 8-byte record parsing and reports non-empty legacy v1 as a policy failure.",
+    "Adds checked UInt64 section-end and file-offset arithmetic.",
+    "Adds table_format to schema 1 without removing existing fields.",
+    "Promotes the five sealed real AA64 PE fixtures into .ci/fixtures.",
+    "Wires the same checker into fixed-binutils consumer links.",
+    "Keeps V2 exact nm symbol matching, unknown-flag 99 rejection, short-header rejection, and automatic real-fixture replay."
+  ]
+}

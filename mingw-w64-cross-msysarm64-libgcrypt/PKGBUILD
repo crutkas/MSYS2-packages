@@ -1,0 +1,231 @@
+# Maintainer: Chris Reddington <crutkas@microsoft.com>
+
+_realname=libgcrypt
+_target=aarch64-pc-msys
+_package_target_root="/opt/${_target}"
+_package_target_usr="${_package_target_root}/usr"
+_target_root="${MSYSARM64_TARGET_ROOT:-${_package_target_root}}"
+_target_usr="${_target_root}/usr"
+_tools_bin="${MSYSARM64_TOOLS_BIN:-/opt/bin}"
+# Immutable a527 diagnostic runtime identity. Final candidates must be rebuilt
+# from scratch after the corrected runtime is locked and natively admitted.
+_runtime_version=3.6.10.r0.ga527ace21
+_runtime_pkgrel=1
+_gcc_version=15.0.1dev
+_libgpg_error_version=1.56
+_binutils_version=2.44.50-2
+
+pkgbase=mingw-w64-cross-msysarm64-libgcrypt
+pkgname=(
+  mingw-w64-cross-msysarm64-libgcrypt
+  mingw-w64-cross-msysarm64-libgcrypt-devel
+  mingw-w64-cross-msysarm64-libgcrypt-tools
+)
+pkgver=1.12.2
+pkgrel=1
+pkgdesc="General purpose cryptographic library for native ARM64 MSYS"
+arch=('x86_64')
+url="https://gnupg.org"
+msys2_repository_url="https://git.gnupg.org/cgi-bin/gitweb.cgi?p=libgcrypt.git"
+msys2_references=(
+  "cpe: cpe:/a:gnupg:libgcrypt"
+)
+license=('spdx:LGPL-2.1-or-later')
+depends=(
+  "aarch64-pc-msys-runtime=${_runtime_version}"
+  "aarch64-pc-msys-libgpg-error>=${_libgpg_error_version}"
+)
+makedepends=(
+  'autotools'
+  'gcc'
+  "mingw-w64-cross-cygwinarm64-binutils=${_binutils_version}"
+  "mingw-w64-cross-msysarm64-gcc=${_gcc_version}-1"
+  "mingw-w64-cross-msysarm64-gcc-libs=${_gcc_version}-1"
+  "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
+  "mingw-w64-cross-msysarm64-sysroot=${_runtime_version}-${_runtime_pkgrel}"
+  'mingw-w64-cross-msysarm64-w32api-runtime=14.0.0.r0.g9b3dd0125-1'
+  "aarch64-pc-msys-libgpg-error-devel>=${_libgpg_error_version}"
+)
+options=('!strip' '!buildflags' '!emptydirs')
+source=(
+  "https://gnupg.org/ftp/gcrypt/${_realname}/${_realname}-${pkgver}.tar.bz2"{,.sig}
+  cross-gpg-error-config.sh
+  audit-libgcrypt.sh
+  audit-package-set.sh
+  audit-aarch64-pseudo-reloc.ps1
+  check-aarch64-pseudo-relocs.ps1
+  aarch64-pseudo-reloc-adaptation.json
+  pseudo-reloc-decoder-v2.SHA256SUMS
+  version-smoke.c
+)
+sha256sums=('7ce33c2492221a0436f96a8500215e9f3e3dcb5fd26a757cd415e7a843babd5e'
+            'SKIP'
+            '2c6ed2ec757eb0ce3cdabdafcdd8929a454cdb66bc43f6529c70fdea17eabd55'
+            'd00163edd684d7ac946a698df404458d3dd17b27c821de05ae4af6a1782a55fb'
+            'a9fcab47d4859449e45613ae8dead328575c4259e9fec38304afb67410b23a73'
+            '59bbf47759a56001ec50edc694bcac9b23a095ce035c18f5c90cbcef0def4780'
+            '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9'
+            'a2103549e801f2473f6d8dba71f270ce12174f695331d83981476449b22072f0'
+            '6705e5c5f74ba7b5c219625edd3bb245df53b89569f18b4ff3d7352d4a30cc2a'
+            'b7e7df47ffb5dca4414557a50d0566b851f239deca97f6e14d042c1c03311f39')
+# These might be signed by any of these keys: https://gnupg.org/signature_key.html
+validpgpkeys=('5B80C5754298F0CB55D8ED6ABCEF7E294B092E28'
+              '6DAA6E64A76D2840571B4902528897B826403ADA'
+              'AC8E115BF73E2D8D47FA9908E98E9B2D19C6C8BD'
+              '02F38DFF731FF97CB039A1DA549E695E905BA208')
+
+prepare() {
+  cd "${srcdir}/${_realname}-${pkgver}"
+
+  perl -0pi -e \
+    's/    else\n      ingit=no\n      beta=yes\n      tmp="-unknown"/    else\n      ingit=no\n      beta=no\n      tmp=""/' \
+    autogen.sh
+  perl -0pi -e \
+    's/\*-\*-mingw32\*\|\*-\*-cygwin\*/\*-\*-mingw32*|*-*-cygwin*|*-*-msys*/g' \
+    configure.ac
+  perl -0pi -e \
+    's/cygwin\* \| mingw\* \| windows\* \| pw32\* \| cegcc\*/cygwin* | msys* | mingw* | windows* | pw32* | cegcc*/g; s/cygwin\*\)/cygwin* | msys*)/g' \
+    m4/libtool.m4
+  autoreconf -fi
+}
+
+build() {
+  local _build_triplet
+  _build_triplet="$(gcc -dumpmachine | sed 's|-msys$|-cygwin|')"
+
+  test -x "${_target_usr}/bin/gpg-error-config"
+  test -f "${_target_usr}/include/gpg-error.h"
+  test -f "${_target_usr}/lib/libgpg-error.dll.a"
+  test -f "${_target_usr}/lib/libgpg-error.a"
+
+  rm -rf "${srcdir}/build-${_target}" "${srcdir}/dest"
+  mkdir -p "${srcdir}/build-${_target}" "${srcdir}/dest"
+
+  export PATH="${_tools_bin}:${PATH}"
+  export lt_cv_deplibs_check_method=pass_all
+  export lt_cv_archive_cmds_need_lc=no
+  export REAL_GPG_ERROR_CONFIG="${_target_usr}/bin/gpg-error-config"
+  export TARGET_SYSROOT_USR="${_target_usr}"
+  export GPG_ERROR_CONFIG="${srcdir}/cross-gpg-error-config.sh"
+  export CPPFLAGS="-D__MSYS__ -isystem ${_target_usr}/include"
+  export CFLAGS="-O2 -pipe -ffile-prefix-map=${srcdir}=/usr/src/debug/${pkgbase}-${pkgver}"
+  export LDFLAGS="-L${_target_usr}/lib"
+
+  cd "${srcdir}/build-${_target}"
+  perl -0pi -e \
+    's/cygwin\* \| mingw\* \| windows\* \| pw32\* \| cegcc\*/cygwin* | msys* | mingw* | windows* | pw32* | cegcc*/g; s/\n    cygwin\*\)\n      # Cygwin DLLs use '\''cyg'\'' prefix rather than '\''lib'\''/\n    cygwin* | msys*)\n      # Cygwin DLLs use '\''cyg'\'' prefix rather than '\''lib'\''/g' \
+    "${srcdir}/${_realname}-${pkgver}/configure"
+  "${srcdir}/${_realname}-${pkgver}/configure" \
+    CC="${_target}-gcc -B${_tools_bin}/" \
+    AR="${_target}-ar" \
+    RANLIB="${_target}-ranlib" \
+    LD="${_target}-ld" \
+    NM="${_target}-nm" \
+    OBJDUMP="${_target}-objdump" \
+    STRIP="${_target}-strip" \
+    DLLTOOL="${_target}-dlltool" \
+    WINDRES="${_target}-windres" \
+    CC_FOR_BUILD=gcc \
+    --prefix=/usr \
+    --build="${_build_triplet}" \
+    --host="${_target}" \
+    --enable-shared \
+    --enable-static \
+    --disable-asm
+
+  # GCC 15.0.1dev ICEs during final RTL for this source at -O2 on ARM64 MSYS.
+  # Keep SNTRUP enabled and lower optimization only for the affected object.
+  printf '\nsntrup761.lo: CFLAGS += -O1\n' \
+    >>"${srcdir}/build-${_target}/cipher/Makefile"
+
+  make no_undefined=-no-undefined
+  make DESTDIR="${srcdir}/dest" install
+
+  local _runtime_dlls=("${srcdir}/dest/usr/lib/"*.dll)
+  (( ${#_runtime_dlls[@]} == 1 ))
+  mv "${_runtime_dlls[0]}" "${srcdir}/dest/usr/bin/"
+
+  # Cross-build search paths must not leak into target-facing libtool metadata.
+  sed -i \
+    -e "s|${_target_usr}/lib|/usr/lib|g" \
+    -e "s|${_target_usr}/include|/usr/include|g" \
+    "${srcdir}/dest/usr/bin/libgcrypt-config" \
+    "${srcdir}/dest/usr/lib/libgcrypt.la"
+}
+
+check() {
+  TARGET_TRIPLET="${_target}" \
+  DEPENDENCY_ROOT="${_target_usr}" \
+  PSEUDO_RELOC_VALIDATOR="${srcdir}/audit-aarch64-pseudo-reloc.ps1" \
+    "${srcdir}/audit-libgcrypt.sh" \
+      "${srcdir}/dest/usr" \
+      "${srcdir}/version-smoke.c" \
+      "${srcdir}/libgcrypt-audit"
+}
+
+package_mingw-w64-cross-msysarm64-libgcrypt() {
+  pkgdesc="Native ARM64 MSYS libgcrypt runtime"
+  groups=('libraries')
+  depends=(
+    "aarch64-pc-msys-runtime=${_runtime_version}"
+    "aarch64-pc-msys-libgpg-error>=${_libgpg_error_version}"
+  )
+  provides=("aarch64-pc-msys-libgcrypt=${pkgver}")
+  conflicts=('aarch64-pc-msys-libgcrypt')
+
+  install -d "${pkgdir}${_package_target_usr}/bin"
+  cp -a "${srcdir}/dest/usr/bin/"*.dll "${pkgdir}${_package_target_usr}/bin/"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING.LIB" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/COPYING.LIB"
+}
+
+package_mingw-w64-cross-msysarm64-libgcrypt-devel() {
+  pkgdesc="Native ARM64 MSYS libgcrypt headers and libraries"
+  groups=('development')
+  depends=(
+    "aarch64-pc-msys-libgcrypt=${pkgver}"
+    "aarch64-pc-msys-libgpg-error-devel>=${_libgpg_error_version}"
+  )
+  provides=("aarch64-pc-msys-libgcrypt-devel=${pkgver}")
+  conflicts=('aarch64-pc-msys-libgcrypt-devel')
+  options=('staticlibs' '!strip')
+
+  install -d "${pkgdir}${_package_target_usr}/bin" "${pkgdir}${_package_target_usr}/share"
+  cp -a "${srcdir}/dest/usr/bin/libgcrypt-config" "${pkgdir}${_package_target_usr}/bin/"
+  cp -a "${srcdir}/dest/usr/include" "${pkgdir}${_package_target_usr}/"
+  cp -a "${srcdir}/dest/usr/lib" "${pkgdir}${_package_target_usr}/"
+  cp -a "${srcdir}/dest/usr/share/aclocal" "${pkgdir}${_package_target_usr}/share/"
+  install -Dm755 "${srcdir}/audit-libgcrypt.sh" \
+    "${pkgdir}/usr/share/doc/${pkgbase}/audit-libgcrypt.sh"
+  install -Dm755 "${srcdir}/audit-package-set.sh" \
+    "${pkgdir}/usr/share/doc/${pkgbase}/audit-package-set.sh"
+  install -Dm644 "${srcdir}/audit-aarch64-pseudo-reloc.ps1" \
+    "${pkgdir}/usr/share/doc/${pkgbase}/audit-aarch64-pseudo-reloc.ps1"
+  install -Dm644 "${srcdir}/check-aarch64-pseudo-relocs.ps1" \
+    "${pkgdir}/usr/share/doc/${pkgbase}/check-aarch64-pseudo-relocs.ps1"
+  install -Dm644 "${srcdir}/aarch64-pseudo-reloc-adaptation.json" \
+    "${pkgdir}/usr/share/doc/${pkgbase}/aarch64-pseudo-reloc-adaptation.json"
+  install -Dm644 "${srcdir}/pseudo-reloc-decoder-v2.SHA256SUMS" \
+    "${pkgdir}/usr/share/doc/${pkgbase}/pseudo-reloc-decoder-v2.SHA256SUMS"
+  install -Dm644 "${srcdir}/version-smoke.c" \
+    "${pkgdir}/usr/share/doc/${pkgbase}/version-smoke.c"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING.LIB" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/COPYING.LIB"
+}
+
+package_mingw-w64-cross-msysarm64-libgcrypt-tools() {
+  pkgdesc="Native ARM64 MSYS libgcrypt command-line tools"
+  license=('spdx:GPL-2.0-or-later' 'spdx:LGPL-2.1-or-later')
+  depends=("aarch64-pc-msys-libgcrypt=${pkgver}")
+  provides=("aarch64-pc-msys-libgcrypt-tools=${pkgver}")
+  conflicts=('aarch64-pc-msys-libgcrypt-tools')
+
+  install -d "${pkgdir}${_package_target_usr}/bin" "${pkgdir}${_package_target_usr}/share"
+  find "${srcdir}/dest/usr/bin" -maxdepth 1 -type f -name '*.exe' \
+    -exec cp -a -t "${pkgdir}${_package_target_usr}/bin" {} +
+  cp -a "${srcdir}/dest/usr/share/info" "${pkgdir}${_package_target_usr}/share/"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/COPYING"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING.LIB" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/COPYING.LIB"
+}

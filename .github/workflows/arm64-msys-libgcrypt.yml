@@ -1,0 +1,1103 @@
+name: ARM64 MSYS libgcrypt
+
+on:
+  push:
+    branches:
+      - crutkas-arm64-msys-libgcrypt
+    paths:
+      - mingw-w64-cross-msysarm64-libgcrypt/**
+      - .github/workflows/arm64-msys-libgcrypt.yml
+  pull_request:
+    paths:
+      - mingw-w64-cross-msysarm64-libgcrypt/**
+      - .github/workflows/arm64-msys-libgcrypt.yml
+  workflow_dispatch:
+    inputs:
+      run_native_smoke:
+        description: Run the strict windows-11-arm smoke (a527 is known blocked)
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: arm64-msys-libgcrypt-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cross-build:
+    if: ${{ github.repository == 'crutkas/MSYS2-packages' }}
+    runs-on: windows-2025
+    env:
+      LIBGPG_ERROR_RUNTIME_URL: https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-libgpg-error-pr16-06ae2f9-20260827/mingw-w64-cross-msysarm64-libgpg-error-1.56-1-x86_64.pkg.tar.zst
+      LIBGPG_ERROR_RUNTIME_SHA256: ca9c377b91896f3286071fd456389006ade6e297e7dd21efb06ab572ccb55d34
+      LIBGPG_ERROR_RUNTIME_SIZE: 125720
+      LIBGPG_ERROR_DEVEL_URL: https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-libgpg-error-pr16-06ae2f9-20260827/mingw-w64-cross-msysarm64-libgpg-error-devel-1.56-1-x86_64.pkg.tar.zst
+      LIBGPG_ERROR_DEVEL_SHA256: 642880ad8fc5498fa7b755825b30008d466dbefa0dd07de80f5f5516b7968a2a
+      LIBGPG_ERROR_DEVEL_SIZE: 123170
+      LIBGPG_ERROR_RELEASE_TAG: msysarm64-libgpg-error-pr16-06ae2f9-20260827
+      LIBGPG_ERROR_RELEASE_ID: 378064013
+      LIBGPG_ERROR_RELEASE_PUBLISHED_AT: 2026-08-27T19:32:26Z
+      LIBGPG_ERROR_ADMISSION_STATE: quarantined-mutable-release
+      LIBGPG_ERROR_RUNTIME_ASSET_ID: 532755293
+      LIBGPG_ERROR_DEVEL_ASSET_ID: 532755294
+      LIBGPG_ERROR_EVIDENCE_ASSET_ID: 532755292
+      LIBGPG_ERROR_EVIDENCE_SHA256: 728303c5c96e38dfd6edae3e6df6871f3d16d08f0279527bf8c1a49d66005068
+      LIBGPG_ERROR_PRODUCER_COMMIT: 06ae2f9c2ad5d69e736e4d056772a7be1546a076
+      LIBGPG_ERROR_PR_RUN_ID: 33104981689
+      LIBGPG_ERROR_PUSH_RUN_ID: 33104978245
+      LIBGPG_ERROR_PR_ARTIFACT_ID: 9660286816
+      LIBGPG_ERROR_PUSH_ARTIFACT_ID: 9660266084
+      LIBGPG_ERROR_PRODUCER_SEAL: b97366ac3866c7c716c671c3609ba0ce9e4406e67fa940b8cf0058927651645b
+      FIXED_BINUTILS_URL: https://github.com/crutkas/MSYS2-packages/releases/download/cygwinarm64-binutils-pr21-3356eec-20260827/mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst
+      FIXED_BINUTILS_SHA256: 3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b
+      PRIVATE_MSYS_BASE_URL: https://repo.msys2.org/distrib/x86_64/msys2-base-x86_64-20260611.tar.xz
+      PRIVATE_MSYS_BASE_SHA256: a2d047e8ee213c3c6a49a8de427eb1069df12207c0422ff1b3cbb5c905c34221
+      PRIVATE_MSYS_BASE_SIG_SHA256: 076f5623b702d5016cf0253e1d14a6bd4870a90243243e96409b227f0d5bf70f
+      LIBGCRYPT_SIGNER_WERNER_URL: https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x6DAA6E64A76D2840571B4902528897B826403ADA
+      LIBGCRYPT_SIGNER_WERNER_SHA256: cde3ae63a75da1b75a1c2aaa87d125277beb3c125e05990c77b99705fac203fa
+      LIBGCRYPT_SIGNER_NIIBE_URL: https://keyserver.ubuntu.com/pks/lookup?op=get&search=0xAC8E115BF73E2D8D47FA9908E98E9B2D19C6C8BD
+      LIBGCRYPT_SIGNER_NIIBE_SHA256: d1f4ff42ae91c6441b0fb2dba2bc9745494bc929a2b332e3fcf9a7d7e9320a63
+
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Reject mutable external Action references
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $workflow = Join-Path $env:GITHUB_WORKSPACE `
+            '.github\workflows\arm64-msys-libgcrypt.yml'
+          function Assert-ImmutableActionRefs([string] $WorkflowText) {
+            if ($WorkflowText -cmatch
+                '\\(?:x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8})') {
+              throw 'YAML hexadecimal escapes are unsupported in this workflow.'
+            }
+            $keyPattern =
+              '(?im)(?<![A-Za-z0-9_-])(?:"uses"|''uses''|uses)\s*:'
+            $refPattern =
+              $keyPattern + '\s*(?<ref>[^,\s#}\]]+)'
+            $usesKeys = @([regex]::Matches($WorkflowText, $keyPattern))
+            $usesRefs = @([regex]::Matches($WorkflowText, $refPattern))
+            if ($usesKeys.Count -ne $usesRefs.Count) {
+              throw 'An Action reference uses unsupported or empty syntax.'
+            }
+            $actionRefs = @(
+              $usesRefs | ForEach-Object { $_.Groups['ref'].Value }
+            )
+            $externalRefs = @($actionRefs | Where-Object { $_ -notlike './*' })
+            if ($externalRefs.Count -eq 0) {
+              throw 'No external Action references were found; pin audit scope is invalid.'
+            }
+            $mutableRefs = @(
+              $externalRefs |
+                Where-Object { $_ -cnotmatch '^[^@\s]+@[0-9a-f]{40}$' }
+            )
+            if ($mutableRefs.Count -ne 0) {
+              throw "Mutable external Action references: $($mutableRefs -join ', ')"
+            }
+            return $externalRefs.Count
+          }
+
+          $externalCount = Assert-ImmutableActionRefs `
+            (Get-Content -Raw -LiteralPath $workflow)
+          $usesName = 'u' + 'ses'
+          $localFixture = @(
+            "- ${usesName}: owner/action@0123456789abcdef0123456789abcdef01234567",
+            "- ${usesName}: ./local-action"
+          ) -join "`n"
+          if ((Assert-ImmutableActionRefs $localFixture) -ne 1) {
+            throw 'Local Action reference fixture changed external reference counting.'
+          }
+          $negativeFixtures = @(
+            "- ${usesName}: owner/action@v4",
+            "- { ${usesName}: owner/action@main }",
+            "- { name: bypass, ${usesName}: owner/action@v1 }",
+            ('- { "name": "quoted", "' + $usesName + '": "owner/action@v2" }'),
+            ("- { 'name': 'quoted', '" + $usesName + "': owner/action@v3 }"),
+            ("? $usesName`n: owner/action@v4"),
+            "- ${usesName}:"
+          )
+          $rejectedCount = 0
+          $escape = '\'
+          $negativeFixtures += @(
+            ('- "us' + $escape + 'x65s": owner/action@v1'),
+            ('- "us' + $escape + 'u0065s": owner/action@v1'),
+            ('- "us' + $escape + 'U00000065s": owner/action@v1')
+          )
+          foreach ($fixture in $negativeFixtures) {
+            $rejected = $false
+            try {
+              Assert-ImmutableActionRefs $fixture | Out-Null
+            } catch {
+              $rejected = $true
+            }
+            if (-not $rejected) {
+              throw "Action pin negative fixture was accepted: $fixture"
+            }
+            $rejectedCount++
+          }
+          if ($rejectedCount -ne $negativeFixtures.Count) {
+            throw 'Action pin negative fixture accounting mismatch.'
+          }
+          "external_action_refs=$externalCount local_fixture=green negative_fixtures=$rejectedCount status=green"
+
+      - name: Require immutable dependency admission
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:RUNNER_TEMP 'libgcrypt-output'
+          New-Item -ItemType Directory -Force `
+            $output, "$output\evidence", "$output\inputs" | Out-Null
+          "LIBGCRYPT_OUTPUT=$output" |
+            Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          $release = gh api `
+            "repos/crutkas/MSYS2-packages/releases/$($env:LIBGPG_ERROR_RELEASE_ID)" |
+            ConvertFrom-Json
+          @(
+            "release_id=$($env:LIBGPG_ERROR_RELEASE_ID)",
+            "release_tag=$($env:LIBGPG_ERROR_RELEASE_TAG)",
+            "rest_immutable=$($release.immutable.ToString().ToLowerInvariant())",
+            "admission_state=$($env:LIBGPG_ERROR_ADMISSION_STATE)",
+            'install_attempted=0',
+            'build_attempted=0'
+          ) | Set-Content "$output\evidence\dependency-admission-preflight.txt"
+          if ($env:LIBGPG_ERROR_ADMISSION_STATE -ne 'admitted-immutable-remint' -or
+              $release.immutable -ne $true) {
+            throw @"
+          libgpg-error release $($env:LIBGPG_ERROR_RELEASE_ID) is quarantined and
+          not admitted for downstream builds. A new unique immutable remint is
+          required before package installation or libgcrypt A/B builds.
+          "@
+          }
+
+      - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
+        with:
+          msystem: MSYS
+          install: base-devel git autotools pkgconf
+          update: true
+
+      - name: Create isolated MSYS build root
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $output = Join-Path $env:RUNNER_TEMP 'libgcrypt-output'
+          New-Item -ItemType Directory -Force $output, "$output\evidence", "$output\inputs" | Out-Null
+          "LIBGCRYPT_OUTPUT=$output" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+          $privateHostParent = Join-Path $env:RUNNER_TEMP 'libgcrypt-private-host'
+          New-Item -ItemType Directory -Force $privateHostParent | Out-Null
+          $baseArchive = Join-Path $privateHostParent 'msys2-base.tar.xz'
+          $baseSignature = "$baseArchive.sig"
+          curl.exe --fail --location --retry 5 `
+            --output $baseArchive $env:PRIVATE_MSYS_BASE_URL
+          curl.exe --fail --location --retry 5 `
+            --output $baseSignature "$env:PRIVATE_MSYS_BASE_URL.sig"
+          if ((Get-FileHash -Algorithm SHA256 $baseArchive).Hash.ToLowerInvariant() -ne
+              $env:PRIVATE_MSYS_BASE_SHA256) {
+            throw 'Private MSYS base SHA-256 mismatch.'
+          }
+          if ((Get-FileHash -Algorithm SHA256 $baseSignature).Hash.ToLowerInvariant() -ne
+              $env:PRIVATE_MSYS_BASE_SIG_SHA256) {
+            throw 'Private MSYS base signature SHA-256 mismatch.'
+          }
+          Push-Location $privateHostParent
+          try {
+            $signaturePackets = & 'C:\msys64\usr\bin\gpg.exe' `
+              --homedir . --batch --list-packets '.\msys2-base.tar.xz.sig' 2>&1
+            if ($LASTEXITCODE -ne 0 -or
+                ($signaturePackets -join "`n") -notmatch
+                'E0AA0F031DBD80FFBA57B06D5A62D0CAB6264964') {
+              throw 'Private MSYS base signer fingerprint mismatch.'
+            }
+          } finally {
+            Pop-Location
+          }
+          & 'C:\Windows\System32\tar.exe' -xf $baseArchive -C $privateHostParent
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Private MSYS base extraction failed.'
+          }
+          $privateHost = Join-Path $privateHostParent 'msys64'
+          $privatePacman = Join-Path $privateHost 'usr\bin\pacman.exe'
+          $privateCygpath = Join-Path $privateHost 'usr\bin\cygpath.exe'
+          $privateBsdtar = Join-Path $privateHost 'usr\bin\bsdtar.exe'
+          foreach ($tool in @($privatePacman, $privateCygpath, $privateBsdtar)) {
+            if (-not (Test-Path $tool)) {
+              throw "Private MSYS host tool is missing: $tool"
+            }
+          }
+          "PRIVATE_MSYS_HOST=$privateHost" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "PRIVATE_PACMAN=$privatePacman" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "PRIVATE_CYGPATH=$privateCygpath" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "PRIVATE_BSDTAR=$privateBsdtar" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          @(
+            "archive_sha256=$($env:PRIVATE_MSYS_BASE_SHA256)",
+            "signature_sha256=$($env:PRIVATE_MSYS_BASE_SIG_SHA256)",
+            'signer=E0AA0F031DBD80FFBA57B06D5A62D0CAB6264964'
+          ) | Set-Content "$output\evidence\private-msys-bootstrap.txt"
+
+          $sharedDb = 'C:\msys64\var\lib\pacman\local'
+          $manifest = Get-ChildItem -Recurse -File $sharedDb |
+            Sort-Object FullName |
+            ForEach-Object {
+              "$(Get-FileHash -Algorithm SHA256 $_.FullName | Select-Object -ExpandProperty Hash) $($_.Length) $($_.FullName.Substring($sharedDb.Length))"
+            }
+          $manifest | Set-Content "$output\evidence\materialization-shared-db.before"
+          (Get-FileHash -Algorithm SHA256 'C:\msys64\var\log\pacman.log').Hash.ToLowerInvariant() |
+            Set-Content "$output\evidence\materialization-shared-pacman-log.before.sha256"
+
+          $isolated = Join-Path $env:RUNNER_TEMP 'msys64-libgcrypt'
+          $privatePaths = @(
+            "$isolated\var\lib\pacman",
+            "$isolated\var\cache\pacman\pkg",
+            "$isolated\var\log",
+            "$isolated\etc\pacman.d\hooks",
+            "$isolated\etc\pacman.d\gnupg"
+          )
+          New-Item -ItemType Directory -Force $privatePaths | Out-Null
+          @'
+          [options]
+          Architecture = x86_64
+          SigLevel = Never
+          LocalFileSigLevel = Never
+          '@ | Set-Content "$isolated\etc\pacman.conf"
+          "ISOLATED_MSYS=$isolated" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - name: Download and verify frozen ARM64 inputs
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $inputDir = Join-Path $env:RUNNER_TEMP 'arm64-inputs'
+          New-Item -ItemType Directory -Force $inputDir | Out-Null
+
+          gh release download msysarm64-runtime-pr10-a527-20260824 `
+            --repo crutkas/MSYS2-packages `
+            --pattern 'mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' `
+            --pattern 'mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' `
+            --pattern 'mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' `
+            --pattern 'mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' `
+            --pattern 'mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' `
+            --dir $inputDir
+          gh release download msysarm64-gcc-pr13-20260826 `
+            --repo crutkas/MSYS2-packages `
+            --pattern 'mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst' `
+            --pattern 'mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst' `
+            --dir $inputDir
+          gh release download msysarm64-gcc-pr13-support-20260826 `
+            --repo crutkas/MSYS2-packages `
+            --pattern 'mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst' `
+            --pattern 'mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst' `
+            --dir $inputDir
+
+          # a527 is immutable. Publication is instead gated on rebuilding with
+          # the separately sealed fixed-binutils candidate.
+          $expected = @{
+            'mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' = '263f8f7e3614ac41337ce3a223f2bb26b6459aef6f34670525cdd4c03ec3ae21'
+            'mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' = '158c505f45025a466950faa7c85c9fd85e9d32384dd27b53586ffc75d71ca78e'
+            'mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' = 'c18b51e483991770b8e06cc2d8f7002d06784d3071ac213a8fee24bb831267d1'
+            'mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' = 'e30609e09eab2fa07aba2e6196b05f34e5e9107abc4ab8832966684758c743ca'
+            'mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' = '33861708e7f981b4eef5b93ef135ab3a43d2757533f64df6f61a146d823c355f'
+            'mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst' = 'a74887c76a933ec424933bf662729d94975b83138af783bd93f2e7acd95c3a22'
+            'mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst' = '990f163cacf9ffce1b58445be91fedc57f135cc26a88d7dba109806446b41438'
+            'mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst' = '9715aab6894379bf5ab936a3a559f286fb4aedbb64f0774d7457182e00648e08'
+            'mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst' = '7727936f4212e5af04e9739eca60f157c0875796c1e82fcfb79fd4398b111e24'
+          }
+          foreach ($entry in $expected.GetEnumerator()) {
+            $path = Join-Path $inputDir $entry.Key
+            if (-not (Test-Path $path)) {
+              throw "Missing frozen input: $($entry.Key)"
+            }
+            $actual = (Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant()
+            if ($actual -ne $entry.Value) {
+              throw "SHA-256 mismatch: $($entry.Key)"
+            }
+          }
+          "ARM64_INPUT_DIR=$inputDir" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - name: Require exact libgpg-error candidates
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $required = @(
+            $env:LIBGPG_ERROR_RUNTIME_URL,
+            $env:LIBGPG_ERROR_RUNTIME_SHA256,
+            $env:LIBGPG_ERROR_DEVEL_URL,
+            $env:LIBGPG_ERROR_DEVEL_SHA256
+          )
+          if ($required.Where({ [string]::IsNullOrWhiteSpace($_) }).Count -ne 0) {
+            throw 'Exact sealed libgpg-error URLs/SHA-256 values are required.'
+          }
+
+          $runtime = Join-Path $env:ARM64_INPUT_DIR 'libgpg-error-runtime.pkg.tar.zst'
+          $devel = Join-Path $env:ARM64_INPUT_DIR 'libgpg-error-devel.pkg.tar.zst'
+          $binutils = Join-Path $env:ARM64_INPUT_DIR 'fixed-binutils.pkg.tar.zst'
+          curl.exe --fail --location --retry 5 `
+            --output $runtime $env:LIBGPG_ERROR_RUNTIME_URL
+          curl.exe --fail --location --retry 5 `
+            --output $devel $env:LIBGPG_ERROR_DEVEL_URL
+          curl.exe --fail --location --retry 5 `
+            --output $binutils $env:FIXED_BINUTILS_URL
+
+          $pairs = @(
+            @($runtime, $env:LIBGPG_ERROR_RUNTIME_SHA256, [int64]$env:LIBGPG_ERROR_RUNTIME_SIZE),
+            @($devel, $env:LIBGPG_ERROR_DEVEL_SHA256, [int64]$env:LIBGPG_ERROR_DEVEL_SIZE),
+            @($binutils, $env:FIXED_BINUTILS_SHA256, [int64]0)
+          )
+          $revokedLibgpgErrorHashes = @(
+            '0b8a6c6fd865ca09858f8f5f130233910c17d58dddb41719cecf1722a3964645',
+            '3af7e6c7f9735554f39a601cd42b5a9cc379646318c63e613105908743ed6f2c',
+            '5b7ea5ca6902094dbee157d138c22a8c76483da3ed1530c50e316d5a2574190e',
+            '9006b7594982d3aed3290de0c7b5707a08770ae2250a4f2572428a3c475bda0a',
+            '78e9cc98b8d38ff2f60c0ec5d9bc4f173f488ace93826bb90aef27ad69f195ee',
+            'a1eb6396150d4233aff9ce80add334029721a55a7ee311f7516330d9e892005f',
+            '8004cc674d8735f453e4a000740a157605e1abc17ec90bd95ed79626b63981b2'
+          )
+          foreach ($pair in $pairs) {
+            $actual = (Get-FileHash -Algorithm SHA256 $pair[0]).Hash.ToLowerInvariant()
+            if ($actual -ne $pair[1].ToLowerInvariant()) {
+              throw "SHA-256 mismatch: $($pair[0])"
+            }
+            if ($pair[2] -ne 0 -and (Get-Item $pair[0]).Length -ne $pair[2]) {
+              throw "Size mismatch: $($pair[0])"
+            }
+            if ($pair[0] -ne $binutils -and $actual -in $revokedLibgpgErrorHashes) {
+              throw "Revoked pre-fixed-binutils libgpg-error archive: $($pair[0])"
+            }
+          }
+
+          $bsdtar = $env:PRIVATE_BSDTAR
+          $runtimeInfo = & $bsdtar -xOf $runtime .PKGINFO
+          $develInfo = & $bsdtar -xOf $devel .PKGINFO
+          $binutilsInfo = & $bsdtar -xOf $binutils .PKGINFO
+          if ($runtimeInfo -notcontains 'provides = aarch64-pc-msys-libgpg-error=1.56') {
+            throw 'Runtime candidate does not provide exact native ARM64 MSYS libgpg-error 1.56.'
+          }
+          if ($develInfo -notcontains 'provides = aarch64-pc-msys-libgpg-error-devel=1.56') {
+            throw 'Devel candidate does not provide exact native ARM64 MSYS libgpg-error-devel 1.56.'
+          }
+          if ($binutilsInfo -notcontains 'pkgname = mingw-w64-cross-cygwinarm64-binutils') {
+            throw 'Fixed binutils candidate has the wrong package identity.'
+          }
+          if ($binutilsInfo -notcontains 'pkgver = 2.44.50-2' -or
+              $binutilsInfo -notcontains 'provides = aarch64-pc-msys-binutils=2.44.50') {
+            throw 'Fixed binutils candidate is not the admitted 2.44.50-2 producer.'
+          }
+          $release = gh api `
+            "repos/crutkas/MSYS2-packages/releases/$($env:LIBGPG_ERROR_RELEASE_ID)" |
+            ConvertFrom-Json
+          $publishedAt = ([DateTimeOffset]$release.published_at).ToUniversalTime().ToString(
+            'yyyy-MM-ddTHH:mm:ssZ')
+          if ($release.tag_name -ne $env:LIBGPG_ERROR_RELEASE_TAG -or
+              $release.draft -or -not $release.prerelease -or
+              $release.immutable -ne $true -or
+              $publishedAt -ne $env:LIBGPG_ERROR_RELEASE_PUBLISHED_AT) {
+            throw 'Public libgpg-error release identity or disposition changed.'
+          }
+          foreach ($assetLock in @(
+              @{
+                Id = [int64]$env:LIBGPG_ERROR_RUNTIME_ASSET_ID
+                Name = 'mingw-w64-cross-msysarm64-libgpg-error-1.56-1-x86_64.pkg.tar.zst'
+                Size = [int64]$env:LIBGPG_ERROR_RUNTIME_SIZE
+                Sha256 = $env:LIBGPG_ERROR_RUNTIME_SHA256
+              },
+              @{
+                Id = [int64]$env:LIBGPG_ERROR_DEVEL_ASSET_ID
+                Name = 'mingw-w64-cross-msysarm64-libgpg-error-devel-1.56-1-x86_64.pkg.tar.zst'
+                Size = [int64]$env:LIBGPG_ERROR_DEVEL_SIZE
+                Sha256 = $env:LIBGPG_ERROR_DEVEL_SHA256
+              })) {
+            $asset = @($release.assets | Where-Object id -eq $assetLock.Id)
+            if ($asset.Count -ne 1 -or $asset[0].name -ne $assetLock.Name -or
+                $asset[0].size -ne $assetLock.Size) {
+              throw "Public libgpg-error asset identity changed: $($assetLock.Id)"
+            }
+            if ($asset[0].digest -and
+                $asset[0].digest -ne "sha256:$($assetLock.Sha256)") {
+              throw "Public libgpg-error asset digest changed: $($assetLock.Id)"
+            }
+          }
+          @(
+            "release_tag=$($env:LIBGPG_ERROR_RELEASE_TAG)",
+            "release_id=$($env:LIBGPG_ERROR_RELEASE_ID)",
+            "release_published_at=$($env:LIBGPG_ERROR_RELEASE_PUBLISHED_AT)",
+            'release_draft=false',
+            'release_prerelease=true',
+            'release_immutable=true',
+            "admission_state=$($env:LIBGPG_ERROR_ADMISSION_STATE)",
+            "producer_commit=$($env:LIBGPG_ERROR_PRODUCER_COMMIT)",
+            "producer_seal_sha256=$($env:LIBGPG_ERROR_PRODUCER_SEAL)",
+            "pr_run_id=$($env:LIBGPG_ERROR_PR_RUN_ID)",
+            "push_run_id=$($env:LIBGPG_ERROR_PUSH_RUN_ID)",
+            "pr_artifact_id=$($env:LIBGPG_ERROR_PR_ARTIFACT_ID)",
+            "push_artifact_id=$($env:LIBGPG_ERROR_PUSH_ARTIFACT_ID)",
+            "evidence_asset_id=$($env:LIBGPG_ERROR_EVIDENCE_ASSET_ID)",
+            "evidence_asset_sha256=$($env:LIBGPG_ERROR_EVIDENCE_SHA256)",
+            "runtime_asset_id=$($env:LIBGPG_ERROR_RUNTIME_ASSET_ID)",
+            "runtime_size=$((Get-Item $runtime).Length)",
+            "runtime_sha256=$($env:LIBGPG_ERROR_RUNTIME_SHA256)",
+            "runtime_url=$($env:LIBGPG_ERROR_RUNTIME_URL)",
+            "devel_asset_id=$($env:LIBGPG_ERROR_DEVEL_ASSET_ID)",
+            "devel_size=$((Get-Item $devel).Length)",
+            "devel_sha256=$($env:LIBGPG_ERROR_DEVEL_SHA256)",
+            "devel_url=$($env:LIBGPG_ERROR_DEVEL_URL)",
+            'revoked_local_pair_absent=1',
+            'status=admitted-immutable-remint'
+          ) | Set-Content "$env:LIBGCRYPT_OUTPUT\evidence\libgpg-error-provenance.txt"
+
+      - name: Install inputs only in isolated root
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:MSYS = 'winsymlinks:sys'
+          $pacman = $env:PRIVATE_PACMAN
+          $cygpath = $env:PRIVATE_CYGPATH
+          $root = (& $cygpath -u $env:ISOLATED_MSYS).Trim()
+          $db = "$root/var/lib/pacman"
+          $cache = "$root/var/cache/pacman/pkg"
+          $log = "$root/var/log/pacman.log"
+          $config = "$root/etc/pacman.conf"
+          $hooks = "$root/etc/pacman.d/hooks"
+          $gpg = "$root/etc/pacman.d/gnupg"
+          $pacmanArgs = @(
+            '--root', $root,
+            '--dbpath', $db,
+            '--cachedir', $cache,
+            '--logfile', $log,
+            '--config', $config,
+            '--hookdir', $hooks,
+            '--gpgdir', $gpg,
+            '--noconfirm'
+          )
+          $packages = Get-ChildItem -File $env:ARM64_INPUT_DIR -Filter '*.pkg.tar.zst' |
+            Select-Object -ExpandProperty FullName
+          $packagePaths = $packages | ForEach-Object { (& $cygpath -u $_).Trim() }
+          & $pacman @pacmanArgs `
+            --assume-installed libiconv `
+            --assume-installed libintl `
+            --assume-installed zlib `
+            --assume-installed libzstd `
+            --assume-installed mingw-w64-cross-cygwinarm64-gcc-stage1=15.0.1dev-2 `
+            -U $packagePaths 2>&1 |
+              Tee-Object "$env:LIBGCRYPT_OUTPUT\evidence\private-input-install.log"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Isolated ARM64 input transaction failed.'
+          }
+          @(
+            "root=$root",
+            "dbpath=$db",
+            "cachedir=$cache",
+            "logfile=$log",
+            "config=$config",
+            "hookdir=$hooks",
+            "gpgdir=$gpg",
+            "executable=$pacman"
+          ) | Set-Content "$env:LIBGCRYPT_OUTPUT\evidence\materialization-private-pacman-paths.txt"
+          $objdump = Join-Path $env:ISOLATED_MSYS 'opt\bin\aarch64-pc-msys-objdump.exe'
+          if (-not (Test-Path $objdump)) {
+            throw 'Reviewed binutils did not install the aarch64-pc-msys tools.'
+          }
+          $linker = Join-Path $env:ISOLATED_MSYS 'opt\bin\aarch64-pc-cygwin-ld.exe'
+          $linkerSha = (Get-FileHash -Algorithm SHA256 $linker).Hash.ToLowerInvariant()
+          if ($linkerSha -ne '075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f') {
+            throw 'Reviewed fixed-binutils linker identity mismatch.'
+          }
+          foreach ($tool in @(
+              "$root/opt/bin/aarch64-pc-cygwin-nm.exe",
+              "$root/opt/bin/aarch64-pc-cygwin-objdump.exe",
+              "$root/opt/bin/aarch64-pc-msys-ld.exe")) {
+            $owner = & $pacman @pacmanArgs -Qo $tool
+            if ($LASTEXITCODE -ne 0 -or
+                $owner -notmatch 'mingw-w64-cross-cygwinarm64-binutils 2\.44\.50-2') {
+              throw "Fixed-binutils package does not own $tool."
+            }
+          }
+          $privateScope = @(
+            (Join-Path $env:ISOLATED_MSYS 'opt'),
+            (Join-Path $env:ISOLATED_MSYS 'var\lib\pacman\local')
+          )
+          Get-ChildItem $privateScope -Recurse -File |
+            Sort-Object FullName |
+            ForEach-Object {
+              $relative = $_.FullName.Substring($env:ISOLATED_MSYS.Length + 1).Replace('\', '/')
+              "$((Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant()) $($_.Length) $relative"
+            } | Set-Content "$env:LIBGCRYPT_OUTPUT\evidence\private-materialization.before.manifest"
+
+      - name: Verify source signature and build twice
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bash = 'C:\msys64\usr\bin\bash.exe'
+          $cygpath = 'C:\msys64\usr\bin\cygpath.exe'
+          $recipe = Join-Path $env:GITHUB_WORKSPACE 'mingw-w64-cross-msysarm64-libgcrypt'
+          $buildRoot = Join-Path $env:RUNNER_TEMP 'libgcrypt-reproducibility'
+          $canonicalBuild = Join-Path $buildRoot 'canonical-build'
+          $resultA = Join-Path $buildRoot 'result-a'
+          $resultB = Join-Path $buildRoot 'result-b'
+          New-Item -ItemType Directory -Force $resultA, $resultB | Out-Null
+
+          $signerDir = Join-Path $env:RUNNER_TEMP 'libgcrypt-signers'
+          New-Item -ItemType Directory -Force $signerDir | Out-Null
+          $signers = @(
+            @{
+              Name = 'werner.asc'
+              Url = $env:LIBGCRYPT_SIGNER_WERNER_URL
+              Sha256 = $env:LIBGCRYPT_SIGNER_WERNER_SHA256
+              Fingerprint = '6DAA6E64A76D2840571B4902528897B826403ADA'
+            },
+            @{
+              Name = 'niibe.asc'
+              Url = $env:LIBGCRYPT_SIGNER_NIIBE_URL
+              Sha256 = $env:LIBGCRYPT_SIGNER_NIIBE_SHA256
+              Fingerprint = 'AC8E115BF73E2D8D47FA9908E98E9B2D19C6C8BD'
+            }
+          )
+          foreach ($signer in $signers) {
+            $path = Join-Path $signerDir $signer.Name
+            curl.exe --fail --location --retry 5 --output $path $signer.Url
+            if ((Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant() -ne
+                $signer.Sha256) {
+              throw "Signer certificate SHA-256 mismatch: $($signer.Name)"
+            }
+          }
+
+          $canonicalBuildMsys = (& $cygpath -u $canonicalBuild).Trim()
+          $signerMsys = (& $cygpath -u $signerDir).Trim()
+          $privateRoot = (& $cygpath -u $env:ISOLATED_MSYS).Trim()
+          $pwsh = (& $cygpath -u (Get-Command pwsh.exe).Source).Trim()
+          $sourceDateEpoch = (git show -s --format=%ct HEAD).Trim()
+          $common = @"
+          set -euo pipefail
+          export PATH='${privateRoot}/opt/bin':/usr/bin:/bin
+          export MSYSARM64_TARGET_ROOT='${privateRoot}/opt/aarch64-pc-msys'
+          export MSYSARM64_TOOLS_BIN='${privateRoot}/opt/bin'
+          export PWSH='${pwsh}'
+          export SOURCE_DATE_EPOCH='${sourceDateEpoch}'
+          export GNUPGHOME="`$PWD/.gnupg"
+          mkdir -p "`$GNUPGHOME"
+          chmod 700 "`$GNUPGHOME"
+          gpg --batch --import '${signerMsys}/werner.asc' '${signerMsys}/niibe.asc'
+          fingerprints="`$(gpg --batch --with-colons --fingerprint)"
+          grep -Fq 'fpr:::::::::6DAA6E64A76D2840571B4902528897B826403ADA:' <<<"`$fingerprints"
+          grep -Fq 'fpr:::::::::AC8E115BF73E2D8D47FA9908E98E9B2D19C6C8BD:' <<<"`$fingerprints"
+          makepkg --verifysource
+          makepkg --cleanbuild --check --nodeps --noconfirm
+          "@
+          foreach ($build in @(
+              @{ Name = 'a'; Result = $resultA },
+              @{ Name = 'b'; Result = $resultB })) {
+            if (Test-Path $canonicalBuild) {
+              Remove-Item -LiteralPath $canonicalBuild -Recurse -Force
+            }
+            New-Item -ItemType Directory -Path $canonicalBuild | Out-Null
+            Copy-Item "$recipe\*" $canonicalBuild -Recurse -Force
+            $script = "cd '$canonicalBuildMsys'`n$common"
+            & $bash --login -lc $script 2>&1 |
+              Tee-Object "$env:LIBGCRYPT_OUTPUT\evidence\build-$($build.Name).log"
+            if ($LASTEXITCODE -ne 0) {
+              throw "ARM64 MSYS libgcrypt diagnostic build $($build.Name) failed."
+            }
+            Get-ChildItem $canonicalBuild -File -Filter '*.pkg.tar.*' |
+              Copy-Item -Destination $build.Result
+            $savedAudit = Join-Path $build.Result 'src\libgcrypt-audit'
+            New-Item -ItemType Directory -Force (Split-Path $savedAudit) | Out-Null
+            Copy-Item (Join-Path $canonicalBuild 'src\libgcrypt-audit') `
+              $savedAudit -Recurse -Force
+          }
+
+          $packagesA = @(Get-ChildItem $resultA -File -Filter '*.pkg.tar.*' |
+            Sort-Object Name)
+          $packagesB = @(Get-ChildItem $resultB -File -Filter '*.pkg.tar.*' |
+            Sort-Object Name)
+          if ($packagesA.Count -ne 3 -or $packagesB.Count -ne 3) {
+            throw 'Each reproducibility build must produce exactly three packages.'
+          }
+          $expectedNames = @(
+            'mingw-w64-cross-msysarm64-libgcrypt-1.12.2-1-x86_64.pkg.tar.zst',
+            'mingw-w64-cross-msysarm64-libgcrypt-devel-1.12.2-1-x86_64.pkg.tar.zst',
+            'mingw-w64-cross-msysarm64-libgcrypt-tools-1.12.2-1-x86_64.pkg.tar.zst'
+          ) | Sort-Object
+          if (Compare-Object $expectedNames @($packagesA.Name) -SyncWindow 0) {
+            throw 'Build A did not produce the exact expected package set.'
+          }
+          if (Compare-Object $expectedNames @($packagesB.Name) -SyncWindow 0) {
+            throw 'Build B did not produce the exact expected package set.'
+          }
+          $preservedA = "$env:LIBGCRYPT_OUTPUT\evidence\reproducibility\build-a"
+          $preservedB = "$env:LIBGCRYPT_OUTPUT\evidence\reproducibility\build-b"
+          New-Item -ItemType Directory -Force $preservedA, $preservedB | Out-Null
+          $reproducibility = @()
+          for ($i = 0; $i -lt $packagesA.Count; $i++) {
+            if ($packagesA[$i].Name -ne $packagesB[$i].Name) {
+              throw 'Reproducibility package names differ.'
+            }
+            $shaA = (Get-FileHash -Algorithm SHA256 $packagesA[$i].FullName).Hash.ToLowerInvariant()
+            $shaB = (Get-FileHash -Algorithm SHA256 $packagesB[$i].FullName).Hash.ToLowerInvariant()
+            if ($packagesA[$i].Length -ne $packagesB[$i].Length -or $shaA -ne $shaB) {
+              throw "Reproducibility mismatch: $($packagesA[$i].Name)"
+            }
+            $reproducibility +=
+              "$($packagesA[$i].Name) $($packagesA[$i].Length) $shaA $shaB"
+            Copy-Item $packagesA[$i].FullName $recipe -Force
+            Copy-Item $packagesA[$i].FullName $preservedA -Force
+            Copy-Item $packagesB[$i].FullName $preservedB -Force
+          }
+          @(
+            'classification=diagnostic-a527',
+            "source_date_epoch=$sourceDateEpoch",
+            'builds=2',
+            'byte_identical=1',
+            $reproducibility,
+            'status=green'
+          ) | Set-Content "$env:LIBGCRYPT_OUTPUT\evidence\reproducibility.txt"
+          "LIBGCRYPT_BUILD_A=$resultA" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "LIBGCRYPT_CANONICAL_BUILD=$canonicalBuild" |
+            Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+
+      - name: Audit archives and isolated transactions
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bash = 'C:\msys64\usr\bin\bash.exe'
+          $cygpath = 'C:\msys64\usr\bin\cygpath.exe'
+          $privateRoot = (& $cygpath -u $env:ISOLATED_MSYS).Trim()
+          $packageDir = Join-Path $env:GITHUB_WORKSPACE 'mingw-w64-cross-msysarm64-libgcrypt'
+          $evidence = Join-Path $env:RUNNER_TEMP 'libgcrypt-evidence'
+          $packageDirMsys = (& $cygpath -u $packageDir).Trim()
+          $evidenceMsys = (& $cygpath -u $evidence).Trim()
+          $inputMsys = (& $cygpath -u $env:ARM64_INPUT_DIR).Trim()
+          $buildAMsys = (& $cygpath -u $env:LIBGCRYPT_BUILD_A).Trim()
+          $canonicalBuildMsys = (& $cygpath -u $env:LIBGCRYPT_CANONICAL_BUILD).Trim()
+          $runnerTempMsys = (& $cygpath -u $env:RUNNER_TEMP).Trim()
+          $workspaceMsys = (& $cygpath -u $env:GITHUB_WORKSPACE).Trim()
+          $forbiddenPaths = @(
+            $buildAMsys,
+            $canonicalBuildMsys,
+            $runnerTempMsys,
+            $workspaceMsys,
+            $env:LIBGCRYPT_CANONICAL_BUILD.Replace('\', '/'),
+            $env:LIBGCRYPT_BUILD_A.Replace('\', '/'),
+            $env:RUNNER_TEMP.Replace('\', '/'),
+            $env:GITHUB_WORKSPACE.Replace('\', '/')
+          ) -join '\n'
+          $pwsh = (& $cygpath -u (Get-Command pwsh.exe).Source).Trim()
+          $develPackages = Get-ChildItem -File $packageDir `
+            -Filter 'mingw-w64-cross-msysarm64-libgcrypt-devel-*.pkg.tar.*'
+          if ($develPackages.Count -ne 1) {
+            throw "Expected one libgcrypt devel package, found $($develPackages.Count)."
+          }
+          $bootstrap = Join-Path $env:RUNNER_TEMP 'libgcrypt-audit-bootstrap'
+          if (Test-Path $bootstrap) {
+            Remove-Item -Recurse -Force $bootstrap
+          }
+          New-Item -ItemType Directory -Path $bootstrap | Out-Null
+          $bsdtar = $env:PRIVATE_BSDTAR
+          & $bsdtar -xf $develPackages[0].FullName -C $bootstrap
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not extract the packaged audit harness.'
+          }
+          $packagedAudit = Join-Path $bootstrap `
+            'usr\share\doc\mingw-w64-cross-msysarm64-libgcrypt\audit-package-set.sh'
+          if (-not (Test-Path $packagedAudit)) {
+            throw 'Devel package is missing its audit harness.'
+          }
+          $packagedAuditMsys = (& $cygpath -u $packagedAudit).Trim()
+          $privatePacmanMsys = (& $cygpath -u $env:PRIVATE_PACMAN).Trim()
+          $script = @"
+          set -euo pipefail
+          export PATH='${privateRoot}/opt/bin':/usr/bin:/bin
+          export DEPENDENCY_ROOT='${privateRoot}/opt/aarch64-pc-msys/usr'
+          export MSYSARM64_TOOLS_BIN='${privateRoot}/opt/bin'
+          export PACMAN_BIN='${privatePacmanMsys}'
+          export PWSH='${pwsh}'
+          export AUDIT_FORBIDDEN_PATHS=`$'${forbiddenPaths}'
+          cd '${packageDirMsys}'
+          '${packagedAuditMsys}' '${packageDirMsys}' '${evidenceMsys}' \
+            '${inputMsys}/mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' \
+            '${inputMsys}/mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' \
+            '${inputMsys}/mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' \
+            '${inputMsys}/mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst' \
+            '${inputMsys}/libgpg-error-runtime.pkg.tar.zst' \
+            '${inputMsys}/libgpg-error-devel.pkg.tar.zst'
+          "@
+          & $bash --login -lc $script 2>&1 |
+            Tee-Object "$env:LIBGCRYPT_OUTPUT\evidence\package-audit.log"
+          $auditExit = $LASTEXITCODE
+          if ($auditExit -ne 0) {
+            throw 'Package or transaction audit failed.'
+          }
+
+          $sharedDb = 'C:\msys64\var\lib\pacman\local'
+          $manifest = Get-ChildItem -Recurse -File $sharedDb |
+            Sort-Object FullName |
+            ForEach-Object {
+              "$(Get-FileHash -Algorithm SHA256 $_.FullName | Select-Object -ExpandProperty Hash) $($_.Length) $($_.FullName.Substring($sharedDb.Length))"
+            }
+          $before = "$env:LIBGCRYPT_OUTPUT\evidence\materialization-shared-db.before"
+          $after = "$env:LIBGCRYPT_OUTPUT\evidence\materialization-shared-db.after"
+          $manifest | Set-Content $after
+          if ((Get-FileHash $before).Hash -ne (Get-FileHash $after).Hash) {
+            throw 'Shared C:\msys64 package database changed.'
+          }
+          $sharedLogAfter = (Get-FileHash -Algorithm SHA256 'C:\msys64\var\log\pacman.log').Hash.ToLowerInvariant()
+          $sharedLogAfter | Set-Content "$env:LIBGCRYPT_OUTPUT\evidence\materialization-shared-pacman-log.after.sha256"
+          $sharedLogBefore = Get-Content "$env:LIBGCRYPT_OUTPUT\evidence\materialization-shared-pacman-log.before.sha256"
+          if ($sharedLogBefore -ne $sharedLogAfter) {
+            throw 'Shared C:\msys64 pacman log changed.'
+          }
+          $privateScope = @(
+            (Join-Path $env:ISOLATED_MSYS 'opt'),
+            (Join-Path $env:ISOLATED_MSYS 'var\lib\pacman\local')
+          )
+          $privateAfter = "$env:LIBGCRYPT_OUTPUT\evidence\private-materialization.after.manifest"
+          Get-ChildItem $privateScope -Recurse -File |
+            Sort-Object FullName |
+            ForEach-Object {
+              $relative = $_.FullName.Substring($env:ISOLATED_MSYS.Length + 1).Replace('\', '/')
+              "$((Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant()) $($_.Length) $relative"
+            } | Set-Content $privateAfter
+          $privateBefore = "$env:LIBGCRYPT_OUTPUT\evidence\private-materialization.before.manifest"
+          if ((Get-FileHash $privateBefore).Hash -ne (Get-FileHash $privateAfter).Hash) {
+            throw 'Private materialization root changed during build or audit.'
+          }
+          @(
+            "before=$((Get-FileHash -Algorithm SHA256 $privateBefore).Hash.ToLowerInvariant())",
+            "after=$((Get-FileHash -Algorithm SHA256 $privateAfter).Hash.ToLowerInvariant())",
+            'unchanged=1',
+            'status=green'
+          ) | Set-Content "$env:LIBGCRYPT_OUTPUT\evidence\private-materialization.seal"
+          'status=green' | Set-Content "$env:LIBGCRYPT_OUTPUT\evidence\audit-complete.ok"
+
+      - name: Collect sealed evidence
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $packageDir = Join-Path $env:GITHUB_WORKSPACE 'mingw-w64-cross-msysarm64-libgcrypt'
+          $output = $env:LIBGCRYPT_OUTPUT
+          $evidence = Join-Path $env:RUNNER_TEMP 'libgcrypt-evidence'
+          Get-ChildItem -File $packageDir -Filter '*.pkg.tar.*' -ErrorAction SilentlyContinue |
+            Copy-Item -Destination $output
+          if (Test-Path $evidence) {
+            Copy-Item -Recurse -Force "$evidence\*" "$output\evidence\"
+          }
+          $buildAudit = if ($env:LIBGCRYPT_BUILD_A) {
+            Join-Path $env:LIBGCRYPT_BUILD_A 'src\libgcrypt-audit'
+          } else {
+            $null
+          }
+          if ($buildAudit -and (Test-Path $buildAudit)) {
+            Copy-Item -Recurse -Force $buildAudit "$output\evidence\build-audit"
+          }
+          if ($env:ARM64_INPUT_DIR -and (Test-Path $env:ARM64_INPUT_DIR)) {
+            Get-ChildItem -File $env:ARM64_INPUT_DIR -Filter '*.pkg.tar.*' |
+              Copy-Item -Destination "$output\inputs\"
+          }
+          $packageArchives = @(Get-ChildItem -File $output -Filter '*.pkg.tar.*')
+          $packageArchives |
+            ForEach-Object {
+              "$((Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant()) $($_.Length) $($_.Name)"
+            } | Set-Content "$output\evidence\package-seal.sha256"
+          Get-ChildItem -File "$output\inputs" -Filter '*.pkg.tar.*' |
+            ForEach-Object {
+              "$((Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant()) $($_.Length) inputs/$($_.Name)"
+            } | Set-Content "$output\evidence\input-seal.sha256"
+          $status = if ($packageArchives.Count -eq 3 -and
+              (Test-Path "$output\evidence\summary.txt") -and
+              (Test-Path "$output\evidence\audit-complete.ok")) {
+            'diagnostic-green'
+          } else {
+            'failed-or-blocked'
+          }
+          @(
+            "status=$status",
+            'runtime=msysarm64-runtime-pr10-a527-20260824',
+            'classification=diagnostic-a527',
+            'packages_publishable=0',
+            'native_admission=blocked-corrected-runtime-required',
+            'publication_ready=0',
+            'hold=replacement-runtime-assets-and-final-native-windows-11-arm-admission; reject-v1-malformed-unknown-21-12-records'
+          ) | Set-Content "$output\evidence\publication-status.txt"
+          $manifest = "$output\evidence\MANIFEST.sha256"
+          $seal = "$output\evidence\SEAL.sha256"
+          Get-ChildItem -Recurse -File $output |
+            Where-Object FullName -notin @($manifest, $seal) |
+            Sort-Object FullName |
+            ForEach-Object {
+              $relative = $_.FullName.Substring($output.Length + 1).Replace('\', '/')
+              "$((Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant()) $($_.Length) $relative"
+            } | Set-Content $manifest
+          $manifestHash = (Get-FileHash -Algorithm SHA256 $manifest).Hash.ToLowerInvariant()
+          function Get-OptionalSha256([string] $Path) {
+            if ($Path -and (Test-Path -LiteralPath $Path -PathType Leaf)) {
+              return (Get-FileHash -Algorithm SHA256 $Path).Hash.ToLowerInvariant()
+            }
+            return 'absent'
+          }
+          @(
+            'schema=1',
+            "head_sha=${{ github.event.pull_request.head.sha || github.sha }}",
+            'classification=diagnostic-a527',
+            'publication_ready=0',
+            "manifest_sha256=$manifestHash",
+            "package_manifest_sha256=$(Get-OptionalSha256 "$output\evidence\package-seal.sha256")",
+            "input_manifest_sha256=$(Get-OptionalSha256 "$output\evidence\input-seal.sha256")",
+            "private_materialization_seal=$(Get-OptionalSha256 "$output\evidence\private-materialization.seal")",
+            "shared_db_before=$(Get-OptionalSha256 "$output\evidence\materialization-shared-db.before")",
+            "shared_db_after=$(Get-OptionalSha256 "$output\evidence\materialization-shared-db.after")"
+          ) | Set-Content $seal
+          $manifestLines = @(Get-Content $manifest)
+          foreach ($line in $manifestLines) {
+            if ($line -notmatch '^([0-9a-f]{64}) ([0-9]+) (.+)$') {
+              throw "Invalid manifest entry: $line"
+            }
+            $path = Join-Path $output $Matches[3].Replace('/', '\')
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Manifest payload is missing: $($Matches[3])"
+            }
+            $item = Get-Item -LiteralPath $path
+            if ($item.Length -ne [int64]$Matches[2] -or
+                (Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant() -ne $Matches[1]) {
+              throw "Manifest payload mismatch: $($Matches[3])"
+            }
+          }
+          $payloadCount = @(Get-ChildItem -Recurse -File $output |
+            Where-Object FullName -notin @($manifest, $seal)).Count
+          if ($payloadCount -ne $manifestLines.Count) {
+            throw "Manifest coverage mismatch: $payloadCount/$($manifestLines.Count)"
+          }
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ !cancelled() }}
+        with:
+          name: arm64-msys-libgcrypt-diagnostic-a527
+          path: ${{ env.LIBGCRYPT_OUTPUT }}
+          if-no-files-found: error
+
+  native-smoke:
+    # The harness is retained for the corrected runtime rebuild. It must not
+    # convert the known a527 diagnostic build into native admission evidence.
+    if: ${{ false && inputs.run_native_smoke == true && github.repository == 'crutkas/MSYS2-packages' }}
+    needs: cross-build
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: arm64-msys-libgcrypt-diagnostic-a527
+          path: artifact
+
+      - name: Run strict native ARM64 MSYS API smoke
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:RUNNER_TEMP 'native-msys-root'
+          $unpacked = Join-Path $env:RUNNER_TEMP 'native-wrapper-payloads'
+          $nativeEvidence = Join-Path $env:RUNNER_TEMP 'libgcrypt-native-evidence'
+          New-Item -ItemType Directory -Force $root, $unpacked, $nativeEvidence | Out-Null
+          "NATIVE_EVIDENCE=$nativeEvidence" |
+            Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          Get-ChildItem artifact -Recurse -File -Filter '*.pkg.tar.*' |
+            ForEach-Object {
+              tar.exe -xf $_.FullName -C $unpacked
+              if ($LASTEXITCODE -ne 0) {
+                throw "Failed to extract $($_.Name)"
+              }
+            }
+          $targetPayload = Join-Path $unpacked 'opt\aarch64-pc-msys'
+          if (-not (Test-Path $targetPayload)) {
+            throw 'Cross-package target payload is missing.'
+          }
+          Copy-Item -Recurse -Force "$targetPayload\*" $root
+          New-Item -ItemType Directory -Force "$root\usr\bin" | Out-Null
+          Copy-Item 'artifact\evidence\build-audit\version-smoke-dynamic.exe' "$root\usr\bin\"
+          Copy-Item 'artifact\evidence\build-audit\version-smoke-static.exe' "$root\usr\bin\"
+          $env:PATH = "$root\usr\bin;$root\bin;$env:PATH"
+
+          Add-Type @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class NativeMachine {
+              [DllImport("kernel32.dll", SetLastError = true)]
+              [return: MarshalAs(UnmanagedType.Bool)]
+              public static extern bool IsWow64Process2(
+                  IntPtr process, out ushort processMachine, out ushort nativeMachine);
+          }
+          '@
+          if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'Arm64') {
+            throw 'Native runner OS is not Arm64.'
+          }
+          $proof = @("os_architecture=Arm64")
+          foreach ($consumer in @(
+              @{ Name = 'dynamic'; Required = @('msys-2.0.dll', 'msys-gcrypt-20.dll', 'msys-gpg-error-0.dll'); Forbidden = @() },
+              @{ Name = 'static'; Required = @('msys-2.0.dll'); Forbidden = @('msys-gcrypt-20.dll', 'msys-gpg-error-0.dll') })) {
+            $env:LIBGCRYPT_NATIVE_HOLD = '1'
+            $stdout = Join-Path $nativeEvidence "$($consumer.Name).stdout.txt"
+            $stderr = Join-Path $nativeEvidence "$($consumer.Name).stderr.txt"
+            $process = Start-Process "$root\usr\bin\version-smoke-$($consumer.Name).exe" `
+              -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+            Start-Sleep -Seconds 3
+            [ushort]$processMachine = 0
+            [ushort]$nativeMachine = 0
+            if (-not [NativeMachine]::IsWow64Process2(
+                $process.Handle, [ref]$processMachine, [ref]$nativeMachine)) {
+              throw "IsWow64Process2 failed for $($consumer.Name)."
+            }
+            if ($processMachine -ne 0 -or $nativeMachine -ne 0xaa64) {
+              throw "Consumer is not a native ARM64 process: $($consumer.Name)."
+            }
+            $modules = @($process.Modules | ForEach-Object ModuleName)
+            foreach ($required in $consumer.Required) {
+              if ($required -notin $modules) {
+                throw "$($consumer.Name) consumer did not load $required."
+              }
+            }
+            foreach ($forbidden in $consumer.Forbidden) {
+              if ($forbidden -in $modules) {
+                throw "$($consumer.Name) consumer unexpectedly loaded $forbidden."
+              }
+            }
+            $process.WaitForExit()
+            if ($process.ExitCode -ne 0) {
+              throw "$($consumer.Name) consumer failed with $($process.ExitCode)."
+            }
+            $smoke = Get-Content -Raw $stdout
+            if ($smoke -notmatch 'selftest=ok sha256=ok') {
+              throw "$($consumer.Name) consumer did not report crypto/selftest success."
+            }
+            $proof += @(
+              "$($consumer.Name)_process_machine=0x$($processMachine.ToString('x4'))",
+              "$($consumer.Name)_native_machine=0x$($nativeMachine.ToString('x4'))",
+              "$($consumer.Name)_exit=0",
+              "$($consumer.Name)_modules=$($modules -join ',')"
+            )
+          }
+          Remove-Item Env:LIBGCRYPT_NATIVE_HOLD
+          $toolStart = [Diagnostics.ProcessStartInfo]::new()
+          $toolStart.FileName = "$root\usr\bin\hmac256.exe"
+          $toolStart.ArgumentList.Add('native-key')
+          $toolStart.UseShellExecute = $false
+          $toolStart.RedirectStandardInput = $true
+          $toolStart.RedirectStandardOutput = $true
+          $toolStart.RedirectStandardError = $true
+          $toolProcess = [Diagnostics.Process]::new()
+          $toolProcess.StartInfo = $toolStart
+          if (-not $toolProcess.Start()) {
+            throw 'Could not start hmac256.'
+          }
+          $toolProcess.StandardInput.Write('native-arm64-libgcrypt-tool-smoke')
+          $toolProcess.StandardInput.Flush()
+          # Keep stdin open so the process remains inspectable until module proof is complete.
+          [ushort]$toolProcessMachine = 0
+          [ushort]$toolNativeMachine = 0
+          if (-not [NativeMachine]::IsWow64Process2(
+              $toolProcess.Handle, [ref]$toolProcessMachine, [ref]$toolNativeMachine)) {
+            throw 'IsWow64Process2 failed for hmac256.'
+          }
+          if ($toolProcessMachine -ne 0 -or $toolNativeMachine -ne 0xaa64) {
+            throw 'hmac256 is not a native ARM64 process.'
+          }
+          $toolModules = @($toolProcess.Modules | ForEach-Object ModuleName)
+          if ('msys-2.0.dll' -notin $toolModules) {
+            throw 'hmac256 did not load the native MSYS runtime.'
+          }
+          foreach ($forbidden in @('cygwin1.dll', 'msys-gcrypt-20.dll', 'msys-gpg-error-0.dll')) {
+            if ($forbidden -in $toolModules) {
+              throw "hmac256 unexpectedly loaded $forbidden."
+            }
+          }
+          $toolProcess.StandardInput.Close()
+          $toolOutput = $toolProcess.StandardOutput.ReadToEnd()
+          $toolError = $toolProcess.StandardError.ReadToEnd()
+          $toolProcess.WaitForExit()
+          $toolOutput | Set-Content (Join-Path $nativeEvidence 'hmac256-output.txt')
+          $toolError | Set-Content (Join-Path $nativeEvidence 'hmac256-error.txt')
+          if ($toolProcess.ExitCode -ne 0) {
+            throw "Native ARM64 hmac256 failed with $($toolProcess.ExitCode)."
+          }
+          if ($toolOutput -notmatch '^[0-9a-f]{64}\s*$') {
+            throw 'hmac256 did not produce a valid HMAC-SHA-256 result.'
+          }
+          $proof += @(
+            "hmac256_process_machine=0x$($toolProcessMachine.ToString('x4'))",
+            "hmac256_native_machine=0x$($toolNativeMachine.ToString('x4'))",
+            'hmac256_exit=0',
+            "hmac256_modules=$($toolModules -join ',')",
+            'status=green'
+          )
+          $proof | Set-Content (Join-Path $nativeEvidence 'native-proof.txt')
+
+      - name: Seal native ARM64 evidence
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $nativeEvidence = $env:NATIVE_EVIDENCE
+          if (-not $nativeEvidence) {
+            $nativeEvidence = Join-Path $env:RUNNER_TEMP 'libgcrypt-native-evidence'
+            New-Item -ItemType Directory -Force $nativeEvidence | Out-Null
+          }
+          $manifest = Join-Path $nativeEvidence 'MANIFEST.sha256'
+          $seal = Join-Path $nativeEvidence 'SEAL.sha256'
+          Get-ChildItem -Recurse -File $nativeEvidence |
+            Where-Object FullName -notin @($manifest, $seal) |
+            Sort-Object FullName |
+            ForEach-Object {
+              $relative = $_.FullName.Substring($nativeEvidence.Length + 1).Replace('\', '/')
+              "$((Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant()) $($_.Length) $relative"
+            } | Set-Content $manifest
+          $proof = Join-Path $nativeEvidence 'native-proof.txt'
+          $status = if ((Test-Path $proof) -and
+              (Get-Content $proof) -contains 'status=green') {
+            'green'
+          } else {
+            'failed-or-blocked'
+          }
+          $crossManifest = 'artifact\evidence\MANIFEST.sha256'
+          $crossSeal = 'artifact\evidence\SEAL.sha256'
+          @(
+            'schema=1',
+            "head_sha=${{ github.event.pull_request.head.sha || github.sha }}",
+            'classification=corrected-runtime-native-only',
+            "status=$status",
+            "manifest_sha256=$((Get-FileHash -Algorithm SHA256 $manifest).Hash.ToLowerInvariant())",
+            "cross_manifest_sha256=$((Get-FileHash -Algorithm SHA256 $crossManifest).Hash.ToLowerInvariant())",
+            "cross_seal_sha256=$((Get-FileHash -Algorithm SHA256 $crossSeal).Hash.ToLowerInvariant())"
+          ) | Set-Content $seal
+          $manifestLines = @(Get-Content $manifest)
+          foreach ($line in $manifestLines) {
+            if ($line -notmatch '^([0-9a-f]{64}) ([0-9]+) (.+)$') {
+              throw "Invalid native manifest entry: $line"
+            }
+            $path = Join-Path $nativeEvidence $Matches[3].Replace('/', '\')
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Native manifest payload is missing: $($Matches[3])"
+            }
+            $item = Get-Item -LiteralPath $path
+            if ($item.Length -ne [int64]$Matches[2] -or
+                (Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant() -ne $Matches[1]) {
+              throw "Native manifest payload mismatch: $($Matches[3])"
+            }
+          }
+          $payloadCount = @(Get-ChildItem -Recurse -File $nativeEvidence |
+            Where-Object FullName -notin @($manifest, $seal)).Count
+          if ($payloadCount -ne $manifestLines.Count) {
+            throw "Native manifest coverage mismatch: $payloadCount/$($manifestLines.Count)"
+          }
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ !cancelled() }}
+        with:
+          name: arm64-msys-libgcrypt-native-corrected-runtime
+          path: ${{ env.NATIVE_EVIDENCE }}
+          if-no-files-found: error

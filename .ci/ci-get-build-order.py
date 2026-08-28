@@ -33,10 +33,21 @@ def list_changes(*git_args):
 
 def list_packages():
     changes = list_changes("--pretty=format:", "--name-only")
+    specialized_list = os.path.join(
+        os.path.dirname(__file__), "ci-specialized-build-list.txt"
+    )
+    with open(specialized_list, encoding="utf-8") as handle:
+        specialized = {
+            line.strip()
+            for line in handle
+            if line.strip() and not line.lstrip().startswith("#")
+        }
     return [
         x.split("/")[0]
         for x in changes
-        if x.endswith("/PKGBUILD") and os.path.exists(x)
+        if x.endswith("/PKGBUILD")
+        and os.path.exists(x)
+        and x.split("/")[0] not in specialized
     ]
 
 
