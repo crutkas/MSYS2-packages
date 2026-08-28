@@ -24,11 +24,18 @@ The helper:
   directory to the final root;
 - creates an external, exclusively locked owner sentinel before publishing
   the private root;
-- requires a canonical manifest that binds one owner and session to every
-  package path, length, SHA-256, and deterministic package-set SHA-256;
-- requires the raw manifest SHA-256 and ECDSA P-256 public-key SHA-256 to be
-  supplied independently, and verifies a detached DER signature over the
-  exact UTF-8 manifest bytes;
+- requires a canonical, versioned manifest that binds one owner and session to
+  every package path, nonnegative Int64 length, lowercase SHA-256, and
+  deterministic package-set SHA-256;
+- frames the package set with a version header, decimal count, canonical
+  base64 UTF-8 paths, actual tab separators, decimal Int64 lengths, lowercase
+  SHA-256 values, and LF record terminators;
+- requires the raw manifest SHA-256 and public-key SHA-256 to be supplied
+  independently, accepts exactly one canonical subject-public-key-info
+  `PUBLIC KEY` PEM object, and requires curve OID
+  `1.2.840.10045.3.1.7` (NIST P-256/secp256r1);
+- accepts exactly one canonical RFC 4648 base64 DER signature line terminated
+  by one LF and verifies it over the exact UTF-8 manifest bytes;
 - rejects missing, extra, non-package, aliased, or reparse entries anywhere
   in the package root before creating session state;
 - constructs the complete native argument list internally and accepts no
@@ -37,12 +44,15 @@ The helper:
   and deletion for the entire transaction;
 - writes a repository-free config and requires both configured and
   root-local hook directories to be empty;
-- closes native standard input, removes `POSIXLY_CORRECT`, and sets
-  `MSYS=winsymlinks:nativestrict`;
+- closes native standard input and constructs the child environment from an
+  empty block containing only canonical private paths, OS-derived Windows
+  paths, fixed locale/MSYS values, and no inherited proxy, Git, shell startup,
+  loader, or package-manager injection variables;
 - holds the private config, executable, owner marker, and package inputs
   against replacement while pacman runs;
-- snapshots every protected tree by hashing each regular file's bytes and
-  rejects every nested reparse entry before transaction state is admitted;
+- snapshots every protected tree by hashing each regular file's bytes; the
+  exported snapshot command and every internal evidence path reject every
+  nested reparse entry with no lenient production mode;
 - binds each root and entry's owner SID, group/DACL security descriptor SDDL,
   complete Windows attribute mask, file identity, and filesystem change time
   into the canonical digest and evidence;
@@ -52,8 +62,8 @@ The helper:
 - enumerates named streams on every admitted root, directory, and file and
   fails closed if any alternate data stream is present; rejecting reparse
   entries prevents stream enumeration from following an external link target;
-- always includes canonical `C:\msys64` in the protected set, even when it is
-  absent;
+- always includes canonical `C:\msys64` in the protected set, but records an
+  absent root as `NotCovered`, never as successful literal-root coverage;
 - requires a complete preflight snapshot and a separate disposable watcher to
   observe a quiet interval before authoritative monitoring starts; only
   pre-monitor noise is discarded;
@@ -83,6 +93,12 @@ It also receives `--noconfirm`, `--noscriptlet`, one `-U`, one helper-owned
 `--`, and only canonical package paths after that separator. The generated
 config has an `[options]` section and no repository, `Server`, or `Include`
 directive.
+
+The config deliberately retains `LocalFileSigLevel = Optional`. The ownership
+manifest authenticates an inventory for this diagnostic contract; it is not a
+native pacman package-signature admission policy. Independently admitted
+package bytes and a separately trusted native package-signature policy remain
+external blockers.
 
 ## Threat model
 
@@ -116,14 +132,37 @@ protected root. Ownership manifest, signature, and public-key files must be
 distinct, canonical, outside the package root, and locked for the transaction.
 
 The canonical ownership manifest schema is
-`private-pacman-package-ownership/v2`. Its ordered fields are `Schema`,
-`Owner`, `SessionId`, `SignatureAlgorithm`, `PackageSetSha256`, and
-`Packages`. Package entries are sorted by path and contain only `Path`,
-`Length`, and `Sha256`. The detached signature file contains one base64 DER
-ECDSA P-256 signature over the exact UTF-8 manifest bytes. The public key is
-PEM subject-public-key-info. The caller must obtain expected manifest and
-public-key hashes from a trusted control plane rather than from adjacent
-files.
+`private-pacman-package-ownership/v3`. Its ordered fields are `Schema`,
+`Owner`, `SessionId`, `SignatureAlgorithm`, `PackageSetCanonicalization`,
+`PackageSetSha256`, and `Packages`. Package entries are sorted by ordinal path
+and contain only `Path`, `Length`, and `Sha256`; their JSON types are strictly
+string, Int64, and string.
+
+`PackageSetCanonicalization` is `private-pacman-package-set/v1`. Its exact
+UTF-8 framing is an LF-terminated version line, an LF-terminated invariant
+decimal package count, then one LF-terminated record per package. Each record
+is canonical base64 of the UTF-8 relative path, an actual U+0009 tab, the
+nonnegative invariant decimal Int64 length, another actual tab, and the
+lowercase 64-hex SHA-256. Base64, decimal, and hash alphabets exclude the
+separators; field validation rejects control characters, non-Int64 values,
+uppercase hashes, duplicates, and non-ordinal order. The version header and
+manifest schema prevent the former literal-backtick framing digest from being
+confused with this encoding.
+
+The detached signature file is exactly one canonical RFC 4648 base64 DER
+ECDSA signature followed by one LF. The public-key file is exactly the
+LF-internal, no-trailing-newline output of subject-public-key-info
+`PUBLIC KEY` PEM encoding. Private-key labels or material, extra PEM objects,
+other labels, malformed base64, CRLF, and trailing payload are rejected before
+verification. Import is followed by an exact named-curve OID check for NIST
+P-256; a different 256-bit curve such as brainpoolP256r1 is rejected. The
+caller must obtain expected manifest and public-key hashes from a trusted
+control plane rather than from adjacent files.
+
+ECDSA does not provide a unique signature byte string, and this contract does
+not claim signature uniqueness. Evidence retains the SHA-256 of the exact raw
+signature file, while the independently pinned manifest hash binds the signed
+content.
 
 `New-PrivatePacmanOwnershipManifest` can create the unsigned canonical
 manifest from an isolated package root. Signature creation and trusted hash
@@ -173,6 +212,38 @@ The module rederives and verifies every layout property before touching the
 filesystem, so a serialized or modified layout cannot redirect a managed
 path.
 
+The process environment evidence uses
+`private-pacman-child-environment/v1`. `ProcessStartInfo.Environment` is
+cleared before these exact production entries are added in ordinal-name
+evidence order:
+
+```text
+COMSPEC
+GNUPGHOME
+HOME
+LANG
+LC_ALL
+MSYS
+MSYSTEM
+MSYSTEM_PREFIX
+PATH
+SystemRoot
+TEMP
+TMP
+TMPDIR
+WINDIR
+```
+
+`SystemRoot`, `WINDIR`, `System32`, and `COMSPEC` are derived from Windows APIs
+and resolved through the same canonical final-path checks rather than copied
+from the parent environment. `PATH` contains only the private `usr\bin`,
+canonical `System32`, and canonical Windows root. `HOME`, `GNUPGHOME`, and all
+temporary variables are inside the disposable private root. Locale values are
+`C.UTF-8`, `MSYSTEM` is `MSYS`, `MSYSTEM_PREFIX` is `/usr`, and `MSYS` is
+`winsymlinks:nativestrict`. The test harness can add an exact, non-exported
+recorder-control set through private module state; production has no caller
+environment override surface.
+
 ## Evidence and cleanup
 
 The external state directory contains:
@@ -181,12 +252,25 @@ The external state directory contains:
   protected roots, phase, and final result digest;
 - `evidence/invocation.json`: executable, exact argv, locked package hashes,
   signed ownership identity, seed-copy digest, managed-config digest, and
-  controlled environment;
+  complete sorted effective child environment with canonical schema and
+  SHA-256;
 - `evidence/protected-*-before.json` and
   `evidence/protected-*-after.json`: full byte, owner/group/DACL, attribute,
-  reparse-rejection, and named-stream-policy manifests;
+  entry count, strict reparse-rejection, and named-stream-policy manifests;
 - `evidence/result.json`: process output and exit status, before/after
-  protected digests, watcher events/errors, cleanup status, and failures.
+  protected digests and counts, `Covered`/`NotCovered`/`CaptureFailed` status,
+  watcher events/errors, cleanup status, and failures.
+
+All module JSON evidence and the suite report are UTF-8 without BOM, LF-only,
+and terminated by exactly one LF.
+
+`private-pacman-tree-snapshot/v3` records `ReparsePointPolicy = reject`.
+Covered before/after evidence must have nonnegative equal entry counts and
+equal canonical digests. Missing `C:\msys64` snapshots retain deterministic
+missing digests and count zero for observation, but coverage is `NotCovered`.
+A snapshot error produces `CaptureFailed` records and a failed transaction;
+it cannot become a skip. No expected count or digest is imposed on an
+arbitrary future installation.
 
 The private root is removed on success, child crash, timeout, protected-state
 drift, and other handled failures. Evidence remains external.
@@ -214,6 +298,13 @@ report.
 This workflow is defined by candidate-controlled source and is not an
 authoritative admission gate. Production use requires protected default-branch
 governance that the candidate cannot alter or self-certify.
+
+The report labels itself `self-reported-diagnostic-only` and
+`AdmissionReady = false`. Passed, failed, and skipped totals are separate and
+must add to the total. The workflow validates those fields, rejects
+`CaptureFailed`, requires equal nonnegative counts for `Covered`, and requires
+at least one skip when literal coverage is `NotCovered`. Synthetic populated
+evidence is separately typed and can never satisfy literal-root coverage.
 
 There is no production caller in this change. Before one can be admitted, a
 separate trusted integration must pin raw manifest and public-key source URLs
@@ -245,18 +336,29 @@ data streams, transient protected-state races, a deterministic private
 snapshot barrier that injects mutation during baseline capture, child crashes,
 timeouts, parent-process crash recovery, and reparse-safe cleanup.
 
-The JSON report and logs expose `ExistedBefore`, `ExistedAfter`, entry counts,
-and pre/post content and canonical digests for a deterministic populated
-protected-root fixture. One native-boundary transaction protects the literal
-canonical `C:\msys64`; its transaction evidence and separate suite-level
-pre/post snapshot are reported. Capture success and complete failure text are
-explicit report fields, so an unreadable entry or forbidden stream cannot
-suppress diagnostic JSON. The suite resolves its temporary base through the
-native final path before applying the same canonicality checks as production.
-Remaining adversarial transactions substitute a small populated fixed-drive
-root and one test uses a deterministic snapshot barrier by changing private
-module state only inside the test harness; the production command surface
-exposes neither override. This avoids repeatedly walking a hosted
-multi-gigabyte installation without weakening production behavior. An absent
-hosted-run root remains an explicit non-admission gate rather than evidence for
-a populated installation.
+The JSON report and logs expose coverage status, `ExistedBefore`,
+`ExistedAfter`, entry counts, and pre/post content and canonical digests for
+the literal and deterministic synthetic roots. One native-boundary transaction
+protects literal canonical `C:\msys64`; its transaction evidence and separate
+suite-level pre/post snapshot are reported. If that root is absent, both
+literal checks are `NotCovered` and their dedicated test records are skipped,
+not passed. Capture errors are `CaptureFailed` failures with complete error
+text, so an unreadable entry or forbidden stream cannot suppress diagnostic
+JSON or shape success.
+
+The suite also covers exact P-256 OID binding, brainpool rejection, canonical
+SPKI-only PEM input, strict signature text framing, noncanonical base64,
+versioned injective package framing and its fixed digest vector, hostile
+inherited environment removal, exact effective-environment recording,
+case-sensitive package extensions, `CONIN$`/`CONOUT$`, and strict ordinary,
+junction, file-symlink, and directory-symlink snapshots. Unavailable optional
+symlink capabilities are skipped rather than passed.
+
+The suite resolves its temporary base through the native final path before
+applying the same canonicality checks as production. Remaining adversarial
+transactions substitute a small populated fixed-drive root and one test uses a
+deterministic snapshot barrier by changing private module state only inside the
+test harness; the production command surface exposes neither override. This
+avoids repeatedly walking a hosted multi-gigabyte installation without
+weakening production behavior. An absent hosted-run root remains an explicit
+non-admission gate rather than evidence for a populated installation.

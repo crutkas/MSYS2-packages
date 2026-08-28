@@ -61,6 +61,104 @@ jobs:
             -File .ci\Test-PrivatePacman.ps1 `
             -ReportPath '${{ runner.temp }}\private-pacman-contract.json'
 
+      - name: Validate diagnostic coverage accounting
+        shell: pwsh
+        env:
+          REPORT_PATH: ${{ runner.temp }}\private-pacman-contract.json
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $report = Get-Content -Raw -LiteralPath $env:REPORT_PATH | ConvertFrom-Json
+          if ($report.Schema -cne 'private-pacman-contract-tests/v3' -or
+             $report.EvidenceAuthority -cne 'self-reported-diagnostic-only' -or
+             $report.AdmissionReady -ne $false) {
+            throw 'The diagnostic report authority or schema is invalid.'
+          }
+
+          $summary = $report.Summary
+          if ([int64]$summary.Total -ne (
+                 [int64]$summary.Passed +
+                 [int64]$summary.Failed +
+                 [int64]$summary.Skipped
+             ) -or
+             [int64]$summary.Total -ne @($report.Tests).Count -or
+             [int64]$summary.Passed -ne [int64]$report.Passed -or
+             [int64]$summary.Failed -ne [int64]$report.Failed -or
+             [int64]$summary.Skipped -ne [int64]$report.Skipped -or
+             [int64]$summary.Failed -ne 0) {
+            throw 'Passed, failed, and skipped test accounting is inconsistent.'
+          }
+          foreach ($status in @('Passed', 'Failed', 'Skipped')) {
+            $actual = @($report.Tests | Where-Object Status -CEQ $status).Count
+            if ($actual -ne [int64]$summary.$status) {
+             throw "Test records do not match the $status summary."
+            }
+          }
+
+          foreach ($state in @(
+             $report.CanonicalSharedState,
+             $report.CanonicalTransactionState
+          )) {
+            if ($state.CoverageStatus -cnotin @(
+               'Covered',
+               'NotCovered',
+               'CaptureFailed'
+            )) {
+             throw 'Literal-root coverage status is invalid.'
+            }
+            if ($state.CoverageStatus -ceq 'CaptureFailed') {
+             throw 'Literal-root capture failed.'
+            }
+            if ($state.CoverageStatus -ceq 'Covered' -and (
+                   [int64]$state.EntryCountBefore -lt 0 -or
+                   [int64]$state.EntryCountBefore -ne
+                       [int64]$state.EntryCountAfter -or
+                   $state.ByteAndMetadataIdentical -ne $true
+               )) {
+             throw 'Covered literal-root snapshots are inconsistent.'
+            }
+            if ($state.CoverageStatus -ceq 'NotCovered' -and (
+                   $state.ExistedBefore -ne $false -or
+                   $state.ExistedAfter -ne $false -or
+                   [int64]$state.EntryCountBefore -ne 0 -or
+                   [int64]$state.EntryCountAfter -ne 0 -or
+                   $null -ne $state.ByteAndMetadataIdentical
+               )) {
+             throw 'NotCovered literal-root evidence is misleading.'
+            }
+          }
+
+          if ($summary.LiteralCoverageStatus -cne
+             $report.CanonicalSharedState.CoverageStatus -or
+             $summary.TransactionCoverageStatus -cne
+             $report.CanonicalTransactionState.CoverageStatus) {
+            throw 'Literal-root coverage summaries do not match their evidence.'
+          }
+          $literalTests = [ordered]@{
+            'literal C:\msys64 suite coverage is strict and countable' =
+               $summary.LiteralCoverageStatus
+            'literal C:\msys64 transaction coverage is countable' =
+               $summary.TransactionCoverageStatus
+          }
+          foreach ($entry in $literalTests.GetEnumerator()) {
+            $expectedStatus = if ($entry.Value -ceq 'Covered') {
+             'Passed'
+            } else {
+             'Skipped'
+            }
+            $matching = @(
+             $report.Tests |
+                 Where-Object Name -CEQ $entry.Key |
+                 Where-Object Status -CEQ $expectedStatus
+            )
+            if ($matching.Count -ne 1) {
+             throw "Literal-root test accounting is invalid: $($entry.Key)"
+            }
+          }
+          if ($report.PopulatedSharedState.Kind -cne
+             'synthetic-populated-fixed-drive-root') {
+            throw 'Synthetic populated-root evidence is not explicitly separated.'
+          }
+
       - name: Upload contract evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

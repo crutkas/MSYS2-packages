@@ -1,11 +1,17 @@
 Set-StrictMode -Version Latest
 
-$script:PrivatePacmanSchema = 'private-pacman-session/v2'
-$script:OwnershipManifestSchema = 'private-pacman-package-ownership/v2'
+$script:PrivatePacmanSchema = 'private-pacman-session/v3'
+$script:OwnershipManifestSchema = 'private-pacman-package-ownership/v3'
+$script:PackageSetCanonicalization = 'private-pacman-package-set/v1'
+$script:TreeSnapshotSchema = 'private-pacman-tree-snapshot/v3'
+$script:ChildEnvironmentSchema = 'private-pacman-child-environment/v1'
 $script:OwnershipSignatureAlgorithm = 'ecdsa-p256-sha256'
+$script:OwnershipCurveOid = '1.2.840.10045.3.1.7'
+$script:PackageArchivePattern = '\.pkg\.tar\.(?:gz|bz2|xz|zst|lrz|lzo|Z)$'
 $script:CanonicalSharedRoot = 'C:\msys64'
 $script:OwnerFileName = '.private-pacman-owner.json'
 $script:TestSnapshotBarrier = $null
+$script:TestChildEnvironment = $null
 $script:RequiredIsolationSwitches = @(
     '--root',
     '--dbpath',
@@ -536,7 +542,7 @@ function Test-PrivatePacmanReservedName {
     )
 
     $baseName = $Segment.Split('.')[0].ToUpperInvariant()
-    return $baseName -match '^(CON|PRN|AUX|NUL|CLOCK\$|COM[1-9]|LPT[1-9])$'
+    return $baseName -match '^(CON|PRN|AUX|NUL|CLOCK\$|CONIN\$|CONOUT\$|COM[1-9]|LPT[1-9])$'
 }
 
 function ConvertTo-PrivatePacmanAbsolutePath {
@@ -930,14 +936,30 @@ function Get-PrivatePacmanSnapshotMetadata {
     }
 }
 
+function Throw-PrivatePacmanReparsePoint {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Path
+    )
+
+    $exception = [IO.InvalidDataException]::new(
+        "Reparse points are forbidden in strict package-state snapshots: $Path"
+    )
+    $errorRecord = [Management.Automation.ErrorRecord]::new(
+        $exception,
+        'PrivatePacman.ReparsePointRejected',
+        [Management.Automation.ErrorCategory]::InvalidData,
+        $Path
+    )
+    throw $errorRecord
+}
+
 function Get-PrivatePacmanTreeSnapshotCore {
     param(
         [Parameter(Mandatory)]
         [string] $Path,
 
         [switch] $AllowMissing,
-
-        [switch] $RejectReparsePoint,
 
         [string[]] $ExcludeRelativePath = @()
     )
@@ -957,11 +979,14 @@ function Get-PrivatePacmanTreeSnapshotCore {
         [void](Resolve-PrivatePacmanExistingPath -Path $ancestor -Kind Directory -Name 'Snapshot parent')
 
         return [pscustomobject][ordered]@{
+            Schema = $script:TreeSnapshotSchema
+            ReparsePointPolicy = 'reject'
             Path = $normalized
             Exists = $false
-            Digest = Get-PrivatePacmanStringSha256 -Value 'missing'
+            Digest = Get-PrivatePacmanStringSha256 `
+                -Value "$($script:TreeSnapshotSchema)`nreparse=reject`nmissing`n"
             ContentDigest = Get-PrivatePacmanStringSha256 -Value 'missing'
-            EntryCount = 0
+            EntryCount = [int64]0
             RootAttributes = $null
             RootOwnerSid = $null
             RootSecurityDescriptorSddl = $null
@@ -1022,53 +1047,22 @@ function Get-PrivatePacmanTreeSnapshotCore {
             $attributes = [IO.File]::GetAttributes($child)
             $isDirectory = ($attributes -band [IO.FileAttributes]::Directory) -ne 0
             $isReparse = ($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
-            if ($isReparse -and $RejectReparsePoint) {
-                throw "Reparse points are forbidden in protected package state: $child"
-            }
             if ($isReparse) {
-                $security = [PrivatePacmanV2.NativePath]::GetSecurityState($child, $true)
-                $metadata = [pscustomobject][ordered]@{
-                    Attributes = [int64]$attributes
-                    OwnerSid = [string]$security.OwnerSid
-                    SecurityDescriptorSddl = [string]$security.SecurityDescriptorSddl
-                    ChangeTimeFileTime = [int64]$security.ChangeTimeFileTime
-                    Identity = [string]$security.Identity
-                    AlternateStreams = @('<not-enumerated-for-reparse-entry>')
-                }
+                Throw-PrivatePacmanReparsePoint -Path $child
             }
-            else {
-                $metadata = Get-PrivatePacmanSnapshotMetadata `
-                    -Path $child `
-                    -Attributes $attributes
-            }
-            $kind = if ($isReparse) {
-                if ($isDirectory) { 'directory-link' } else { 'file-link' }
-            }
-            elseif ($isDirectory) {
+            $metadata = Get-PrivatePacmanSnapshotMetadata `
+                -Path $child `
+                -Attributes $attributes
+            $kind = if ($isDirectory) {
                 'directory'
             }
             else {
                 'file'
             }
 
-            $rawTarget = $null
-            $resolvedTarget = $null
             $length = $null
             $sha256 = $null
-            if ($isReparse) {
-                $item = Get-Item -Force -LiteralPath $child
-                $rawTarget = [string]$item.LinkTarget
-                try {
-                    $resolved = $item.ResolveLinkTarget($true)
-                    if ($null -ne $resolved) {
-                        $resolvedTarget = [string]$resolved.FullName
-                    }
-                }
-                catch {
-                    $resolvedTarget = '<unresolved>'
-                }
-            }
-            elseif ($isDirectory) {
+            if ($isDirectory) {
                 $pending.Push($child)
             }
             else {
@@ -1093,9 +1087,9 @@ function Get-PrivatePacmanTreeSnapshotCore {
                 ChangeTimeFileTime = $metadata.ChangeTimeFileTime
                 Identity = $metadata.Identity
                 AlternateStreams = $metadata.AlternateStreams
-                LinkType = if ($isReparse) { [string]$item.LinkType } else { $null }
-                RawTarget = $rawTarget
-                ResolvedTarget = $resolvedTarget
+                LinkType = $null
+                RawTarget = $null
+                ResolvedTarget = $null
             })
         }
     }
@@ -1119,6 +1113,10 @@ function Get-PrivatePacmanTreeSnapshotCore {
         } | ConvertTo-Json -Compress
     }
     $canonicalLines = @(
+        [pscustomobject][ordered]@{
+            Schema = $script:TreeSnapshotSchema
+            ReparsePointPolicy = 'reject'
+        } | ConvertTo-Json -Compress
         [pscustomobject][ordered]@{
             RelativePath = '.'
             Kind = 'root'
@@ -1149,11 +1147,13 @@ function Get-PrivatePacmanTreeSnapshotCore {
     })
 
     [pscustomobject][ordered]@{
+        Schema = $script:TreeSnapshotSchema
+        ReparsePointPolicy = 'reject'
         Path = $root
         Exists = $true
         Digest = Get-PrivatePacmanStringSha256 -Value ($canonicalLines -join "`n")
         ContentDigest = Get-PrivatePacmanStringSha256 -Value ($contentLines -join "`n")
-        EntryCount = $orderedEntries.Count
+        EntryCount = [int64]$orderedEntries.Count
         RootAttributes = $rootMetadata.Attributes
         RootOwnerSid = $rootMetadata.OwnerSid
         RootSecurityDescriptorSddl = $rootMetadata.SecurityDescriptorSddl
@@ -1186,7 +1186,12 @@ function Write-PrivatePacmanJson {
         [object] $Value
     )
 
-    $json = $Value | ConvertTo-Json -Depth 20
+    $json = (
+        ($Value | ConvertTo-Json -Depth 20).
+            Replace("`r`n", "`n").
+            Replace("`r", "`n") +
+        "`n"
+    )
     $temporaryPath = "$Path.$([guid]::NewGuid().ToString('N')).tmp"
     try {
         [IO.File]::WriteAllText($temporaryPath, $json, [Text.UTF8Encoding]::new($false))
@@ -1208,7 +1213,12 @@ function Set-PrivatePacmanLockedJson {
         [object] $Value
     )
 
-    $json = $Value | ConvertTo-Json -Depth 20
+    $json = (
+        ($Value | ConvertTo-Json -Depth 20).
+            Replace("`r`n", "`n").
+            Replace("`r", "`n") +
+        "`n"
+    )
     $bytes = [Text.UTF8Encoding]::new($false).GetBytes($json)
     $Stream.Position = 0
     $Stream.SetLength(0)
@@ -1289,11 +1299,10 @@ function Copy-PrivatePacmanSeed {
                         Path = $Source
                         Exists = $true
                     }
-                ) `
-                -RejectReparsePoint
+                )
         )[0]
         $watcher.Start()
-        $before = Get-PrivatePacmanTreeSnapshotCore -Path $Source -RejectReparsePoint
+        $before = Get-PrivatePacmanTreeSnapshotCore -Path $Source
         if ($preflight.Digest -cne $before.Digest) {
             throw 'Private seed was not stable before its monitored copy.'
         }
@@ -1344,10 +1353,9 @@ function Copy-PrivatePacmanSeed {
             }
         }
 
-        $after = Get-PrivatePacmanTreeSnapshotCore -Path $Source -RejectReparsePoint
+        $after = Get-PrivatePacmanTreeSnapshotCore -Path $Source
         $copied = Get-PrivatePacmanTreeSnapshotCore `
             -Path $Destination `
-            -RejectReparsePoint `
             -ExcludeRelativePath @($OwnerRelativePath)
         [Threading.Thread]::Sleep(150)
         $watcher.Stop()
@@ -1362,6 +1370,8 @@ function Copy-PrivatePacmanSeed {
         }
 
         return [pscustomobject][ordered]@{
+            SnapshotSchema = $before.Schema
+            ReparsePointPolicy = $before.ReparsePointPolicy
             Path = $before.Path
             Digest = $before.Digest
             ContentDigest = $before.ContentDigest
@@ -1515,7 +1525,7 @@ function Get-PrivatePacmanPackageInventory {
     $root = Resolve-PrivatePacmanExistingPath -Path $PackageRoot -Kind Directory -Name 'PackageRoot'
     Assert-PrivatePacmanSameDrive -First $root -Second $WorkspaceRoot -Description 'PackageRoot'
 
-    $snapshot = Get-PrivatePacmanTreeSnapshotCore -Path $root -RejectReparsePoint
+    $snapshot = Get-PrivatePacmanTreeSnapshotCore -Path $root
     $packages = [Collections.Generic.List[object]]::new()
     foreach ($entry in $snapshot.Entries) {
         if ($entry.Kind -like '*-link') {
@@ -1524,7 +1534,8 @@ function Get-PrivatePacmanPackageInventory {
         if ($entry.Kind -eq 'directory') {
             continue
         }
-        if ($entry.Kind -ne 'file' -or $entry.RelativePath -notmatch '\.pkg\.tar\.[A-Za-z0-9]+$') {
+        if ($entry.Kind -ne 'file' -or
+            $entry.RelativePath -cnotmatch $script:PackageArchivePattern) {
             throw "PackageRoot contains an unowned non-package file: $($entry.RelativePath)"
         }
 
@@ -1551,6 +1562,8 @@ function Get-PrivatePacmanPackageInventory {
     $ordered = @($sorted.Values)
     [pscustomobject][ordered]@{
         Root = $root
+        SnapshotSchema = $snapshot.Schema
+        ReparsePointPolicy = $snapshot.ReparsePointPolicy
         SnapshotDigest = $snapshot.Digest
         Packages = $ordered
     }
@@ -1562,15 +1575,75 @@ function Get-PrivatePacmanPackageSetSha256 {
         [object[]] $Package
     )
 
-    $lines = foreach ($entry in $Package) {
-        $pathBytes = [Text.UTF8Encoding]::new($false).GetBytes([string]$entry.Path)
-        '{0}`t{1}`t{2}' -f @(
-            [Convert]::ToBase64String($pathBytes),
-            [int64]$entry.Length,
-            [string]$entry.Sha256
-        )
+    $canonical = Get-PrivatePacmanPackageSetCanonicalText -Package $Package
+    return Get-PrivatePacmanStringSha256 -Value $canonical
+}
+
+function Get-PrivatePacmanPackageSetCanonicalText {
+    param(
+        [Parameter(Mandatory)]
+        [object[]] $Package
+    )
+
+    if ($Package.Count -eq 0) {
+        throw 'Package-set canonicalization requires at least one package.'
     }
-    return Get-PrivatePacmanStringSha256 -Value ($lines -join "`n")
+
+    $lines = [Collections.Generic.List[string]]::new()
+    $lines.Add($script:PackageSetCanonicalization)
+    $lines.Add($Package.Count.ToString([Globalization.CultureInfo]::InvariantCulture))
+    $previousPath = $null
+    for ($index = 0; $index -lt $Package.Count; $index++) {
+        $entry = $Package[$index]
+        if ($null -eq $entry) {
+            throw "Package-set entry $index must not be null."
+        }
+        Assert-PrivatePacmanSequence `
+            -Expected @('Path', 'Length', 'Sha256') `
+            -Actual @($entry.PSObject.Properties.Name) `
+            -Message "Package-set entry $index property set or order is not canonical."
+        if ($entry.Path -isnot [string]) {
+            throw "Package-set entry $index Path must be a string."
+        }
+        $path = ConvertTo-PrivatePacmanRelativePath `
+            -Path $entry.Path `
+            -Name "Package-set entry $index Path"
+        if ($path -cne $entry.Path) {
+            throw "Package-set entry $index Path is not canonical."
+        }
+        if ($entry.Length -isnot [int64] -or [int64]$entry.Length -lt 0) {
+            throw "Package-set entry $index Length must be a nonnegative Int64."
+        }
+        if ($entry.Sha256 -isnot [string]) {
+            throw "Package-set entry $index Sha256 must be a string."
+        }
+        Assert-PrivatePacmanSha256Text `
+            -Value $entry.Sha256 `
+            -Name "Package-set entry $index Sha256"
+        if ($null -ne $previousPath -and
+            [StringComparer]::Ordinal.Compare($previousPath, $path) -ge 0) {
+            throw 'Package-set entries must be unique and sorted by ordinal path.'
+        }
+
+        $pathBytes = [Text.UTF8Encoding]::new($false, $true).GetBytes($path)
+        $encodedPath = [Convert]::ToBase64String($pathBytes)
+        if ($encodedPath -cnotmatch '\A(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?\z') {
+            throw "Package-set entry $index Path did not produce canonical base64."
+        }
+        $lengthText = ([int64]$entry.Length).ToString(
+            [Globalization.CultureInfo]::InvariantCulture
+        )
+        $lines.Add(
+            $encodedPath +
+            [string][char]9 +
+            $lengthText +
+            [string][char]9 +
+            $entry.Sha256
+        )
+        $previousPath = $path
+    }
+
+    return [string]::Join("`n", $lines) + "`n"
 }
 
 function ConvertTo-PrivatePacmanCanonicalOwnershipJson {
@@ -1591,6 +1664,7 @@ function ConvertTo-PrivatePacmanCanonicalOwnershipJson {
         Owner = $Owner
         SessionId = $SessionId
         SignatureAlgorithm = $script:OwnershipSignatureAlgorithm
+        PackageSetCanonicalization = $script:PackageSetCanonicalization
         PackageSetSha256 = $packageSetSha256
         Packages = @($Package | ForEach-Object {
             [pscustomobject][ordered]@{
@@ -1717,6 +1791,7 @@ function New-PrivatePacmanOwnershipManifest {
         Schema = $script:OwnershipManifestSchema
         Path = $output
         Sha256 = Get-PrivatePacmanStringSha256 -Value $json
+        PackageSetCanonicalization = $script:PackageSetCanonicalization
         PackageSetSha256 = Get-PrivatePacmanPackageSetSha256 -Package $inventory.Packages
         PackageCount = $inventory.Packages.Count
     }
@@ -1742,6 +1817,92 @@ function Read-PrivatePacmanLockedBytes {
     }
     finally {
         $Lock.Stream.Position = $position
+    }
+}
+
+function ConvertFrom-PrivatePacmanCanonicalSignature {
+    param(
+        [Parameter(Mandatory)]
+        [byte[]] $Bytes
+    )
+
+    $text = [Text.UTF8Encoding]::new($false, $true).GetString($Bytes)
+    if ($text -cnotmatch '\A[A-Za-z0-9+/]+={0,2}\n\z') {
+        throw 'Ownership signature must contain one canonical base64 value followed by one LF.'
+    }
+    $base64 = $text.Substring(0, $text.Length - 1)
+    try {
+        $decoded = [Convert]::FromBase64String($base64)
+    }
+    catch {
+        throw [IO.InvalidDataException]::new(
+            'Ownership signature base64 is malformed.',
+            $_.Exception
+        )
+    }
+    if ([Convert]::ToBase64String($decoded) -cne $base64) {
+        throw 'Ownership signature base64 is not in canonical RFC 4648 form.'
+    }
+    return [pscustomobject][ordered]@{
+        Bytes = [byte[]]$decoded
+        Base64 = $base64
+        Encoding = 'base64-rfc4648-der-lf/v1'
+    }
+}
+
+function Open-PrivatePacmanCanonicalPublicKey {
+    param(
+        [Parameter(Mandatory)]
+        [byte[]] $Bytes
+    )
+
+    $text = [Text.UTF8Encoding]::new($false, $true).GetString($Bytes)
+    $pemPattern = (
+        '\A-----BEGIN PUBLIC KEY-----\n' +
+        '(?:[A-Za-z0-9+/]{64}\n)*' +
+        '(?:[A-Za-z0-9+/]{2,64}={0,2})\n' +
+        '-----END PUBLIC KEY-----\z'
+    )
+    if ($text -cnotmatch $pemPattern) {
+        throw 'Ownership public key must be one canonical LF-only PUBLIC KEY PEM object with no trailing payload.'
+    }
+
+    $base64 = $text.
+        Replace("-----BEGIN PUBLIC KEY-----`n", '').
+        Replace("`n-----END PUBLIC KEY-----", '').
+        Replace("`n", '')
+    try {
+        $der = [Convert]::FromBase64String($base64)
+    }
+    catch {
+        throw [IO.InvalidDataException]::new(
+            'Ownership public key PEM base64 is malformed.',
+            $_.Exception
+        )
+    }
+    if ([Convert]::ToBase64String($der) -cne $base64) {
+        throw 'Ownership public key PEM base64 is not canonical.'
+    }
+
+    $ecdsa = [Security.Cryptography.ECDsa]::Create()
+    try {
+        $ecdsa.ImportFromPem($text)
+        if ($ecdsa.ExportSubjectPublicKeyInfoPem() -cne $text) {
+            throw 'Ownership public key must use canonical subject-public-key-info PEM bytes.'
+        }
+        $curveOid = [string]$ecdsa.ExportParameters($false).Curve.Oid.Value
+        if ($curveOid -cne $script:OwnershipCurveOid) {
+            throw "Ownership public key curve OID must be exact NIST P-256 ($($script:OwnershipCurveOid)); found $curveOid."
+        }
+        return [pscustomobject][ordered]@{
+            Key = $ecdsa
+            CurveOid = $curveOid
+            Format = 'subject-public-key-info-pem/v1'
+        }
+    }
+    catch {
+        $ecdsa.Dispose()
+        throw
     }
 }
 
@@ -1822,17 +1983,32 @@ function Open-PrivatePacmanOwnership {
         Assert-PrivatePacmanSequence `
             -Expected @(
                 'Schema', 'Owner', 'SessionId', 'SignatureAlgorithm',
-                'PackageSetSha256', 'Packages'
+                'PackageSetCanonicalization', 'PackageSetSha256', 'Packages'
             ) `
             -Actual $propertyNames `
             -Message 'Ownership manifest property set or order is not canonical.'
+        foreach ($property in @(
+            'Schema', 'Owner', 'SessionId', 'SignatureAlgorithm',
+            'PackageSetCanonicalization', 'PackageSetSha256'
+        )) {
+            if ($parsed.$property -isnot [string]) {
+                throw "Ownership manifest property $property must be a string."
+            }
+        }
+        if ($parsed.Packages -isnot [object[]]) {
+            throw 'Ownership manifest Packages must be a JSON array.'
+        }
         if ($parsed.Schema -cne $script:OwnershipManifestSchema -or
-            $parsed.SignatureAlgorithm -cne $script:OwnershipSignatureAlgorithm) {
-            throw 'Ownership manifest schema or signature algorithm is unsupported.'
+            $parsed.SignatureAlgorithm -cne $script:OwnershipSignatureAlgorithm -or
+            $parsed.PackageSetCanonicalization -cne $script:PackageSetCanonicalization) {
+            throw 'Ownership manifest schema, signature algorithm, or package-set canonicalization is unsupported.'
         }
         if ($parsed.Owner -cne $ExpectedOwner -or $parsed.SessionId -cne $Layout.SessionId) {
             throw 'Ownership manifest owner or session binding does not match this invocation.'
         }
+        Assert-PrivatePacmanSha256Text `
+            -Value $parsed.PackageSetSha256 `
+            -Name 'Ownership manifest PackageSetSha256'
 
         $manifestPackages = @($parsed.Packages)
         if ($manifestPackages.Count -ne $inventory.Packages.Count) {
@@ -1844,11 +2020,17 @@ function Open-PrivatePacmanOwnership {
                 -Expected @('Path', 'Length', 'Sha256') `
                 -Actual @($listed.PSObject.Properties.Name) `
                 -Message "Ownership package entry $index is not canonical."
+            if ($listed.Path -isnot [string] -or
+                $listed.Sha256 -isnot [string] -or
+                $listed.Length -isnot [int64] -or
+                [int64]$listed.Length -lt 0) {
+                throw "Ownership package entry $index has noncanonical JSON field types or values."
+            }
             $relative = ConvertTo-PrivatePacmanRelativePath `
-                -Path ([string]$listed.Path) `
+                -Path $listed.Path `
                 -Name "Ownership package entry $index"
             Assert-PrivatePacmanSha256Text `
-                -Value ([string]$listed.Sha256) `
+                -Value $listed.Sha256 `
                 -Name "Ownership package entry $index hash"
             $actual = $inventory.Packages[$index]
             if ($relative -cne $actual.Path -or
@@ -1870,23 +2052,14 @@ function Open-PrivatePacmanOwnership {
             throw 'Ownership manifest PackageSetSha256 is invalid.'
         }
 
-        $signatureText = [Text.UTF8Encoding]::new($false, $true).GetString(
-            (Read-PrivatePacmanLockedBytes -Lock $signatureLock)
-        )
-        if ($signatureText -notmatch '^[A-Za-z0-9+/]+={0,2}\r?\n?$') {
-            throw 'Ownership signature must contain one canonical base64 value.'
-        }
-        $signatureBytes = [Convert]::FromBase64String($signatureText.TrimEnd("`r", "`n"))
-        $publicKeyText = [Text.UTF8Encoding]::new($false, $true).GetString(
-            (Read-PrivatePacmanLockedBytes -Lock $publicKeyLock)
-        )
-        $ecdsa = [Security.Cryptography.ECDsa]::Create()
+        $signatureRecord = ConvertFrom-PrivatePacmanCanonicalSignature `
+            -Bytes (Read-PrivatePacmanLockedBytes -Lock $signatureLock)
+        $publicKeyRecord = Open-PrivatePacmanCanonicalPublicKey `
+            -Bytes (Read-PrivatePacmanLockedBytes -Lock $publicKeyLock)
         try {
-            $ecdsa.ImportFromPem($publicKeyText)
-            if ($ecdsa.KeySize -ne 256 -or
-                -not $ecdsa.VerifyData(
+            if (-not $publicKeyRecord.Key.VerifyData(
                     $manifestBytes,
-                    $signatureBytes,
+                    $signatureRecord.Bytes,
                     [Security.Cryptography.HashAlgorithmName]::SHA256,
                     [Security.Cryptography.DSASignatureFormat]::Rfc3279DerSequence
                 )) {
@@ -1894,7 +2067,7 @@ function Open-PrivatePacmanOwnership {
             }
         }
         finally {
-            $ecdsa.Dispose()
+            $publicKeyRecord.Key.Dispose()
         }
 
         foreach ($entry in $inventory.Packages) {
@@ -1920,14 +2093,20 @@ function Open-PrivatePacmanOwnership {
                 Owner = $ExpectedOwner
                 SessionId = $Layout.SessionId
                 SignatureAlgorithm = $script:OwnershipSignatureAlgorithm
+                PublicKeyCurveOid = $publicKeyRecord.CurveOid
+                PublicKeyFormat = $publicKeyRecord.Format
                 ManifestPath = $manifest
                 ManifestSha256 = $manifestLock.Sha256
                 SignaturePath = $signature
                 SignatureSha256 = $signatureLock.Sha256
+                SignatureEncoding = $signatureRecord.Encoding
                 PublicKeyPath = $publicKey
                 PublicKeySha256 = $publicKeyLock.Sha256
+                PackageSetCanonicalization = $script:PackageSetCanonicalization
                 PackageSetSha256 = $packageSetSha256
                 PackageCount = $inventory.Packages.Count
+                PackageRootSnapshotSchema = $inventory.SnapshotSchema
+                PackageRootReparsePointPolicy = $inventory.ReparsePointPolicy
                 PackageRootSnapshotSha256 = $inventory.SnapshotDigest
             }
         }
@@ -1998,6 +2177,38 @@ function Assert-PrivatePacmanNoProtectedOverlap {
     }
 }
 
+function New-PrivatePacmanProtectedCaptureFailureEvidence {
+    param(
+        [Parameter(Mandatory)]
+        [object[]] $ProtectedRoot,
+
+        [Parameter(Mandatory)]
+        [string] $Error
+    )
+
+    return @(foreach ($protectedEntry in $ProtectedRoot) {
+        [pscustomobject][ordered]@{
+            SnapshotSchema = $script:TreeSnapshotSchema
+            ReparsePointPolicy = 'reject'
+            Path = $protectedEntry.Path
+            Exists = $null
+            CoverageStatus = 'CaptureFailed'
+            CaptureError = $Error
+            Digest = $null
+            ContentDigest = $null
+            EntryCount = $null
+            RootAttributes = $null
+            RootOwnerSid = $null
+            RootSecurityDescriptorSddl = $null
+            RootChangeTimeFileTime = $null
+            RootIdentity = $null
+            AlternateDataStreams = 'forbidden'
+            Manifest = $null
+            IsCanonicalSharedRoot = $protectedEntry.IsCanonicalSharedRoot
+        }
+    })
+}
+
 function New-PrivatePacmanArgumentList {
     param(
         [Parameter(Mandatory)]
@@ -2040,6 +2251,187 @@ function New-PrivatePacmanArgumentList {
     }
 
     return [string[]]$arguments
+}
+
+function Add-PrivatePacmanChildEnvironmentValue {
+    param(
+        [Parameter(Mandatory)]
+        [Collections.Generic.Dictionary[string, string]] $Values,
+
+        [Parameter(Mandatory)]
+        [string] $Name,
+
+        [Parameter(Mandatory)]
+        [string] $Value
+    )
+
+    if ($Name -cnotmatch '\A[A-Za-z_][A-Za-z0-9_]*\z') {
+        throw "Child environment name is not canonical: $Name"
+    }
+    if ([string]::IsNullOrEmpty($Value) -or
+        $Value.IndexOfAny([char[]]@([char]0, [char]10, [char]13)) -ge 0) {
+        throw "Child environment value is empty or contains a forbidden control character: $Name"
+    }
+    if ($Values.ContainsKey($Name)) {
+        throw "Child environment contains a duplicate case-insensitive name: $Name"
+    }
+    $Values.Add($Name, $Value)
+}
+
+function Get-PrivatePacmanChildEnvironment {
+    param(
+        [Parameter(Mandatory)]
+        [psobject] $Layout
+    )
+
+    $msysBin = Resolve-PrivatePacmanExistingPath `
+        -Path ([IO.Path]::Combine($Layout.Root, 'usr\bin')) `
+        -Kind Directory `
+        -Name 'Private MSYS binary directory'
+    $home = Resolve-PrivatePacmanExistingPath `
+        -Path ([IO.Path]::Combine($Layout.Root, 'home')) `
+        -Kind Directory `
+        -Name 'Private HOME'
+    $temporary = Resolve-PrivatePacmanExistingPath `
+        -Path ([IO.Path]::Combine($Layout.Root, 'tmp')) `
+        -Kind Directory `
+        -Name 'Private temporary directory'
+    $gpgHome = Resolve-PrivatePacmanExistingPath `
+        -Path $Layout.GpgPath `
+        -Kind Directory `
+        -Name 'Private GNUPGHOME'
+    foreach ($privatePath in @($msysBin, $home, $temporary, $gpgHome)) {
+        if (-not (Test-PrivatePacmanPathWithin -Path $privatePath -Root $Layout.Root)) {
+            throw "Child environment path escapes the private root: $privatePath"
+        }
+    }
+
+    $systemDirectory = Resolve-PrivatePacmanExistingPath `
+        -Path ([Environment]::SystemDirectory) `
+        -Kind Directory `
+        -Name 'Windows system directory'
+    $windowsRoot = Resolve-PrivatePacmanExistingPath `
+        -Path ([IO.Directory]::GetParent($systemDirectory).FullName) `
+        -Kind Directory `
+        -Name 'Windows root directory'
+    $expectedSystemDirectory = [IO.Path]::Combine($windowsRoot, 'System32')
+    if (-not [StringComparer]::OrdinalIgnoreCase.Equals(
+        $systemDirectory,
+        $expectedSystemDirectory
+    )) {
+        throw "Windows system directory is not the canonical System32 path: $systemDirectory"
+    }
+    $comspec = Resolve-PrivatePacmanExistingPath `
+        -Path ([IO.Path]::Combine($systemDirectory, 'cmd.exe')) `
+        -Kind File `
+        -Name 'Windows command processor'
+    $pathComponents = @($msysBin, $systemDirectory, $windowsRoot)
+    $pathSeen = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($component in $pathComponents) {
+        if (-not $pathSeen.Add($component)) {
+            throw "Child PATH contains a duplicate canonical component: $component"
+        }
+    }
+
+    $values = [Collections.Generic.Dictionary[string, string]]::new(
+        [StringComparer]::OrdinalIgnoreCase
+    )
+    Add-PrivatePacmanChildEnvironmentValue -Values $values -Name 'COMSPEC' -Value $comspec
+    Add-PrivatePacmanChildEnvironmentValue -Values $values -Name 'GNUPGHOME' -Value $gpgHome
+    Add-PrivatePacmanChildEnvironmentValue -Values $values -Name 'HOME' -Value $home
+    Add-PrivatePacmanChildEnvironmentValue -Values $values -Name 'LANG' -Value 'C.UTF-8'
+    Add-PrivatePacmanChildEnvironmentValue -Values $values -Name 'LC_ALL' -Value 'C.UTF-8'
+    Add-PrivatePacmanChildEnvironmentValue -Values $values -Name 'MSYS' -Value 'winsymlinks:nativestrict'
+    Add-PrivatePacmanChildEnvironmentValue -Values $values -Name 'MSYSTEM' -Value 'MSYS'
+    Add-PrivatePacmanChildEnvironmentValue -Values $values -Name 'MSYSTEM_PREFIX' -Value '/usr'
+    Add-PrivatePacmanChildEnvironmentValue `
+        -Values $values `
+        -Name 'PATH' `
+        -Value ([string]::Join([IO.Path]::PathSeparator, $pathComponents))
+    Add-PrivatePacmanChildEnvironmentValue -Values $values -Name 'SystemRoot' -Value $windowsRoot
+    Add-PrivatePacmanChildEnvironmentValue -Values $values -Name 'TEMP' -Value $temporary
+    Add-PrivatePacmanChildEnvironmentValue -Values $values -Name 'TMP' -Value $temporary
+    Add-PrivatePacmanChildEnvironmentValue -Values $values -Name 'TMPDIR' -Value $temporary
+    Add-PrivatePacmanChildEnvironmentValue -Values $values -Name 'WINDIR' -Value $windowsRoot
+
+    $testEnvironment = $script:TestChildEnvironment
+    if ($null -ne $testEnvironment) {
+        $expectedTestNames = @(
+            'PRIVATE_PACMAN_TEST_ARGV',
+            'PRIVATE_PACMAN_TEST_CONFIG',
+            'PRIVATE_PACMAN_TEST_ENVIRONMENT',
+            'PRIVATE_PACMAN_TEST_GO',
+            'PRIVATE_PACMAN_TEST_MODE',
+            'PRIVATE_PACMAN_TEST_READY'
+        )
+        if ($testEnvironment -isnot [Collections.IDictionary] -or
+            $testEnvironment.Count -ne $expectedTestNames.Count) {
+            throw 'Private test child environment must contain the exact recorder control set.'
+        }
+        $testNames = @($testEnvironment.Keys)
+        [Array]::Sort($testNames, [StringComparer]::Ordinal)
+        Assert-PrivatePacmanSequence `
+            -Expected $expectedTestNames `
+            -Actual $testNames `
+            -Message 'Private test child environment control set is not canonical.'
+        foreach ($name in $testNames) {
+            $value = $testEnvironment[$name]
+            if ($value -isnot [string]) {
+                throw "Private test child environment value must be a string: $name"
+            }
+            if ($name -ceq 'PRIVATE_PACMAN_TEST_MODE') {
+                if ($value -cnotmatch '\A(?:success|exit-7|crash|timeout|wait)\z') {
+                    throw "Private test child mode is unsupported: $value"
+                }
+            }
+            else {
+                $value = ConvertTo-PrivatePacmanAbsolutePath `
+                    -Path $value `
+                    -Name "Private test child environment $name"
+                Assert-PrivatePacmanFixedDrive `
+                    -Path $value `
+                    -Name "Private test child environment $name"
+                Assert-PrivatePacmanNoReparseChain `
+                    -Path $value `
+                    -Name "Private test child environment $name"
+                Assert-PrivatePacmanSameDrive `
+                    -First $value `
+                    -Second $Layout.WorkspaceRoot `
+                    -Description "Private test child environment $name"
+            }
+            Add-PrivatePacmanChildEnvironmentValue `
+                -Values $values `
+                -Name $name `
+                -Value $value
+        }
+    }
+
+    $names = [string[]]$values.Keys
+    [Array]::Sort($names, [StringComparer]::Ordinal)
+    $entries = @(foreach ($name in $names) {
+        [pscustomobject][ordered]@{
+            Name = $name
+            Value = $values[$name]
+        }
+    })
+    $canonicalLines = [Collections.Generic.List[string]]::new()
+    $canonicalLines.Add($script:ChildEnvironmentSchema)
+    $canonicalLines.Add($entries.Count.ToString([Globalization.CultureInfo]::InvariantCulture))
+    foreach ($entry in $entries) {
+        $canonicalLines.Add(
+            [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($entry.Name)) +
+            [string][char]9 +
+            [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($entry.Value))
+        )
+    }
+    $canonical = [string]::Join("`n", $canonicalLines) + "`n"
+    return [pscustomobject][ordered]@{
+        Schema = $script:ChildEnvironmentSchema
+        Sha256 = Get-PrivatePacmanStringSha256 -Value $canonical
+        Entries = $entries
+    }
 }
 
 function Start-PrivatePacmanWatchers {
@@ -2104,8 +2496,6 @@ function Get-PrivatePacmanQuiescentSnapshotSet {
         [Parameter(Mandatory)]
         [object[]] $ProtectedRoot,
 
-        [switch] $RejectReparsePoint,
-
         [ValidateRange(1, 10)]
         [int] $MaximumAttempts = 4
     )
@@ -2114,8 +2504,7 @@ function Get-PrivatePacmanQuiescentSnapshotSet {
         $snapshots = @(foreach ($protected in $ProtectedRoot) {
             Get-PrivatePacmanTreeSnapshotCore `
                 -Path $protected.Path `
-                -AllowMissing `
-                -RejectReparsePoint:$RejectReparsePoint
+                -AllowMissing
         })
         $probeWatchers = @(Start-PrivatePacmanWatchers -ProtectedRoot $ProtectedRoot)
         [Threading.Thread]::Sleep(1000)
@@ -2309,6 +2698,9 @@ function Invoke-PrivatePacmanProcess {
         [psobject] $Layout,
 
         [Parameter(Mandatory)]
+        [object[]] $Environment,
+
+        [Parameter(Mandatory)]
         [TimeSpan] $Timeout
     )
 
@@ -2323,14 +2715,13 @@ function Invoke-PrivatePacmanProcess {
     foreach ($argument in $ArgumentList) {
         [void]$startInfo.ArgumentList.Add($argument)
     }
-
-    [void]$startInfo.Environment.Remove('POSIXLY_CORRECT')
-    $startInfo.Environment['MSYS'] = 'winsymlinks:nativestrict'
-    $startInfo.Environment['HOME'] = [IO.Path]::Combine($Layout.Root, 'home')
-    $startInfo.Environment['TMP'] = [IO.Path]::Combine($Layout.Root, 'tmp')
-    $startInfo.Environment['TEMP'] = [IO.Path]::Combine($Layout.Root, 'tmp')
-    $startInfo.Environment['TMPDIR'] = [IO.Path]::Combine($Layout.Root, 'tmp')
-    $startInfo.Environment['GNUPGHOME'] = $Layout.GpgPath
+    $startInfo.Environment.Clear()
+    foreach ($entry in $Environment) {
+        if ($entry.Name -isnot [string] -or $entry.Value -isnot [string]) {
+            throw 'Child environment evidence contains a non-string name or value.'
+        }
+        $startInfo.Environment.Add($entry.Name, $entry.Value)
+    }
 
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
@@ -2464,8 +2855,11 @@ function Invoke-PrivatePacmanUpgrade {
     $failures = [Collections.Generic.List[string]]::new()
     $protectedBefore = @()
     $protectedAfter = @()
+    $protectedBeforeCaptureError = $null
+    $protectedAfterCaptureError = $null
     $watcherEvidence = @()
     $processEvidence = $null
+    $environmentEvidence = $null
     $rootEvidence = $null
     $arguments = @()
     $rootRemoved = $false
@@ -2480,46 +2874,56 @@ function Invoke-PrivatePacmanUpgrade {
             -StagingRoot $stagingRoot
         $resultPath = [IO.Path]::Combine($canonicalLayout.EvidenceDirectory, 'result.json')
 
-        $protectedPreflight = @(
-            Get-PrivatePacmanQuiescentSnapshotSet `
-                -ProtectedRoot $protected `
-                -RejectReparsePoint
-        )
-        $watchers = @(Start-PrivatePacmanWatchers -ProtectedRoot $protected)
-        $protectedBefore = @(for ($index = 0; $index -lt $protected.Count; $index++) {
-            $protectedEntry = $protected[$index]
-            $snapshot = Get-PrivatePacmanTreeSnapshotCore `
-                -Path $protectedEntry.Path `
-                -AllowMissing `
-                -RejectReparsePoint
-            $fileName = "protected-$index-before.json"
-            Write-PrivatePacmanJson `
-                -Path ([IO.Path]::Combine($canonicalLayout.EvidenceDirectory, $fileName)) `
-                -Value $snapshot
-            [pscustomobject][ordered]@{
-                Path = $snapshot.Path
-                Exists = $snapshot.Exists
-                Digest = $snapshot.Digest
-                ContentDigest = $snapshot.ContentDigest
-                EntryCount = $snapshot.EntryCount
-                RootAttributes = $snapshot.RootAttributes
-                RootOwnerSid = $snapshot.RootOwnerSid
-                RootSecurityDescriptorSddl = $snapshot.RootSecurityDescriptorSddl
-                RootChangeTimeFileTime = $snapshot.RootChangeTimeFileTime
-                RootIdentity = $snapshot.RootIdentity
-                AlternateDataStreams = 'forbidden'
-                Manifest = $fileName
-                IsCanonicalSharedRoot = $protectedEntry.IsCanonicalSharedRoot
+        try {
+            $protectedPreflight = @(
+                Get-PrivatePacmanQuiescentSnapshotSet `
+                    -ProtectedRoot $protected
+            )
+            $watchers = @(Start-PrivatePacmanWatchers -ProtectedRoot $protected)
+            $protectedBefore = @(for ($index = 0; $index -lt $protected.Count; $index++) {
+                $protectedEntry = $protected[$index]
+                $snapshot = Get-PrivatePacmanTreeSnapshotCore `
+                    -Path $protectedEntry.Path `
+                    -AllowMissing
+                $fileName = "protected-$index-before.json"
+                Write-PrivatePacmanJson `
+                    -Path ([IO.Path]::Combine($canonicalLayout.EvidenceDirectory, $fileName)) `
+                    -Value $snapshot
+                [pscustomobject][ordered]@{
+                    SnapshotSchema = $snapshot.Schema
+                    ReparsePointPolicy = $snapshot.ReparsePointPolicy
+                    Path = $snapshot.Path
+                    Exists = $snapshot.Exists
+                    CoverageStatus = if ($snapshot.Exists) { 'Covered' } else { 'NotCovered' }
+                    CaptureError = $null
+                    Digest = $snapshot.Digest
+                    ContentDigest = $snapshot.ContentDigest
+                    EntryCount = $snapshot.EntryCount
+                    RootAttributes = $snapshot.RootAttributes
+                    RootOwnerSid = $snapshot.RootOwnerSid
+                    RootSecurityDescriptorSddl = $snapshot.RootSecurityDescriptorSddl
+                    RootChangeTimeFileTime = $snapshot.RootChangeTimeFileTime
+                    RootIdentity = $snapshot.RootIdentity
+                    AlternateDataStreams = 'forbidden'
+                    Manifest = $fileName
+                    IsCanonicalSharedRoot = $protectedEntry.IsCanonicalSharedRoot
+                }
+            })
+            for ($index = 0; $index -lt $protectedBefore.Count; $index++) {
+                if ($protectedPreflight[$index].Exists -ne $protectedBefore[$index].Exists -or
+                    $protectedPreflight[$index].Digest -cne $protectedBefore[$index].Digest -or
+                    [int64]$protectedPreflight[$index].EntryCount -ne
+                        [int64]$protectedBefore[$index].EntryCount) {
+                    throw "Protected package state was not stable before monitoring: $($protectedBefore[$index].Path)"
+                }
             }
-        })
-        for ($index = 0; $index -lt $protectedBefore.Count; $index++) {
-            if ($protectedPreflight[$index].Exists -ne $protectedBefore[$index].Exists -or
-                $protectedPreflight[$index].Digest -cne $protectedBefore[$index].Digest) {
-                throw "Protected package state was not stable before monitoring: $($protectedBefore[$index].Path)"
-            }
+            $state.Sentinel.ProtectedRoots = @($protectedBefore)
+            Set-PrivatePacmanLockedJson -Stream $state.Stream -Value $state.Sentinel
         }
-        $state.Sentinel.ProtectedRoots = @($protectedBefore)
-        Set-PrivatePacmanLockedJson -Stream $state.Stream -Value $state.Sentinel
+        catch {
+            $protectedBeforeCaptureError = $_.Exception.ToString()
+            throw
+        }
 
         $rootEvidence = Initialize-PrivatePacmanRoot `
             -Layout $canonicalLayout `
@@ -2571,6 +2975,7 @@ function Invoke-PrivatePacmanUpgrade {
         $arguments = New-PrivatePacmanArgumentList `
             -Layout $canonicalLayout `
             -PackagePath $packages.Paths
+        $environmentEvidence = Get-PrivatePacmanChildEnvironment -Layout $canonicalLayout
         Write-PrivatePacmanJson `
             -Path ([IO.Path]::Combine($canonicalLayout.EvidenceDirectory, 'invocation.json')) `
             -Value ([pscustomobject][ordered]@{
@@ -2579,13 +2984,7 @@ function Invoke-PrivatePacmanUpgrade {
                 Ownership = $ownership.Evidence
                 Packages = @($packageLocks | Select-Object Path, Identity, LinkCount, Sha256)
                 Root = $rootEvidence
-                Environment = [pscustomobject][ordered]@{
-                    MSYS = 'winsymlinks:nativestrict'
-                    POSIXLY_CORRECT = '<removed>'
-                    HOME = [IO.Path]::Combine($canonicalLayout.Root, 'home')
-                    TMP = [IO.Path]::Combine($canonicalLayout.Root, 'tmp')
-                    GNUPGHOME = $canonicalLayout.GpgPath
-                }
+                Environment = $environmentEvidence
             })
 
         $state.Sentinel.Status = 'running'
@@ -2597,6 +2996,7 @@ function Invoke-PrivatePacmanUpgrade {
             -Executable $canonicalLayout.PacmanPath `
             -ArgumentList $arguments `
             -Layout $canonicalLayout `
+            -Environment $environmentEvidence.Entries `
             -Timeout ([TimeSpan]::FromSeconds($TimeoutSeconds))
         if ($processEvidence.TimedOut) {
             $failures.Add("Private pacman timed out after $TimeoutSeconds seconds.")
@@ -2670,15 +3070,18 @@ function Invoke-PrivatePacmanUpgrade {
                 $protectedAfter = @(foreach ($protectedEntry in $protected) {
                     $snapshot = Get-PrivatePacmanTreeSnapshotCore `
                         -Path $protectedEntry.Path `
-                        -AllowMissing `
-                        -RejectReparsePoint
+                        -AllowMissing
                     $fileName = "protected-$([Array]::IndexOf($protected, $protectedEntry))-after.json"
                     Write-PrivatePacmanJson `
                         -Path ([IO.Path]::Combine($canonicalLayout.EvidenceDirectory, $fileName)) `
                         -Value $snapshot
                     [pscustomobject][ordered]@{
+                        SnapshotSchema = $snapshot.Schema
+                        ReparsePointPolicy = $snapshot.ReparsePointPolicy
                         Path = $snapshot.Path
                         Exists = $snapshot.Exists
+                        CoverageStatus = if ($snapshot.Exists) { 'Covered' } else { 'NotCovered' }
+                        CaptureError = $null
                         Digest = $snapshot.Digest
                         ContentDigest = $snapshot.ContentDigest
                         EntryCount = $snapshot.EntryCount
@@ -2694,6 +3097,7 @@ function Invoke-PrivatePacmanUpgrade {
                 })
             }
             catch {
+                $protectedAfterCaptureError = $_.Exception.ToString()
                 $failures.Add("Protected-state after-snapshot failed: $($_.Exception.Message)")
             }
 
@@ -2705,6 +3109,32 @@ function Invoke-PrivatePacmanUpgrade {
             }
         }
 
+        if ($protectedBefore.Count -eq 0 -and
+            -not [string]::IsNullOrWhiteSpace($protectedBeforeCaptureError)) {
+            $protectedBefore = @(
+                New-PrivatePacmanProtectedCaptureFailureEvidence `
+                    -ProtectedRoot $protected `
+                    -Error $protectedBeforeCaptureError
+            )
+        }
+        if ($protectedAfter.Count -eq 0 -and
+            (-not [string]::IsNullOrWhiteSpace($protectedAfterCaptureError) -or
+             -not [string]::IsNullOrWhiteSpace($protectedBeforeCaptureError))) {
+            $afterError = if (-not [string]::IsNullOrWhiteSpace(
+                $protectedAfterCaptureError
+            )) {
+                $protectedAfterCaptureError
+            }
+            else {
+                'After snapshot was unavailable because strict before capture failed.'
+            }
+            $protectedAfter = @(
+                New-PrivatePacmanProtectedCaptureFailureEvidence `
+                    -ProtectedRoot $protected `
+                    -Error $afterError
+            )
+        }
+
         if ($protectedBefore.Count -ne $protectedAfter.Count) {
             $failures.Add('Protected-state evidence is incomplete.')
         }
@@ -2712,7 +3142,10 @@ function Invoke-PrivatePacmanUpgrade {
             for ($index = 0; $index -lt $protectedBefore.Count; $index++) {
                 $before = $protectedBefore[$index]
                 $after = $protectedAfter[$index]
-                if ($before.Exists -ne $after.Exists -or $before.Digest -cne $after.Digest) {
+                if ($before.Exists -ne $after.Exists -or
+                    $before.CoverageStatus -cne $after.CoverageStatus -or
+                    [int64]$before.EntryCount -ne [int64]$after.EntryCount -or
+                    $before.Digest -cne $after.Digest) {
                     $failures.Add("Protected package state changed: $($before.Path)")
                 }
             }
@@ -2748,6 +3181,7 @@ function Invoke-PrivatePacmanUpgrade {
                 Invocation = [pscustomobject][ordered]@{
                     Executable = $canonicalLayout.PacmanPath
                     Arguments = $arguments
+                    Environment = $environmentEvidence
                     Process = $processEvidence
                 }
                 ProtectedBefore = $protectedBefore
