@@ -248,6 +248,17 @@ def validate_dependency_lock(data):
         "exception_model": "SEH",
     }:
         raise ContractError("dependency ABI mismatch")
+    toolchain = data["toolchain"]
+    if toolchain.get("binutils_release_id") != 377908415:
+        raise ContractError("fixed binutils release identity mismatch")
+    if toolchain.get("binutils_identity_status") != (
+        "quarantined-diagnostic-only"
+    ):
+        raise ContractError("fixed binutils quarantine status mismatch")
+    if toolchain.get("binutils_immutable") is not False:
+        raise ContractError("fixed binutils immutable status mismatch")
+    if toolchain.get("binutils_admission_credit") is not False:
+        raise ContractError("fixed binutils received admission credit")
 
     sources = {entry["name"]: entry for entry in data["sources"]}
     if set(sources) != set(EXPECTED_SOURCE_HASHES):
@@ -269,25 +280,35 @@ def validate_dependency_lock(data):
 
     assets = data["toolchain_assets"]
     if len(assets) != 10:
-        raise ContractError("admitted toolchain closure must contain 10 assets")
+        raise ContractError("toolchain identity closure must contain 10 assets")
     for asset in assets:
         if not re.fullmatch(r"[0-9a-f]{64}", asset.get("sha256", "")):
-            raise ContractError(f"invalid admitted asset hash: {asset.get('name')}")
+            raise ContractError(f"invalid toolchain asset hash: {asset.get('name')}")
         if not isinstance(asset.get("size"), int) or asset["size"] <= 0:
-            raise ContractError(f"invalid admitted asset size: {asset.get('name')}")
+            raise ContractError(f"invalid toolchain asset size: {asset.get('name')}")
         if not isinstance(asset.get("admitted"), bool):
             raise ContractError(f"toolchain admission flag missing: {asset.get('name')}")
         if not isinstance(asset.get("diagnostic_only"), bool):
             raise ContractError(f"toolchain diagnostic flag missing: {asset.get('name')}")
+        if not isinstance(asset.get("immutable"), bool):
+            raise ContractError(f"toolchain immutable flag missing: {asset.get('name')}")
+    binutils = assets[0]
+    if binutils.get("release_id") != 377908415:
+        raise ContractError("fixed binutils asset release mismatch")
+    if binutils.get("immutable") is not False:
+        raise ContractError("fixed binutils asset immutable status mismatch")
+    if binutils["admitted"] or not binutils["diagnostic_only"]:
+        raise ContractError("quarantined fixed binutils cannot be admitted")
+    for asset in assets[1:]:
         if asset["diagnostic_only"] and asset["admitted"]:
-            raise ContractError(f"diagnostic toolchain asset admitted: {asset.get('name')}")
-    if not assets[0]["admitted"] or assets[0]["diagnostic_only"]:
-        raise ContractError("fixed binutils admission mismatch")
+            raise ContractError(
+                f"diagnostic toolchain asset admitted: {asset.get('name')}"
+            )
     if any(
         asset["admitted"] or not asset["diagnostic_only"]
-        for asset in assets[1:]
+        for asset in assets
     ):
-        raise ContractError("a527-derived toolchain assets must remain diagnostic")
+        raise ContractError("toolchain assets must remain diagnostic")
 
     unresolved = data["target_dependency_assets"]
     expected = {
@@ -330,6 +351,14 @@ def validate_dependency_lock(data):
             if entry["commit"] in denied_commits:
                 raise ContractError("denied BusyBox lineage was admitted")
     all_inputs = assets + unresolved + execution_inputs
+    for entry in all_inputs:
+        identity = entry.get("package", entry.get("name"))
+        if "immutable" not in entry:
+            raise ContractError(f"input immutability metadata missing: {identity}")
+        if entry["immutable"] not in (None, True, False):
+            raise ContractError(f"input immutability metadata invalid: {identity}")
+        if entry.get("admitted") and entry["immutable"] is not True:
+            raise ContractError(f"admitted input is not immutable: {identity}")
     admitted = data.get("final_build_admitted")
     inputs_admitted = all(entry.get("admitted") for entry in all_inputs)
     if admitted and not inputs_admitted:
@@ -399,6 +428,15 @@ def validate_native_evidence(data):
 
 def validate_text_contract(package_dir):
     recipe = (package_dir / "PKGBUILD").read_text(encoding="utf-8")
+    source_only_marker = package_dir / ".ci-source-only"
+    if not source_only_marker.is_file():
+        raise ContractError("source-only generic CI marker is missing")
+    build_order_path = package_dir.parent / ".ci" / "ci-get-build-order.py"
+    if not build_order_path.is_file():
+        raise ContractError("generic CI build-order implementation is missing")
+    build_order = build_order_path.read_text(encoding="utf-8")
+    if 'SOURCE_ONLY_MARKER = ".ci-source-only"' not in build_order:
+        raise ContractError("generic CI does not honor the source-only marker")
     workflow = (
         package_dir.parent / ".github" / "workflows" / "arm64-coreutils.yml"
     ).read_text(encoding="utf-8")
@@ -459,6 +497,8 @@ def validate_text_contract(package_dir):
         "x64_process_or_module_count",
         "clean-busybox-payload",
         "clean-busybox-semantic-proof-payload",
+        "@($lock.toolchain_assets)",
+        "@($lock.execution_inputs)",
         "makepkg --cleanbuild --noconfirm --check",
         "PACMAN=/opt/private-bin/pacman",
         "--root /",
@@ -473,6 +513,32 @@ def validate_text_contract(package_dir):
             raise ContractError(f"workflow contract missing: {marker}")
     if "./.ci/ci-build.sh" in workflow:
         raise ContractError("workflow bypasses PKGBUILD check()")
+    scanner_step = workflow.find("Validate exact fixed-linker scanner fixtures")
+    build_job = workflow.find("  build-private-root:")
+    if scanner_step < build_job:
+        raise ContractError("scanner execution is not gated by admission")
+    admission_job = workflow[
+        workflow.find("  admission:"):build_job
+    ]
+    for marker in (
+        'python "$env:PACKAGE_DIR/validate_contract.py"',
+        "$_.diagnostic_only",
+        "$_.immutable -ne $true",
+        "'admitted=true' >> $env:GITHUB_OUTPUT",
+    ):
+        if marker not in admission_job:
+            raise ContractError(f"admission quarantine check missing: {marker}")
+    build_job_text = workflow[build_job:]
+    if "needs.admission.result == 'success'" not in build_job_text:
+        raise ContractError(
+            "build does not require successful admission completion"
+        )
+    if admission_job.find("'admitted=true' >> $env:GITHUB_OUTPUT") < (
+        admission_job.find(
+            "if (-not $lock.final_build_admitted -or $missing.Count -ne 0)"
+        )
+    ):
+        raise ContractError("admission output is emitted before gate success")
     actions = re.findall(r"(?m)^\s*-\s+uses:\s+([^@\s]+)@([^\s]+)", workflow)
     if not actions:
         raise ContractError("workflow contains no actions")

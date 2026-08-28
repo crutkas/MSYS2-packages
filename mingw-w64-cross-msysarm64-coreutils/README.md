@@ -118,8 +118,10 @@ and no dependency removals. BusyBox's full cross-package delta remains 59.
 ## Build and audit
 
 The recipe pins the coreutils source, detached signature, four existing MSYS2
-patches, signing key, and the exact pseudo-relocation scanner from fixed
-binutils commit `3356eec1411983cc252b04afac32bca5f3b8d824`. The scanner SHA-256
+patches, signing key, and the exact pseudo-relocation scanner from quarantined
+binutils commit `3356eec1411983cc252b04afac32bca5f3b8d824`. Release `377908415`
+is immutable-false and provides diagnostic identity only, with zero admission
+credit. The scanner SHA-256
 is `888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9`.
 The fixed linker SHA-256 is
 `075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f`.
@@ -148,10 +150,16 @@ observation values remain current.
 
 ## Admission status
 
-`dependency-lock.json` distinguishes admitted fixed binutils from diagnostic
-a527-derived runtime/compiler/support packages. Final package and native CI
-are intentionally fail-closed until every diagnostic input is replaced by a
-corrected admitted identity and these additional inputs are admitted:
+`dependency-lock.json` marks fixed binutils and every a527-derived
+runtime/compiler/support package diagnostic-only and unadmitted. Final package
+and native CI are intentionally fail-closed until every diagnostic input is
+replaced by a unique immutable remint with independent admission and these
+additional inputs are admitted:
+
+Every package and execution record must carry explicit `immutable=true` before
+admission. Missing, null, or false immutability is rejected.
+The generic repository package builder honors this lane's `.ci-source-only`
+marker, so it cannot pass the recipe to ungated `makepkg --syncdeps`.
 
 | Input | Required identity |
 | --- | --- |

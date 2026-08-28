@@ -491,13 +491,28 @@ try {
     $commitStart.RedirectStandardOutput = $true
     $commitStart.RedirectStandardError = $true
     $commitProcess = [Diagnostics.Process]::Start($commitStart)
-    Start-Sleep -Milliseconds 500
-    $hookProcesses = @(Add-ProcessTreeAudit -RootProcess $commitProcess)
+    $hookProcesses = [Collections.Generic.List[string]]::new()
+    $hookDeadline = [DateTime]::UtcNow.AddSeconds(4)
+    do {
+        foreach ($name in @(
+            Add-ProcessTreeAudit -RootProcess $commitProcess
+        )) {
+            if (-not $hookProcesses.Contains($name)) {
+                $hookProcesses.Add($name)
+            }
+        }
+        if (($hookProcesses -match 'sh') -and
+            ($hookProcesses -match 'sleep')) {
+            break
+        }
+        Start-Sleep -Milliseconds 100
+    } while (-not $commitProcess.HasExited -and
+        [DateTime]::UtcNow -lt $hookDeadline)
+    $commitProcess.WaitForExit()
     if (-not ($hookProcesses -match 'sh') -or
         -not ($hookProcesses -match 'sleep')) {
         throw "Git hook process trace incomplete: $hookProcesses"
     }
-    $commitProcess.WaitForExit()
     if ($commitProcess.ExitCode -ne 0) {
         throw "ARM64 Git hook compatibility probe failed: $(
             $commitProcess.StandardError.ReadToEnd())"

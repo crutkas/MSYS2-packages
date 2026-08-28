@@ -29,10 +29,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
-        with:
-          python-version: '3.12'
-
       - name: Validate path, source, dependency, and negative contracts
         shell: pwsh
         run: |
@@ -43,19 +39,6 @@ jobs:
           & "$env:PACKAGE_DIR/test-native-smoke-contract.ps1"
           if ($LASTEXITCODE -ne 0) {
             throw 'native smoke static contract failed'
-          }
-
-      - name: Validate exact fixed-linker scanner fixtures
-        shell: pwsh
-        run: |
-          $scanner = Join-Path $env:RUNNER_TEMP 'check-aarch64-pseudo-relocs.ps1'
-          Invoke-WebRequest `
-            -Uri 'https://raw.githubusercontent.com/crutkas/MSYS2-packages/3356eec1411983cc252b04afac32bca5f3b8d824/.ci/check-aarch64-pseudo-relocs.ps1' `
-            -OutFile $scanner
-          & pwsh -NoProfile -File "$env:PACKAGE_DIR/test-pseudo-reloc-scanner.ps1" `
-            -Scanner $scanner
-          if ($LASTEXITCODE -ne 0) {
-            throw 'pseudo-reloc scanner fixtures failed'
           }
 
       - name: Check shell syntax
@@ -69,7 +52,6 @@ jobs:
 
   admission:
     if: github.repository == 'crutkas/MSYS2-packages'
-    needs: contract
     runs-on: windows-2025
     outputs:
       admitted: ${{ steps.gate.outputs.admitted }}
@@ -82,20 +64,27 @@ jobs:
         id: gate
         shell: pwsh
         run: |
+          python "$env:PACKAGE_DIR/validate_contract.py"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'dependency contract validation failed before admission'
+          }
           $lock = Get-Content "$env:PACKAGE_DIR/dependency-lock.json" -Raw |
             ConvertFrom-Json
-          "admitted=$($lock.final_build_admitted.ToString().ToLowerInvariant())" `
-            >> $env:GITHUB_OUTPUT
           $missing = @(
             @($lock.toolchain_assets) +
             @($lock.target_dependency_assets) +
             @($lock.execution_inputs) |
-              Where-Object { -not $_.admitted } |
+              Where-Object {
+                -not $_.admitted -or
+                $_.diagnostic_only -or
+                $_.immutable -ne $true
+              } |
               ForEach-Object {
                 if ($_.package) { $_.package } else { $_.name }
               }
           )
           if (-not $lock.final_build_admitted -or $missing.Count -ne 0) {
+            'admitted=false' >> $env:GITHUB_OUTPUT
             @(
               '## Native coreutils build blocked'
               ''
@@ -105,12 +94,14 @@ jobs:
             ) >> $env:GITHUB_STEP_SUMMARY
             throw "final package/native CI is fail-closed: $($missing -join ', ')"
           }
+          'admitted=true' >> $env:GITHUB_OUTPUT
 
   build-private-root:
     if: >-
       ${{
         always() &&
         needs.contract.result == 'success' &&
+        needs.admission.result == 'success' &&
         needs.admission.outputs.admitted == 'true'
       }}
     needs: [contract, admission]
@@ -125,6 +116,19 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           persist-credentials: false
+
+      - name: Validate exact fixed-linker scanner fixtures
+        shell: pwsh
+        run: |
+          $scanner = Join-Path $env:RUNNER_TEMP 'check-aarch64-pseudo-relocs.ps1'
+          Invoke-WebRequest `
+            -Uri 'https://raw.githubusercontent.com/crutkas/MSYS2-packages/3356eec1411983cc252b04afac32bca5f3b8d824/.ci/check-aarch64-pseudo-relocs.ps1' `
+            -OutFile $scanner
+          & pwsh -NoProfile -File "$env:PACKAGE_DIR/test-pseudo-reloc-scanner.ps1" `
+            -Scanner $scanner
+          if ($LASTEXITCODE -ne 0) {
+            throw 'pseudo-reloc scanner fixtures failed'
+          }
 
       - name: Materialize immutable private build root
         shell: pwsh

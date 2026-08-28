@@ -3,9 +3,11 @@
 import copy
 import importlib.util
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 SPEC = importlib.util.spec_from_file_location(
@@ -13,6 +15,14 @@ SPEC = importlib.util.spec_from_file_location(
 )
 VALIDATOR = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(VALIDATOR)
+
+BUILD_ORDER_SPEC = importlib.util.spec_from_file_location(
+    "ci_get_build_order",
+    PACKAGE_DIR.parent / ".ci" / "ci-get-build-order.py",
+)
+BUILD_ORDER = importlib.util.module_from_spec(BUILD_ORDER_SPEC)
+sys.modules[BUILD_ORDER_SPEC.name] = BUILD_ORDER
+BUILD_ORDER_SPEC.loader.exec_module(BUILD_ORDER)
 
 
 class ContractTests(unittest.TestCase):
@@ -27,6 +37,29 @@ class ContractTests(unittest.TestCase):
 
     def test_current_contract(self):
         VALIDATOR.validate_all(PACKAGE_DIR)
+
+    def _copy_text_contract_fixture(self, root):
+        package = root / PACKAGE_DIR.name
+        package.mkdir()
+        for name in (
+            ".ci-source-only", "PKGBUILD", "path-manifest.json",
+            "dependency-lock.json", "validate_contract.py",
+            "validate-package-lifecycle.sh",
+        ):
+            (package / name).write_bytes((PACKAGE_DIR / name).read_bytes())
+        workflow = root / ".github" / "workflows"
+        workflow.mkdir(parents=True)
+        (workflow / "arm64-coreutils.yml").write_bytes(
+            (PACKAGE_DIR.parent / ".github" / "workflows" /
+             "arm64-coreutils.yml").read_bytes()
+        )
+        ci_dir = root / ".ci"
+        ci_dir.mkdir()
+        (ci_dir / "ci-get-build-order.py").write_bytes(
+            (PACKAGE_DIR.parent / ".ci" /
+             "ci-get-build-order.py").read_bytes()
+        )
+        return package
 
     def test_source_hash_mismatch_fails(self):
         lock = copy.deepcopy(self.lock)
@@ -95,6 +128,7 @@ class ContractTests(unittest.TestCase):
             "url": "https://example.invalid/denied.zip",
             "size": 1,
             "sha256": "0" * 64,
+            "immutable": True,
             "admitted": True,
         })
         with self.assertRaisesRegex(
@@ -107,6 +141,36 @@ class ContractTests(unittest.TestCase):
         lock["toolchain_assets"][1]["admitted"] = True
         with self.assertRaisesRegex(
             VALIDATOR.ContractError, "diagnostic toolchain asset admitted"
+        ):
+            VALIDATOR.validate_dependency_lock(lock)
+
+    def test_quarantined_fixed_binutils_cannot_satisfy_admission(self):
+        lock = copy.deepcopy(self.lock)
+        binutils = lock["toolchain_assets"][0]
+        self.assertEqual(binutils["release_id"], 377908415)
+        self.assertFalse(binutils["immutable"])
+        self.assertTrue(binutils["diagnostic_only"])
+        self.assertFalse(binutils["admitted"])
+        binutils["admitted"] = True
+        with self.assertRaisesRegex(
+            VALIDATOR.ContractError,
+            "quarantined fixed binutils cannot be admitted",
+        ):
+            VALIDATOR.validate_dependency_lock(lock)
+
+    def test_admitted_input_requires_immutable_true(self):
+        lock = copy.deepcopy(self.lock)
+        candidate = lock["target_dependency_assets"][0]
+        candidate.update({
+            "release_tag": "candidate",
+            "asset_name": "candidate.pkg.tar.zst",
+            "size": 1,
+            "sha256": "0" * 64,
+            "admitted": True,
+        })
+        self.assertIsNone(candidate["immutable"])
+        with self.assertRaisesRegex(
+            VALIDATOR.ContractError, "admitted input is not immutable"
         ):
             VALIDATOR.validate_dependency_lock(lock)
 
@@ -160,20 +224,10 @@ class ContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            package = root / PACKAGE_DIR.name
-            package.mkdir()
-            for name in ("PKGBUILD", "path-manifest.json",
-                         "dependency-lock.json", "validate_contract.py"):
-                (package / name).write_bytes((PACKAGE_DIR / name).read_bytes())
+            package = self._copy_text_contract_fixture(root)
             (package / "validate-package-lifecycle.sh").write_text(
                 source.replace("--hookdir", "--omitted-hookdir"),
                 encoding="utf-8",
-            )
-            workflow = root / ".github" / "workflows"
-            workflow.mkdir(parents=True)
-            (workflow / "arm64-coreutils.yml").write_bytes(
-                (PACKAGE_DIR.parent / ".github" / "workflows" /
-                 "arm64-coreutils.yml").read_bytes()
             )
             with self.assertRaisesRegex(
                 VALIDATOR.ContractError, "private-root argument omitted"
@@ -183,20 +237,13 @@ class ContractTests(unittest.TestCase):
     def test_unpinned_workflow_action_fails(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            package = root / PACKAGE_DIR.name
-            package.mkdir()
-            for name in (
-                "PKGBUILD", "path-manifest.json", "dependency-lock.json",
-                "validate_contract.py", "validate-package-lifecycle.sh",
-            ):
-                (package / name).write_bytes((PACKAGE_DIR / name).read_bytes())
-            workflow = root / ".github" / "workflows"
-            workflow.mkdir(parents=True)
+            package = self._copy_text_contract_fixture(root)
             source = (
                 PACKAGE_DIR.parent / ".github" / "workflows" /
                 "arm64-coreutils.yml"
             ).read_text(encoding="utf-8")
-            (workflow / "arm64-coreutils.yml").write_text(
+            (root / ".github" / "workflows" /
+             "arm64-coreutils.yml").write_text(
                 source.replace(
                     "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
                     "actions/checkout@v4",
@@ -208,6 +255,39 @@ class ContractTests(unittest.TestCase):
                 VALIDATOR.ContractError, "workflow action is not SHA-pinned"
             ):
                 VALIDATOR.validate_text_contract(package)
+
+    def test_missing_source_only_marker_fails(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package = self._copy_text_contract_fixture(root)
+            (package / ".ci-source-only").unlink()
+            with self.assertRaisesRegex(
+                VALIDATOR.ContractError, "source-only generic CI marker is missing"
+            ):
+                VALIDATOR.validate_text_contract(package)
+
+    def test_generic_ci_skips_source_only_package(self):
+        change = f"{PACKAGE_DIR.name}/PKGBUILD"
+
+        def exists_with_marker(path):
+            return str(path).endswith(("PKGBUILD", ".ci-source-only"))
+
+        with mock.patch.object(
+            BUILD_ORDER, "list_changes", return_value=[change]
+        ), mock.patch.object(
+            BUILD_ORDER.os.path, "exists", side_effect=exists_with_marker
+        ):
+            self.assertEqual(BUILD_ORDER.list_packages(), [])
+        with mock.patch.object(
+            BUILD_ORDER, "list_changes", return_value=[change]
+        ), mock.patch.object(
+            BUILD_ORDER.os.path,
+            "exists",
+            side_effect=lambda path: str(path).endswith("PKGBUILD"),
+        ):
+            self.assertEqual(
+                BUILD_ORDER.list_packages(), [PACKAGE_DIR.name]
+            )
 
     def test_incomplete_native_evidence_fails(self):
         with self.assertRaisesRegex(VALIDATOR.ContractError, "incomplete"):

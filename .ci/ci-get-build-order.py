@@ -8,6 +8,8 @@ import re
 import subprocess
 import sys
 
+SOURCE_ONLY_MARKER = ".ci-source-only"
+
 
 @dataclass
 class PackageInfo:
@@ -33,11 +35,15 @@ def list_changes(*git_args):
 
 def list_packages():
     changes = list_changes("--pretty=format:", "--name-only")
-    return [
-        x.split("/")[0]
-        for x in changes
-        if x.endswith("/PKGBUILD") and os.path.exists(x)
-    ]
+    packages = []
+    for change in changes:
+        if not change.endswith("/PKGBUILD") or not os.path.exists(change):
+            continue
+        package = change.split("/")[0]
+        if os.path.exists(os.path.join(package, SOURCE_ONLY_MARKER)):
+            continue
+        packages.append(package)
+    return packages
 
 
 def get_pkginfo(package, packageset):
