@@ -1715,6 +1715,48 @@ try {
         }
     }
 
+    Invoke-PrivatePacmanTestCase -Name 'package-set framing rejects unsorted ordinal paths' -Test {
+        $packages = @(
+            [pscustomobject][ordered]@{
+                Path = 'nested\z.pkg.tar.zst'
+                Length = [int64]1
+                Sha256 = 'a' * 64
+            },
+            [pscustomobject][ordered]@{
+                Path = 'nested\a.pkg.tar.zst'
+                Length = [int64]1
+                Sha256 = 'b' * 64
+            }
+        )
+        $null = Assert-PrivatePacmanThrows {
+            & $module {
+                param([object[]] $Package)
+                Get-PrivatePacmanPackageSetCanonicalText -Package $Package
+            } $packages
+        } '\APackage-set entries must be unique and sorted by ordinal path\.\z'
+    }
+
+    Invoke-PrivatePacmanTestCase -Name 'package-set framing rejects duplicate paths' -Test {
+        $packages = @(
+            [pscustomobject][ordered]@{
+                Path = 'nested\duplicate.pkg.tar.zst'
+                Length = [int64]1
+                Sha256 = 'a' * 64
+            },
+            [pscustomobject][ordered]@{
+                Path = 'nested\duplicate.pkg.tar.zst'
+                Length = [int64]2
+                Sha256 = 'b' * 64
+            }
+        )
+        $null = Assert-PrivatePacmanThrows {
+            & $module {
+                param([object[]] $Package)
+                Get-PrivatePacmanPackageSetCanonicalText -Package $Package
+            } $packages
+        } '\APackage-set entries must be unique and sorted by ordinal path\.\z'
+    }
+
     Invoke-PrivatePacmanTestCase -Name 'public key curve and ownership text framing are exact' -Test {
         $nistText = $script:signingKey.ExportSubjectPublicKeyInfoPem()
         $nistRecord = & $module {
