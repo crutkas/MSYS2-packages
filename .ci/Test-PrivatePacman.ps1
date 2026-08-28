@@ -167,7 +167,10 @@ public static class PacmanArgvRecorder
         {
             File.AppendAllText(driftLog, "drift" + Environment.NewLine);
         }
-        StartDelayedWrite(Environment.GetEnvironmentVariable("PACMAN_DELAYED_DRIFT_LOG"));
+        string delayedDriftPath =
+            Environment.GetEnvironmentVariable("PACMAN_DELAYED_DRIFT_PATH") ??
+            Environment.GetEnvironmentVariable("PACMAN_DELAYED_DRIFT_LOG");
+        StartDelayedWrite(delayedDriftPath);
         StartFileLock(
             Environment.GetEnvironmentVariable("PACMAN_HOLD_FILE"),
             Environment.GetEnvironmentVariable("PACMAN_HOLD_FILE_RECORD"),
@@ -1062,18 +1065,50 @@ public static class PacmanArgvRecorder
         foreach ($arguments in @(
                 @('-Sp', 'example'),
                 @('-Rp', 'example'),
-                @('--sync', '--print', 'example')
+                @('-S', '-p', 'example'),
+                @('--sync', '--print', 'example'),
+                @('-S', '--print-format', '%n %v', 'example'),
+                @('-S', '--print-format=%n', 'example'),
+                @('-S', '--debug=1', '--print', 'example'),
+                @('-S', '--ask=4', '--print', 'example'),
+                @('-S', '--overwrite', 'usr/bin/*', '--print', 'example')
             )) {
-            $context = New-TestContext -Name "print-$([guid]::NewGuid().ToString('N'))"
-            $env:PACMAN_ARG_RECORD = Join-Path $testRoot "$([guid]::NewGuid()).args"
-            $env:PACMAN_EXIT_CODE = '0'
-            $result = Invoke-PrivatePacman -Context $context -ArgumentList $arguments
-            $recorded = Get-Content -LiteralPath $env:PACMAN_ARG_RECORD
-            Assert-True ($result.OperationKind.ToString() -eq 'Mutating') `
-                "Print operation lost mutating isolation: '$($arguments -join ' ')'."
-            Assert-True ('--root' -in $recorded) 'Print operation omitted isolation arguments.'
-            Assert-True ('--noscriptlet' -notin $recorded) `
+            $supportsNoScriptlet = & (Get-Module PrivatePacman) {
+                param([string[]] $InputArguments)
+                Test-SupportsNoScriptlet -ArgumentList $InputArguments
+            } -InputArguments $arguments
+            Assert-True (-not $supportsNoScriptlet) `
                 "Print operation received unsupported --noscriptlet: '$($arguments -join ' ')'."
+        }
+
+        $context = New-TestContext -Name 'print-isolation-integration'
+        $env:PACMAN_ARG_RECORD = Join-Path $testRoot 'print-isolation-integration.args'
+        $env:PACMAN_EXIT_CODE = '0'
+        $result = Invoke-PrivatePacman -Context $context -ArgumentList @('-Sp', 'example')
+        $recorded = Get-Content -LiteralPath $env:PACMAN_ARG_RECORD
+        Assert-True ($result.OperationKind.ToString() -eq 'Mutating') `
+            'Print operation lost mutating isolation.'
+        Assert-True ('--root' -in $recorded) 'Print operation omitted isolation arguments.'
+        Assert-True ('--noscriptlet' -notin $recorded) `
+            'Print operation received unsupported --noscriptlet.'
+    }
+
+    Invoke-Test 'ambiguous or consumed print tokens retain noscriptlet' {
+        foreach ($arguments in @(
+                @('-S', '--overwrite', '--print', 'example'),
+                @('-S', '--ignore', '--print', 'example'),
+                @('-S', '--print-format'),
+                @('-S', '--ask', '--print', 'example'),
+                @('-S', '--debug=invalid', '--print', 'example'),
+                @('-S', '--print=unexpected', 'example'),
+                @('-S', '--future-option', '--print', 'example')
+            )) {
+            $supportsNoScriptlet = & (Get-Module PrivatePacman) {
+                param([string[]] $InputArguments)
+                Test-SupportsNoScriptlet -ArgumentList $InputArguments
+            } -InputArguments $arguments
+            Assert-True $supportsNoScriptlet `
+                "Ambiguous print token disabled scriptlet protection: '$($arguments -join ' ')'."
         }
     }
 
@@ -1120,6 +1155,23 @@ public static class PacmanArgvRecorder
             Invoke-PrivatePacman -Context $context -ArgumentList @('-S', 'example')
         }
         Remove-Item Env:PACMAN_DELAYED_DRIFT_LOG
+    }
+
+    Invoke-Test 'post-exit untracked protected-root drift changes the full fingerprint' {
+        $untrackedDirectory = Join-Path $sharedRoot 'usr\share\untracked'
+        $untrackedFile = Join-Path $untrackedDirectory 'outside-observed-trees.txt'
+        New-Item -ItemType Directory -Path $untrackedDirectory -Force | Out-Null
+        Set-Content -LiteralPath $untrackedFile -Value 'baseline'
+        $context = New-TestContext -Name 'delayed-untracked-root-drift'
+        $env:PACMAN_ARG_RECORD = Join-Path $testRoot 'delayed-untracked-root-drift.args'
+        $env:PACMAN_EXIT_CODE = '0'
+        $env:PACMAN_DELAYED_DRIFT_PATH = $untrackedFile
+        Assert-Throws -Pattern 'Shared MSYS2 state changed|Protected MSYS2 root changed' -Action {
+            Invoke-PrivatePacman -Context $context -ArgumentList @('-S', 'example')
+        }
+        Assert-True ((Get-Content -LiteralPath $untrackedFile -Raw) -match 'delayed drift') `
+            'The delayed untracked-root write did not occur after the pacman child exited.'
+        Remove-Item Env:PACMAN_DELAYED_DRIFT_PATH
     }
 
     Invoke-Test 'empty watcher overflow retains diagnostic summary' {
@@ -1231,6 +1283,7 @@ finally {
     Remove-Item Env:PACMAN_DIRECTORY_DELETE_RECORD -ErrorAction SilentlyContinue
     Remove-Item Env:PACMAN_PRIVATE_LOG_LINE -ErrorAction SilentlyContinue
     Remove-Item Env:PACMAN_DELAYED_DRIFT_LOG -ErrorAction SilentlyContinue
+    Remove-Item Env:PACMAN_DELAYED_DRIFT_PATH -ErrorAction SilentlyContinue
     Remove-Item Env:PACMAN_HOLD_FILE -ErrorAction SilentlyContinue
     Remove-Item Env:PACMAN_HOLD_FILE_RECORD -ErrorAction SilentlyContinue
     Remove-Item Env:PACMAN_HOLD_FILE_RELEASE -ErrorAction SilentlyContinue
