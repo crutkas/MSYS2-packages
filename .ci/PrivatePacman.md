@@ -53,15 +53,12 @@ The helper:
   entries prevents stream enumeration from following an external link target;
 - always includes canonical `C:\msys64` in the protected set, even when it is
   absent;
-- reuses the quiet preflight digest as canonical `C:\msys64` before evidence,
-  avoiding a redundant full shared-root walk before any private-root work;
-- requires every additional protected root's preflight digest to match its
-  authoritative monitored before snapshot, without discarding watcher events;
 - requires a separate disposable preflight watcher to observe a quiet interval
   before authoritative monitoring starts; only pre-monitor noise is discarded;
-- starts protected-root watchers before publishing the before evidence, keeps
-  them active through private-root cleanup, and fails on any change event,
-  watcher error, or before/after digest difference;
+- starts authoritative protected-root watchers before the complete byte and
+  metadata before snapshot, never clears their events, keeps them active
+  through private-root cleanup, and fails on any change event, watcher error,
+  or before/after digest difference;
 - removes reparse entries as leaves during cleanup and never follows their
   targets; and
 - preserves evidence outside the disposable private root on success and

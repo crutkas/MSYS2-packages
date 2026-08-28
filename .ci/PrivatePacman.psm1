@@ -2044,6 +2044,33 @@ function Get-PrivatePacmanQuiescentSnapshotSet {
     throw "Protected package state did not become quiescent after $MaximumAttempts attempts."
 }
 
+function Wait-PrivatePacmanProtectedRootsQuiescent {
+    param(
+        [Parameter(Mandatory)]
+        [object[]] $ProtectedRoot,
+
+        [ValidateRange(1, 10)]
+        [int] $MaximumAttempts = 4
+    )
+
+    for ($attempt = 1; $attempt -le $MaximumAttempts; $attempt++) {
+        $probeWatchers = @(Start-PrivatePacmanWatchers -ProtectedRoot $ProtectedRoot)
+        [Threading.Thread]::Sleep(350)
+        $probeEvidence = @(Stop-PrivatePacmanWatchers -Watcher $probeWatchers)
+        $errors = @($probeEvidence | ForEach-Object Errors)
+        if ($errors.Count -ne 0) {
+            throw "Protected-state quiescence watcher failed: $($errors -join '; ')"
+        }
+
+        $changes = @($probeEvidence | ForEach-Object Changes)
+        if ($changes.Count -eq 0) {
+            return
+        }
+    }
+
+    throw "Protected package state did not become quiescent after $MaximumAttempts attempts."
+}
+
 function New-PrivatePacmanExternalState {
     param(
         [Parameter(Mandatory)]
@@ -2390,23 +2417,14 @@ function Invoke-PrivatePacmanUpgrade {
             -StagingRoot $stagingRoot
         $resultPath = [IO.Path]::Combine($canonicalLayout.EvidenceDirectory, 'result.json')
 
-        $protectedPreflight = @(
-            Get-PrivatePacmanQuiescentSnapshotSet `
-                -ProtectedRoot $protected `
-                -RejectReparsePoint
-        )
+        Wait-PrivatePacmanProtectedRootsQuiescent -ProtectedRoot $protected
         $watchers = @(Start-PrivatePacmanWatchers -ProtectedRoot $protected)
         $protectedBefore = @(for ($index = 0; $index -lt $protected.Count; $index++) {
             $protectedEntry = $protected[$index]
-            $snapshot = if ($protectedEntry.IsCanonicalSharedRoot) {
-                $protectedPreflight[$index]
-            }
-            else {
-                Get-PrivatePacmanTreeSnapshotCore `
-                    -Path $protectedEntry.Path `
-                    -AllowMissing `
-                    -RejectReparsePoint
-            }
+            $snapshot = Get-PrivatePacmanTreeSnapshotCore `
+                -Path $protectedEntry.Path `
+                -AllowMissing `
+                -RejectReparsePoint
             $fileName = "protected-$index-before.json"
             Write-PrivatePacmanJson `
                 -Path ([IO.Path]::Combine($canonicalLayout.EvidenceDirectory, $fileName)) `
@@ -2425,12 +2443,6 @@ function Invoke-PrivatePacmanUpgrade {
                 IsCanonicalSharedRoot = $protectedEntry.IsCanonicalSharedRoot
             }
         })
-        for ($index = 0; $index -lt $protectedBefore.Count; $index++) {
-            if ($protectedPreflight[$index].Exists -ne $protectedBefore[$index].Exists -or
-                $protectedPreflight[$index].Digest -cne $protectedBefore[$index].Digest) {
-                throw "Protected package state was not stable before monitoring: $($protectedBefore[$index].Path)"
-            }
-        }
         $state.Sentinel.ProtectedRoots = @($protectedBefore)
         Set-PrivatePacmanLockedJson -Stream $state.Stream -Value $state.Sentinel
 
