@@ -23,6 +23,10 @@ if (Test-Path -LiteralPath $tmp) { Remove-Item -Recurse -Force -LiteralPath $tmp
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 
 try {
+  $scriptText = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'build-candidate.ps1')
+  Assert (-not ($scriptText -match '(?m)(?:--login|\s-lc\s)')) `
+    'private build shell must never run login initialization'
+
   # --- New-PacmanCommonArgs: explicit paths, no forbidden flags ---
   $common = New-PacmanCommonArgs -Root $tmp -Config (Join-Path $tmp 'pacman-build.conf')
   foreach ($flag in @('--root', '--dbpath', '--cachedir', '--logfile', '--config', '--hookdir', '--gpgdir', '--noconfirm')) {

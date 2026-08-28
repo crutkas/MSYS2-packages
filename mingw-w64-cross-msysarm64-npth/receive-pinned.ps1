@@ -175,11 +175,12 @@ function Assert-PinnedDetachedSignature {
   $signatureArg = ConvertTo-GitPosixPath $Signature
   $publicKeyArg = ConvertTo-GitPosixPath $PublicKey
   try {
-    $importOutput = @(& $Gpg --batch --homedir $gpgHomeArg --import $publicKeyArg 2>&1)
+    $importOutput = @(& $Gpg --batch --no-autostart --homedir $gpgHomeArg --import $publicKeyArg 2>&1)
     if ($LASTEXITCODE -ne 0) {
       throw "Unable to import pinned signer key: $($importOutput -join "`n")"
     }
-    $status = @(& $Gpg --batch --homedir $gpgHomeArg --status-fd 1 --verify $signatureArg $archiveArg 2>&1)
+    $status = @(& $Gpg --batch --no-autostart --homedir $gpgHomeArg `
+        --status-fd 1 --verify $signatureArg $archiveArg 2>&1)
     if ($LASTEXITCODE -ne 0 -or
         -not (Test-ValidSignatureStatus -StatusText ($status -join "`n") -Fingerprint $Fingerprint)) {
       throw "Detached signature is not valid for $Archive from signer $Fingerprint"

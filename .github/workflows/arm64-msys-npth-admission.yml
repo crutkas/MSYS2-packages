@@ -228,9 +228,9 @@ jobs:
           $bash = Join-Path $root 'usr\bin\bash.exe'
           $leakDir = Join-Path $output 'path-leak'
           New-Item -ItemType Directory -Force $leakDir | Out-Null
-          $repoPosix = (& $bash -lc "/usr/bin/cygpath -u '$env:GITHUB_WORKSPACE'").Trim()
-          $smokePosix = (& $bash -lc "/usr/bin/cygpath -u '$smoke'").Trim()
-          $leakPosix = (& $bash -lc "/usr/bin/cygpath -u '$leakDir'").Trim()
+          $repoPosix = (& $bash -c "/usr/bin/cygpath -u '$env:GITHUB_WORKSPACE'").Trim()
+          $smokePosix = (& $bash -c "/usr/bin/cygpath -u '$smoke'").Trim()
+          $leakPosix = (& $bash -c "/usr/bin/cygpath -u '$leakDir'").Trim()
           foreach ($input in @($dll[0].Name, 'npth-dynamic-smoke.exe', 'npth-static-smoke.exe')) {
             $leakScript = @"
             set -euo pipefail
@@ -242,7 +242,7 @@ jobs:
               /opt/bin/aarch64-pc-msys-strings \
               no
             "@
-            & $bash -lc $leakScript
+            & $bash -c $leakScript
             if ($LASTEXITCODE -ne 0) { throw "Path-leak audit rejected $input" }
           }
 

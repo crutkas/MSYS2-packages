@@ -209,7 +209,7 @@ function Invoke-BuildCandidate {
 
   $recipePosix = '/usr/src/debug/mingw-w64-cross-msysarm64-npth-1.8/recipe'
   $buildDirPosix = '/usr/src/debug/mingw-w64-cross-msysarm64-npth-1.8/build'
-  $inputsPosix = (& $bash -lc "/usr/bin/cygpath -u '$InputsDir'").Trim()
+  $inputsPosix = (& $bash -c "/usr/bin/cygpath -u '$InputsDir'").Trim()
   $signatureKey = Join-Path $InputsDir 'signature_key.asc'
   if (-not (Test-Path -LiteralPath $signatureKey)) {
     throw 'signature_key.asc must be pre-downloaded so makepkg can verify the pinned npth source signature.'
@@ -231,7 +231,7 @@ gpg --batch --import '$inputsPosix/signature_key.asc'
 cd '$recipePosix'
 makepkg --cleanbuild --check --noconfirm
 "@
-  & $bash -lc $script 2>&1 | Tee-Object -FilePath (Join-Path $OutputDir 'build.log')
+  & $bash -c $script 2>&1 | Tee-Object -FilePath (Join-Path $OutputDir 'build.log')
   if ($LASTEXITCODE -ne 0) { throw 'Deterministic npth cross-build failed.' }
 
   $packages = @(Get-ChildItem -LiteralPath $recipeStage `

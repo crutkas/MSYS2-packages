@@ -16,6 +16,8 @@ function Assert($condition, $message) {
 }
 
 $manifestObj = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'input-manifest.json') | ConvertFrom-Json
+$receiverText = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'receive-pinned.ps1')
+Assert ($receiverText -match '--no-autostart') 'detached-signature verification must not require gpg-agent'
 
 # --- Get-ManifestDownloadList: full plan ------------------------------------
 $full = @(Get-ManifestDownloadList -ManifestObject $manifestObj -Include @('host', 'target', 'source', 'scanner', 'base', 'signingkey'))
