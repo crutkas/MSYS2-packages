@@ -264,10 +264,10 @@ jobs:
         run: |
           $buildRoot = '${{ steps.facts.outputs.drive }}\_'
           $expected = @{
-            'mingw-w64-cross-msysarm64-ncurses\ncurses-6.6-msys-winconpty.patch' = 'ab4ec7b8320128c3113b23539aef4229430680df7f5c9126570a4ba396ceb5a6'
-            'mingw-w64-cross-msysarm64-ncurses\ncurses-6.6-msys-sleep-windows.patch' = '243d2714abedf7d693acead1595983fb0204f482bf31383adf45afe78ccafcae'
-            'mingw-w64-cross-msysarm64-ncurses\ncurses-6.6-msys-mkdir-mode.patch' = '6894422dcb3b0079f48c22a1f6aebe479d75213961a9a1aec6d00bd6348eac77'
-            'mingw-w64-cross-msysarm64-ncurses\ncurses-6.6-msys-widechars.patch' = '1d0abaf024fb9e382e1f11013f47a42697c07273195bec0f3bdd1f281b064ae0'
+            'mingw-w64-cross-msysarm64-ncurses\ncurses-6.6-msys-winconpty.patch' = 'c35506845aeda302350a527e5f695968e10a9134bc2dbb5c98e59a800f06afad'
+            'mingw-w64-cross-msysarm64-ncurses\ncurses-6.6-msys-sleep-windows.patch' = '0688890a50b114e7a1ad9418dd68f7b3e5eaa7fc201d9c5f1ff8c644b8d65d76'
+            'mingw-w64-cross-msysarm64-ncurses\ncurses-6.6-msys-mkdir-mode.patch' = '0b616e41db0edd0a778a0d3acccee4f2201ca72d86552b7a2320f3fd7f921c96'
+            'mingw-w64-cross-msysarm64-ncurses\ncurses-6.6-msys-widechars.patch' = 'a68a6c23d4ad87f4159bb98bd2aa21b18edc9ee6e7246cb443fd24145fe72365'
           }
           foreach ($entry in $expected.GetEnumerator()) {
             $path = Join-Path $buildRoot $entry.Key
