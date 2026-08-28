@@ -52,7 +52,10 @@ Test-Entry $manifest.npthSource.tarball 'npthSource.tarball'
 Test-Entry $manifest.npthSource.signature 'npthSource.signature'
 Test-Entry $manifest.privateBase.archive 'privateBase.archive'
 Test-Entry $manifest.privateBase.signature 'privateBase.signature'
-Test-Entry $manifest.privateBase.signerKey 'privateBase.signerKey' $false
+Assert ($manifest.privateBase.signerKey.repositoryPath -eq 'mingw-w64-cross-msysarm64-npth/msys2-base-signer.asc') `
+  'privateBase.signerKey repository path mismatch'
+Assert ($manifest.privateBase.signerKey.bytes -eq 5393) 'privateBase.signerKey size mismatch'
+Assert ($manifest.privateBase.signerKey.sha256 -match $hex64) 'privateBase.signerKey hash malformed'
 
 Assert ($manifest.privateBase.archive.bytes -eq 53555380) 'privateBase archive size mismatch'
 Assert ($manifest.privateBase.archive.sha256 -eq 'a2d047e8ee213c3c6a49a8de427eb1069df12207c0422ff1b3cbb5c905c34221') 'privateBase archive sha mismatch'

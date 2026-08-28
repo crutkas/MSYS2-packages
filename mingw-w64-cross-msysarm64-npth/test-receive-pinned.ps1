@@ -19,7 +19,7 @@ $manifestObj = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'input-man
 
 # --- Get-ManifestDownloadList: full plan ------------------------------------
 $full = @(Get-ManifestDownloadList -ManifestObject $manifestObj -Include @('host', 'target', 'source', 'scanner', 'base', 'signingkey'))
-$expected = $manifestObj.hostPackages.Count + $manifestObj.targetInputs.Count + 2 + 1 + 3 + 1
+$expected = $manifestObj.hostPackages.Count + $manifestObj.targetInputs.Count + 2 + 1 + 2 + 1
 Assert ($full.Count -eq $expected) "full plan count $($full.Count) != expected $expected"
 foreach ($entry in $full) {
   Assert (-not [string]::IsNullOrWhiteSpace($entry.name)) 'plan entry missing name'
@@ -47,13 +47,28 @@ Assert (-not (Test-ValidSignatureStatus -StatusText "[GNUPG:] GOODSIG $signer" -
 Assert (-not (Test-ValidSignatureStatus -StatusText "[GNUPG:] VALIDSIG $('0' * 40)" -Fingerprint $signer)) `
   'signature status parser must reject a different signer fingerprint'
 
-# --- base group selects archive, detached signature, and pinned signer key ---
+$baseSignerKey = Join-Path $PSScriptRoot 'msys2-base-signer.asc'
+try {
+  Assert-PinnedLocalFile -Path $baseSignerKey `
+    -Sha256 $manifestObj.privateBase.signerKey.sha256 `
+    -Bytes ([long]$manifestObj.privateBase.signerKey.bytes)
+}
+catch {
+  $failures.Add("pinned repository signer key rejected: $_")
+}
+$threw = $false
+try {
+  Assert-PinnedLocalFile -Path $baseSignerKey -Sha256 ('0' * 64) `
+    -Bytes ([long]$manifestObj.privateBase.signerKey.bytes)
+}
+catch { $threw = $true }
+Assert $threw 'pinned local file verification must reject a hash mismatch'
+
+# --- base group selects the archive and detached signature -------------------
 $baseOnly = @(Get-ManifestDownloadList -ManifestObject $manifestObj -Include @('base'))
-Assert ($baseOnly.Count -eq 3) 'base group must yield archive + signature + signer key'
+Assert ($baseOnly.Count -eq 2) 'base group must yield archive + signature'
 Assert (@($baseOnly | Where-Object { $_.name -eq 'msys2-base-x86_64-20260611.tar.xz' }).Count -eq 1) 'base archive missing'
 Assert (@($baseOnly | Where-Object { $_.name.EndsWith('.sig') }).Count -eq 1) 'base signature missing'
-Assert (@($baseOnly | Where-Object { $_.name -eq $manifestObj.privateBase.signerKey.name }).Count -eq 1) `
-  'base signer key missing'
 
 # --- scanner group is the canonical pinned scanner --------------------------
 $scannerOnly = @(Get-ManifestDownloadList -ManifestObject $manifestObj -Include @('scanner'))

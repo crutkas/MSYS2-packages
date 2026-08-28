@@ -48,10 +48,10 @@
       "sha256": "076f5623b702d5016cf0253e1d14a6bd4870a90243243e96409b227f0d5bf70f"
     },
     "signerKey": {
-      "name": "msys2-base-signer-E0AA0F031DBD80FFBA57B06D5A62D0CAB6264964.asc",
-      "url": "https://keyserver.ubuntu.com/pks/lookup?op=get&options=mr&search=0x0EBF782C5D53F7E5FB02A66746BD761F7A49B0EC",
-      "bytes": 52107,
-      "sha256": "a247a92716ab322770e800793c10136dd22a6ea4691fdd2b9c72d4cfc5221082"
+      "name": "msys2-base-signer.asc",
+      "repositoryPath": "mingw-w64-cross-msysarm64-npth/msys2-base-signer.asc",
+      "bytes": 5393,
+      "sha256": "2c1b712855cc80d9920499ef2acaebbec18ca9808b0c4a1ea87785d9469a9a4c"
     },
     "signer": "E0AA0F031DBD80FFBA57B06D5A62D0CAB6264964",
     "localDbEntryCount": 1178

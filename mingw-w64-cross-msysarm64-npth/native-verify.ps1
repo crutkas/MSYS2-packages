@@ -403,7 +403,8 @@ function Invoke-NativeVerification {
   }
 }
 
-if ($MyInvocation.InvocationName -ne '.' -and -not $global:NativeVerifyDotSource) {
+if ($MyInvocation.InvocationName -ne '.' -and
+    -not (Get-Variable -Name NativeVerifyDotSource -Scope Global -ErrorAction SilentlyContinue)) {
   foreach ($name in 'BundlePath', 'Objdump', 'Nm', 'Scanner') {
     if ([string]::IsNullOrWhiteSpace((Get-Variable -Name $name -ValueOnly))) {
       throw "-$name is required when running native-verify.ps1 directly."

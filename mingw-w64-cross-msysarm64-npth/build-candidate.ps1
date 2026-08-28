@@ -268,7 +268,8 @@ makepkg --cleanbuild --check --noconfirm
   return (Join-Path $OutputDir 'build-seal.json')
 }
 
-if ($MyInvocation.InvocationName -ne '.' -and -not $global:BuildCandidateDotSource) {
+if ($MyInvocation.InvocationName -ne '.' -and
+    -not (Get-Variable -Name BuildCandidateDotSource -Scope Global -ErrorAction SilentlyContinue)) {
   foreach ($name in 'Manifest', 'InputsDir', 'Root', 'Workspace', 'OutputDir') {
     if ([string]::IsNullOrWhiteSpace((Get-Variable -Name $name -ValueOnly))) {
       throw "-$name is required when running build-candidate.ps1 directly."

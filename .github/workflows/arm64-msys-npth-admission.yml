@@ -147,19 +147,21 @@ jobs:
           Receive-ManifestInputs -Manifest $manifestPath -InputsDir $inputs `
             -Include @('host', 'target', 'source', 'scanner', 'signingkey', 'base') | Out-Null
           $m = Get-Content -Raw $manifestPath | ConvertFrom-Json
+          $baseSignerKey = Join-Path $env:GITHUB_WORKSPACE $m.privateBase.signerKey.repositoryPath
+          Assert-PinnedLocalFile -Path $baseSignerKey `
+            -Sha256 $m.privateBase.signerKey.sha256 -Bytes ([long]$m.privateBase.signerKey.bytes)
           Assert-PinnedDetachedSignature `
             -Archive (Join-Path $inputs $m.privateBase.archive.name) `
             -Signature (Join-Path $inputs $m.privateBase.signature.name) `
-            -PublicKey (Join-Path $inputs $m.privateBase.signerKey.name) `
+            -PublicKey $baseSignerKey `
             -Fingerprint $m.privateBase.signer
           & (Join-Path $recipe 'safe-extract.ps1') `
             -Archive (Join-Path $inputs $m.privateBase.archive.name) `
             -Bsdtar 'C:\Windows\System32\tar.exe' -PreflightOnly -AllowInternalLinks
 
-          # The base is hash- and byte-pinned and contains standard distribution
-          # symlinks, so it is unpacked with bsdtar's own absolute/traversal
-          # guards; safe-extract.ps1 is reserved for the untrusted candidate and
-          # tool payloads unpacked elsewhere.
+          # The base is hash-, byte-, and signature-pinned. Its standard internal
+          # symlinks passed the containment-aware preflight above; bsdtar retains
+          # its own absolute/traversal guards during extraction.
           $base = Join-Path $inputs 'msys2-base-x86_64-20260611.tar.xz'
           & 'C:\Windows\System32\tar.exe' -xf $base -C $privateBase
           if ($LASTEXITCODE -ne 0) { throw 'Unable to extract the pinned msys2 base archive' }
@@ -423,10 +425,13 @@ jobs:
           # Record the base provenance from the already hash- and byte-verified
           # download (archive + detached signature + signer fingerprint).
           $m = Get-Content -Raw $manifestPath | ConvertFrom-Json
+          $baseSignerKey = Join-Path $env:GITHUB_WORKSPACE $m.privateBase.signerKey.repositoryPath
+          Assert-PinnedLocalFile -Path $baseSignerKey `
+            -Sha256 $m.privateBase.signerKey.sha256 -Bytes ([long]$m.privateBase.signerKey.bytes)
           Assert-PinnedDetachedSignature `
             -Archive (Join-Path $inputs $m.privateBase.archive.name) `
             -Signature (Join-Path $inputs $m.privateBase.signature.name) `
-            -PublicKey (Join-Path $inputs $m.privateBase.signerKey.name) `
+            -PublicKey $baseSignerKey `
             -Fingerprint $m.privateBase.signer
           & (Join-Path $recipe 'safe-extract.ps1') `
             -Archive (Join-Path $inputs $m.privateBase.archive.name) `
@@ -523,14 +528,13 @@ jobs:
             -Filename $m.privateBase.signature.name -Sha256 $m.privateBase.signature.sha256 `
             -Bytes ([long]$m.privateBase.signature.bytes) -Destination $inputs `
             -DenyRules $denyRules | Out-Null
-          Receive-PinnedFile -Url $m.privateBase.signerKey.url `
-            -Filename $m.privateBase.signerKey.name -Sha256 $m.privateBase.signerKey.sha256 `
-            -Bytes ([long]$m.privateBase.signerKey.bytes) -Destination $inputs `
-            -DenyRules $denyRules | Out-Null
+          $baseSignerKey = Join-Path $env:GITHUB_WORKSPACE $m.privateBase.signerKey.repositoryPath
+          Assert-PinnedLocalFile -Path $baseSignerKey `
+            -Sha256 $m.privateBase.signerKey.sha256 -Bytes ([long]$m.privateBase.signerKey.bytes)
           Assert-PinnedDetachedSignature `
             -Archive (Join-Path $inputs $m.privateBase.archive.name) `
             -Signature (Join-Path $inputs $m.privateBase.signature.name) `
-            -PublicKey (Join-Path $inputs $m.privateBase.signerKey.name) `
+            -PublicKey $baseSignerKey `
             -Fingerprint $m.privateBase.signer
           & (Join-Path $recipe 'safe-extract.ps1') `
             -Archive (Join-Path $inputs $m.privateBase.archive.name) `
@@ -667,6 +671,8 @@ jobs:
           }
 
           Copy-Item -LiteralPath $manifest -Destination $bundle
+          Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE $m.privateBase.signerKey.repositoryPath) `
+            -Destination $bundle
           foreach ($sub in @('npth-build-a', 'npth-build-b', 'npth-compare-report',
               'npth-lifecycle-report', 'npth-native-evidence')) {
             $src = Join-Path $downloads $sub

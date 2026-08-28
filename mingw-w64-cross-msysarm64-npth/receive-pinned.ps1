@@ -82,7 +82,6 @@ function Get-ManifestDownloadList {
   if ($Include -contains 'base') {
     $plan.Add((New-DownloadEntry -Name $ManifestObject.privateBase.archive.name -Url $ManifestObject.privateBase.archive.url -Sha256 $ManifestObject.privateBase.archive.sha256 -Bytes ([long]$ManifestObject.privateBase.archive.bytes)))
     $plan.Add((New-DownloadEntry -Name $ManifestObject.privateBase.signature.name -Url $ManifestObject.privateBase.signature.url -Sha256 $ManifestObject.privateBase.signature.sha256 -Bytes ([long]$ManifestObject.privateBase.signature.bytes)))
-    $plan.Add((New-DownloadEntry -Name $ManifestObject.privateBase.signerKey.name -Url $ManifestObject.privateBase.signerKey.url -Sha256 $ManifestObject.privateBase.signerKey.sha256 -Bytes ([long]$ManifestObject.privateBase.signerKey.bytes)))
   }
   if ($Include -contains 'signingkey') {
     $plan.Add((New-DownloadEntry -Name $script:SigningKey.name -Url $script:SigningKey.url `
@@ -143,6 +142,19 @@ function ConvertTo-GitPosixPath {
     throw "GPG path is not an absolute drive path: $full"
   }
   return "/$($Matches[1].ToLowerInvariant())/$($Matches[2].Replace('\', '/'))"
+}
+
+function Assert-PinnedLocalFile {
+  param(
+    [Parameter(Mandatory)] [string] $Path,
+    [Parameter(Mandatory)] [string] $Sha256,
+    [Parameter(Mandatory)] [long] $Bytes
+  )
+  $item = Get-Item -LiteralPath $Path -ErrorAction Stop
+  $actual = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($item.Length -ne $Bytes -or $actual -cne $Sha256.ToLowerInvariant()) {
+    throw "Pinned local file mismatch for $Path"
+  }
 }
 
 function Assert-PinnedDetachedSignature {
@@ -230,7 +242,8 @@ function Receive-ManifestInputs {
   return $sealPath
 }
 
-if ($MyInvocation.InvocationName -ne '.' -and -not $global:ReceivePinnedDotSource) {
+if ($MyInvocation.InvocationName -ne '.' -and
+    -not (Get-Variable -Name ReceivePinnedDotSource -Scope Global -ErrorAction SilentlyContinue)) {
   foreach ($name in 'Manifest', 'InputsDir') {
     if ([string]::IsNullOrWhiteSpace((Get-Variable -Name $name -ValueOnly))) {
       throw "-$name is required when running receive-pinned.ps1 directly."
