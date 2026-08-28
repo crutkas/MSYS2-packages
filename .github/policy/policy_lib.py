@@ -280,6 +280,23 @@ FORBIDDEN_PYTHON_BUILTINS = {
     "delattr",
     "memoryview",
 }
+# Subprocess keywords that redirect which image actually runs, or how it is
+# launched, behind an innocuous-looking argument vector.
+FORBIDDEN_SUBPROCESS_KEYWORDS = {
+    "executable",
+    "preexec_fn",
+    "restore_signals",
+    "start_new_session",
+    "pass_fds",
+    "startupinfo",
+    "creationflags",
+    "user",
+    "group",
+    "extra_groups",
+    "umask",
+}
+# Functions that may supply argv[0] for a governed subprocess call.
+TRUSTED_IMAGE_RESOLVERS = {"_git_image"}
 # Undeclared-surface denial codes, most specific first.
 SURFACE_ORDER = (
     "github-api-read",

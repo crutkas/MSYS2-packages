@@ -4,6 +4,7 @@ import ast
 import copy
 import datetime as dt
 import json
+import os
 import pathlib
 import shutil
 import subprocess
@@ -20,6 +21,7 @@ from policy_lib import (  # noqa: E402
     parse_workflow_yaml,
     validate_approval_graph,
 )
+import validator  # noqa: E402
 from validator import validate_event, verify_repository_rules  # noqa: E402
 
 
@@ -92,10 +94,19 @@ class FakeRulesApi:
         workflow_blob=WORKFLOW_BLOB,
         topology="ahead",
         detail_id=None,
+        rule_pages=None,
+        detail_enforcement=None,
+        detail_target=None,
     ):
         self.rules = copy.deepcopy(rules)
         for rule in self.rules:
             rule.setdefault("ruleset_id", ruleset_id)
+        # Extra pages let a test hide a duplicate or conflicting rule beyond the
+        # first page, which an unpaginated reader would never see.
+        self.rule_pages = copy.deepcopy(rule_pages) if rule_pages else []
+        for page in self.rule_pages:
+            for rule in page:
+                rule.setdefault("ruleset_id", ruleset_id)
         self.ruleset_id = ruleset_id
         self.summary = {
             "id": ruleset_id,
@@ -114,8 +125,8 @@ class FakeRulesApi:
         self.detail = {
             "id": ruleset_id if detail_id is None else detail_id,
             "name": "policy",
-            "enforcement": enforcement,
-            "target": target,
+            "enforcement": enforcement if detail_enforcement is None else detail_enforcement,
+            "target": target if detail_target is None else detail_target,
             "source_type": source_type,
             "source": source,
             "bypass_actors": [] if bypass_actors is None else bypass_actors,
@@ -163,6 +174,11 @@ class FakeRulesApi:
     def get_paginated(self, path):
         if path == f"/repos/{REPOSITORY}/rulesets":
             return [copy.deepcopy(self.summary)]
+        if path.startswith(f"/repos/{REPOSITORY}/rules/branches/"):
+            combined = copy.deepcopy(self.rules)
+            for page in self.rule_pages:
+                combined.extend(copy.deepcopy(page))
+            return combined
         raise PolicyError("GITHUB_API_HTTP", f"unexpected page {path}")
 
 
@@ -404,6 +420,19 @@ class CollectorBoundaryTests(unittest.TestCase):
     def test_ruleset_detail_identity_must_match_summary(self):
         self.assert_not_activated(FakeRulesApi(complete_rules(), detail_id=99))
 
+    def test_detail_must_be_reverified_not_trusted_from_the_summary(self):
+        # The list endpoint and the detail endpoint are separate reads. A
+        # ruleset that advertises itself as active/branch in the summary but is
+        # actually disabled or retargeted must not carry authority.
+        for label, kwargs in {
+            "detail-disabled": {"detail_enforcement": "disabled"},
+            "detail-evaluate": {"detail_enforcement": "evaluate"},
+            "detail-tag-target": {"detail_target": "tag"},
+            "detail-push-target": {"detail_target": "push"},
+        }.items():
+            with self.subTest(label=label):
+                self.assert_not_activated(FakeRulesApi(complete_rules(), **kwargs))
+
     def test_rules_from_an_unlisted_ruleset_are_ignored(self):
         rules = complete_rules()
         for rule in rules:
@@ -620,6 +649,190 @@ class CollectorBoundaryTests(unittest.TestCase):
             sorted(path.name for path in workflows.iterdir()),
             ["workflow-policy.yml"],
         )
+
+    def test_rules_are_read_paginated(self):
+        source = (POLICY_DIR / "validator.py").read_text(encoding="utf-8")
+        module = ast.parse(source)
+        function = next(
+            node
+            for node in module.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "verify_repository_rules"
+        )
+        paginated = [
+            node
+            for node in ast.walk(function)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get_paginated"
+        ]
+        plain = [
+            node
+            for node in ast.walk(function)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "api"
+        ]
+        self.assertGreaterEqual(len(paginated), 2)
+        self.assertTrue(
+            all(
+                not isinstance(node.args[0], ast.JoinedStr)
+                or "rules/branches" not in ast.unparse(node.args[0])
+                for node in plain
+                if node.args
+            ),
+            "branch rules must not be read unpaginated",
+        )
+
+    def test_duplicate_authority_hidden_on_page_two_is_caught(self):
+        api = FakeRulesApi(complete_rules(), rule_pages=[[workflow_rule()]])
+        self.assert_policy_error("BOOTSTRAP_RULES", lambda: self.activate(api))
+
+    def test_conflicting_status_rule_on_page_two_is_caught(self):
+        api = FakeRulesApi(
+            complete_rules(), rule_pages=[[status_rule(strict=False)]]
+        )
+        self.assert_policy_error("BOOTSTRAP_RULES", lambda: self.activate(api))
+
+    def test_required_rule_supplied_only_on_page_two_still_counts(self):
+        rules = [rule for rule in complete_rules() if rule["type"] != "deletion"]
+        api = FakeRulesApi(rules, rule_pages=[[{"type": "deletion", "parameters": {}}]])
+        self.activate(api)
+
+
+class TrustedGitImageTests(unittest.TestCase):
+    """Exploit-derived: a forged Git image must be unreachable."""
+
+    def test_no_environment_override_exists_in_source(self):
+        source = (POLICY_DIR / "validator.py").read_text(encoding="utf-8")
+        self.assertNotIn("POLICY_GIT_EXECUTABLE", source)
+        # `executable=` lets argv[0] keep saying "git" while another binary runs.
+        self.assertNotIn("executable=", source.replace("# `executable=`", ""))
+
+    def test_image_comes_only_from_the_allowlist(self):
+        try:
+            image = validator._git_image()
+        except PolicyError:
+            self.skipTest("no trusted git image on this host")
+        self.assertIn(image, validator.TRUSTED_GIT_IMAGES)
+        self.assertTrue(os.path.isabs(image))
+
+    def test_environment_cannot_redirect_the_image(self):
+        try:
+            expected = validator._git_image()
+        except PolicyError:
+            self.skipTest("no trusted git image on this host")
+        forged = os.path.join(tempfile.gettempdir(), "forged-git.exe")
+        pathlib.Path(forged).write_bytes(b"MZ")
+        try:
+            for name in (
+                "POLICY_GIT_EXECUTABLE",
+                "GIT_EXECUTABLE",
+                "POLICY_GIT",
+                "PATH",
+            ):
+                with self.subTest(variable=name):
+                    saved = os.environ.get(name)
+                    os.environ[name] = forged if name != "PATH" else os.path.dirname(forged)
+                    try:
+                        self.assertEqual(validator._git_image(), expected)
+                    finally:
+                        if saved is None:
+                            os.environ.pop(name, None)
+                        else:
+                            os.environ[name] = saved
+        finally:
+            pathlib.Path(forged).unlink(missing_ok=True)
+
+    def test_unlisted_image_is_refused(self):
+        forged = os.path.join(tempfile.gettempdir(), "forged-git-2.exe")
+        pathlib.Path(forged).write_bytes(b"MZ")
+        saved = validator.TRUSTED_GIT_IMAGES
+        try:
+            validator.TRUSTED_GIT_IMAGES = (forged + ".missing",)
+            with self.assertRaises(PolicyError) as raised:
+                validator._git_image()
+            self.assertEqual(raised.exception.code, "BASE_CHECKOUT_GIT")
+        finally:
+            validator.TRUSTED_GIT_IMAGES = saved
+            pathlib.Path(forged).unlink(missing_ok=True)
+
+    def test_noncanonical_allowlist_entry_is_refused(self):
+        # A path that resolves somewhere other than its own spelling -- via
+        # ".." traversal, a junction, or a case alias -- must not be accepted,
+        # because the resolved target is not the audited binary.
+        try:
+            real = validator._git_image()
+        except PolicyError:
+            self.skipTest("no trusted git image on this host")
+        directory, name = os.path.split(real)
+        noncanonical = os.path.join(directory, "..", os.path.basename(directory), name)
+        self.assertTrue(os.path.isfile(noncanonical))
+        self.assertNotEqual(
+            os.path.normcase(os.path.realpath(noncanonical)),
+            os.path.normcase(noncanonical),
+        )
+        saved = validator.TRUSTED_GIT_IMAGES
+        try:
+            validator.TRUSTED_GIT_IMAGES = (noncanonical,)
+            with self.assertRaises(PolicyError) as raised:
+                validator._git_image()
+            self.assertEqual(raised.exception.code, "BASE_CHECKOUT_GIT")
+        finally:
+            validator.TRUSTED_GIT_IMAGES = saved
+
+    def test_relative_allowlist_entry_is_refused(self):
+        saved = validator.TRUSTED_GIT_IMAGES
+        try:
+            validator.TRUSTED_GIT_IMAGES = ("git", "git.exe", "./git")
+            with self.assertRaises(PolicyError) as raised:
+                validator._git_image()
+            self.assertEqual(raised.exception.code, "BASE_CHECKOUT_GIT")
+        finally:
+            validator.TRUSTED_GIT_IMAGES = saved
+
+    def test_non_repository_checkout_fails_closed(self):
+        # The original exploit forged origin/HEAD/tree/cleanliness in a
+        # non-repository. With no override reachable, this must simply fail.
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = pathlib.Path(directory)
+            for name in ("POLICY_GIT_EXECUTABLE", "GIT_DIR", "GIT_WORK_TREE"):
+                os.environ.pop(name, None)
+            with self.assertRaises(PolicyError) as raised:
+                validator.verify_local_base(
+                    checkout, "crutkas/MSYS2-packages", "0" * 40
+                )
+            self.assertEqual(raised.exception.code, "BASE_CHECKOUT_GIT")
+
+    def test_hostile_git_environment_does_not_change_answers(self):
+        repository_root = POLICY_DIR.parents[1]
+        try:
+            baseline = validator._run_git(repository_root, "head")
+        except PolicyError:
+            self.skipTest("no trusted git image on this host")
+        hostile = {
+            "GIT_DIR": r"C:\attacker\.git",
+            "GIT_WORK_TREE": r"C:\attacker",
+            "GIT_INDEX_FILE": r"C:\attacker\index",
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_KEY_0": "core.pager",
+            "GIT_CONFIG_VALUE_0": "cmd.exe",
+            "GIT_SSH_COMMAND": "cmd.exe",
+            "GIT_EXTERNAL_DIFF": "cmd.exe",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES": r"C:\attacker\objects",
+        }
+        saved = {name: os.environ.get(name) for name in hostile}
+        try:
+            os.environ.update(hostile)
+            self.assertEqual(validator._run_git(repository_root, "head"), baseline)
+        finally:
+            for name, value in saved.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
 
     def test_validator_invocation_mode_cannot_write_bytecode_into_checkout(self):
         with tempfile.TemporaryDirectory() as directory:

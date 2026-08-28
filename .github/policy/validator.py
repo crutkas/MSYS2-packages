@@ -24,6 +24,7 @@ from policy_lib import (
     FORBIDDEN_PYTHON_BUILTINS,
     FORBIDDEN_PYTHON_CALLS,
     FORBIDDEN_PYTHON_MODULES,
+    FORBIDDEN_SUBPROCESS_KEYWORDS,
     MODELED_GIT_SUBCOMMANDS,
     NETWORK_COMMANDS,
     NETWORK_PYTHON_MODULES,
@@ -35,6 +36,7 @@ from policy_lib import (
     REPOSITORY_RE,
     SHA1_RE,
     SUBPROCESS_ENTRYPOINTS,
+    TRUSTED_IMAGE_RESOLVERS,
     TreeEntry,
     TreeManifest,
     assert_safe_diff,
@@ -59,11 +61,13 @@ from policy_lib import (
 MAX_RESPONSE_BYTES = 64 * 1024 * 1024
 MAX_BLOB_BYTES = 4 * 1024 * 1024
 ALLOWED_PR_ACTIONS = {"opened", "synchronize", "reopened", "ready_for_review"}
-TRUSTED_GIT_PATHS = (
+TRUSTED_GIT_IMAGES = (
     r"C:\Program Files\Git\cmd\git.exe",
     r"C:\Program Files\Git\bin\git.exe",
     r"C:\Program Files (x86)\Git\cmd\git.exe",
+    r"C:\Program Files (x86)\Git\bin\git.exe",
     "/usr/bin/git",
+    "/usr/local/bin/git",
 )
 
 
@@ -254,17 +258,34 @@ GIT_FORCED_CONFIG = (
 )
 
 
-def _git_executable() -> str:
-    """Resolve git to an absolute path under the trusted system root."""
-    override = os.environ.get("POLICY_GIT_EXECUTABLE")
-    candidates = [override] if override else list(TRUSTED_GIT_PATHS)
-    for candidate in candidates:
-        if candidate and os.path.isabs(candidate) and os.path.isfile(candidate):
-            return candidate
+def _git_image() -> str:
+    """Resolve the one trusted Git image, or fail closed.
+
+    There is deliberately NO environment or test override. An override that
+    accepts "any absolute file" is equivalent to arbitrary code execution here:
+    a native stub can forge origin, HEAD, tree, and cleanliness through this
+    same function and defeat verify_local_base entirely. The image is therefore
+    chosen only from a fixed allowlist and must be canonical -- a real file,
+    not a symlink or reparse point, whose resolved path is itself the
+    allowlisted path.
+    """
+    for candidate in TRUSTED_GIT_IMAGES:
+        if not os.path.isabs(candidate):
+            continue
+        try:
+            if os.path.islink(candidate) or not os.path.isfile(candidate):
+                continue
+            resolved = os.path.realpath(candidate)
+        except OSError:
+            continue
+        if os.path.normcase(resolved) != os.path.normcase(candidate):
+            # The allowlisted path is redirected somewhere else; refuse it.
+            continue
+        return candidate
     raise PolicyError(
         "BASE_CHECKOUT_GIT",
-        "no absolute trusted git executable is available; refusing to resolve "
-        "git through PATH",
+        "no canonical trusted git image is available; refusing to resolve git "
+        "through PATH or any override",
     )
 
 
@@ -303,8 +324,7 @@ def _run_git(checkout: pathlib.Path, command: str) -> str:
     first, second, third = GIT_COMMANDS[command]
     try:
         completed = subprocess.run(
-            ["git", "-C", str(checkout), first, second, third],
-            executable=_git_executable(),
+            [_git_image(), "-C", str(checkout), first, second, third],
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -586,7 +606,11 @@ def verify_repository_rules(
 ) -> None:
     model = repository["required_workflow_ruleset"]
     quoted_branch = urllib.parse.quote(branch, safe="")
-    rules = api.get(f"/repos/{repository['full_name']}/rules/branches/{quoted_branch}")
+    # Paginated: a second page of rules is still authoritative, and a duplicate
+    # or conflicting rule hiding on page 2+ must not escape the checks below.
+    rules = api.get_paginated(
+        f"/repos/{repository['full_name']}/rules/branches/{quoted_branch}"
+    )
     require(isinstance(rules, list), "BOOTSTRAP_RULES", "rules API shape changed")
     rulesets = api.get_paginated(f"/repos/{repository['full_name']}/rulesets")
     require(isinstance(rulesets, list), "BOOTSTRAP_RULES", "rulesets API shape changed")
@@ -907,13 +931,29 @@ def _assert_subprocess_command(path: str, node: ast.Call) -> None:
         "HELPER_PROCESS_COMMAND",
         f"{path} splats unmodelled arguments into a subprocess command",
     )
-    require(
-        command.elts
-        and isinstance(command.elts[0], ast.Constant)
-        and command.elts[0].value == "git",
-        "HELPER_PROCESS_COMMAND",
-        f"{path} invokes a non-Git or constructed subprocess",
-    )
+    require(command.elts, "HELPER_PROCESS_COMMAND", f"{path} runs an empty command")
+    # argv[0] decides which image actually runs, so it must be either the
+    # literal "git" or a call to a modelled trusted-image resolver. Anything
+    # computed -- an environment read, an attribute, a subscript -- would let a
+    # planted native stub forge every answer this helper depends on.
+    image = command.elts[0]
+    if isinstance(image, ast.Constant):
+        require(
+            image.value == "git",
+            "HELPER_PROCESS_COMMAND",
+            f"{path} invokes a non-Git subprocess",
+        )
+    else:
+        require(
+            isinstance(image, ast.Call)
+            and isinstance(image.func, ast.Name)
+            and image.func.id in TRUSTED_IMAGE_RESOLVERS
+            and not image.args
+            and not image.keywords,
+            "HELPER_PROCESS_COMMAND",
+            f"{path} computes the subprocess image instead of using a modelled "
+            "trusted resolver",
+        )
     literals = [
         element.value
         for element in command.elts
@@ -924,6 +964,20 @@ def _assert_subprocess_command(path: str, node: ast.Call) -> None:
         not dangerous,
         "HELPER_GIT_UNMODELED",
         f"{path} invokes git {dangerous!r}",
+    )
+    keywords = {keyword.arg for keyword in node.keywords}
+    # `executable=` silently replaces the image while argv[0] still reads
+    # "git", so it is refused outright for governed helpers.
+    forbidden = keywords & FORBIDDEN_SUBPROCESS_KEYWORDS
+    require(
+        not forbidden,
+        "HELPER_PROCESS_COMMAND",
+        f"{path} passes the forbidden subprocess argument(s) {sorted(forbidden)}",
+    )
+    require(
+        None not in keywords,
+        "HELPER_PROCESS_COMMAND",
+        f"{path} splats keyword arguments into a subprocess call",
     )
     for keyword in node.keywords:
         require(
@@ -944,20 +998,26 @@ def _assert_subprocess_command(path: str, node: ast.Call) -> None:
             f"{path} passes an unmodelled subprocess environment",
         )
         require(
-            keyword.arg != "env"
-            or not isinstance(keyword.value, ast.Attribute),
+            keyword.arg != "env" or not isinstance(keyword.value, ast.Attribute),
             "HELPER_PROCESS_COMMAND",
             f"{path} inherits the ambient environment into a subprocess",
         )
     require(
-        any(keyword.arg == "env" for keyword in node.keywords),
+        "env" in keywords,
         "HELPER_PROCESS_COMMAND",
         f"{path} runs a subprocess without an explicit scrubbed environment",
     )
 
 
 def _powershell_surfaces(path: str, source: str) -> set[str]:
-    """Derive the capability surfaces a PowerShell helper actually exercises."""
+    """Derive the capability surfaces a PowerShell helper actually exercises.
+
+    Comments are deliberately scanned too. Stripping them would need a real
+    PowerShell tokenizer -- a naive stripper would cut at a ``#`` inside a
+    string and could silently hide real code, which is a false negative and the
+    wrong direction. Scanning prose can only produce false positives, so helper
+    authors must simply avoid spelling the forbidden tokens in comments.
+    """
     text = source.casefold()
     words = set(re.findall(r"[a-z][a-z0-9_.-]*", text))
 

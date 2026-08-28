@@ -176,49 +176,46 @@ try {
 
     # The ACL is applied by the create call itself, so the directory is never
     # observable with inherited permissions.
+    # Exclusive publication: the ACL-at-create API is NOT exclusive by itself
+    # (it neither throws nor applies the descriptor over an existing path), so
+    # the module stages under an unguessable name and publishes with a rename
+    # that fails on preexistence.
     $atomicRoot = Join-Path $testRoot 'atomic-root'
     $wasAtomic = New-PolicyPrivateDirectory -Path $atomicRoot
-    Assert-True -Condition ([IO.Directory]::Exists($atomicRoot)) -Label 'atomic directory created'
-    Assert-True -Condition ([bool] $wasAtomic) -Label 'atomic ACL-at-create path was taken'
-    Assert-PolicyPrivateAcl -Path $atomicRoot | Out-Null
+    Assert-True -Condition ([IO.Directory]::Exists($atomicRoot)) -Label 'exclusive directory created'
+    Assert-True -Condition ([bool] $wasAtomic) -Label 'exclusive create path was taken'
+    Assert-PolicyPrivateDacl -Path $atomicRoot
     $atomicAcl = Get-Acl -LiteralPath $atomicRoot
-    Assert-True -Condition ($atomicAcl.AreAccessRulesProtected) -Label 'atomic ACL is protected'
+    Assert-True -Condition ($atomicAcl.AreAccessRulesProtected) -Label 'created ACL is protected'
+    Assert-True -Condition (@(Get-ChildItem -LiteralPath (Split-Path -Parent $atomicRoot) -Force -Filter '.policy-staging-*').Count -eq 0) -Label 'no staging directory is left behind'
 
-    # Exclusive absence: creating over an existing directory must fail, so an
-    # attacker who pre-plants the path loses rather than inheriting our trust.
-    Assert-Throws -Label 'preexisting directory loses the create race' -Action {
+    Assert-Throws -Label 'second publication is rejected' -Action {
         New-PolicyPrivateDirectory -Path $atomicRoot
     }
-    $plantedParent = Join-Path $testRoot 'planted'
-    [void] [IO.Directory]::CreateDirectory($plantedParent)
-    Assert-Throws -Label 'planted ancestor is rejected' -Action {
-        New-PolicyPrivateRoot `
-            -RunnerTemp $testRoot `
-            -RepositoryId '1333319488' `
-            -RunId '3003' `
-            -RunAttempt '1' `
-            -JobName 'verify' `
-            -MatrixDiscriminator 'none'
-        New-PolicyPrivateRoot `
-            -RunnerTemp $testRoot `
-            -RepositoryId '1333319488' `
-            -RunId '3003' `
-            -RunAttempt '1' `
-            -JobName 'verify' `
-            -MatrixDiscriminator 'none'
+
+    # An attacker-planted permissive directory must be REFUSED, and must not be
+    # silently adopted or "fixed up".
+    $planted = Join-Path $testRoot 'planted-root'
+    [void] [IO.Directory]::CreateDirectory($planted)
+    $loose = Get-Acl -LiteralPath $planted
+    $loose.SetAccessRuleProtection($false, $true)
+    Set-Acl -LiteralPath $planted -AclObject $loose
+    Assert-Throws -Label 'planted directory is refused' -Action {
+        New-PolicyPrivateDirectory -Path $planted
+    }
+    Assert-True -Condition (-not (Get-Acl -LiteralPath $planted).AreAccessRulesProtected) -Label 'planted directory was not adopted'
+
+    # Identity: volume serial plus a secret nonce detects replacement.
+    $identity = Get-PolicyDirectoryIdentity -Path $atomicRoot
+    Assert-True -Condition ($identity.VolumeSerial -cmatch '^[0-9A-Fa-f]{4,16}$') -Label 'identity captures a volume serial'
+    Assert-PolicyPrivateAcl -Path $atomicRoot -ExpectedVolumeSerial $identity.VolumeSerial | Out-Null
+    Assert-Throws -Label 'different volume serial is rejected' -Action {
+        Assert-PolicyPrivateAcl -Path $atomicRoot -ExpectedVolumeSerial 'DEADBEEF'
+    }
+    Assert-Throws -Label 'missing nonce is rejected' -Action {
+        Assert-PolicyPrivateAcl -Path $atomicRoot -ExpectedNonce ('a' * 64)
     }
 
-    # Owner binding and identity binding.
-    $identity = Get-PolicyDirectoryIdentity -Path $atomicRoot
-    Assert-True -Condition ($identity.VolumeId -cne '') -Label 'identity captures a volume'
-    Assert-True -Condition ($identity.FileId -cne '') -Label 'identity captures a file id'
-    Assert-PolicyPrivateAcl -Path $atomicRoot -ExpectedVolumeId $identity.VolumeId -ExpectedFileId $identity.FileId | Out-Null
-    Assert-Throws -Label 'replaced object is rejected' -Action {
-        Assert-PolicyPrivateAcl -Path $atomicRoot -ExpectedFileId 'not-the-same-object'
-    }
-    Assert-Throws -Label 'different volume is rejected' -Action {
-        Assert-PolicyPrivateAcl -Path $atomicRoot -ExpectedVolumeId 'Z:\'
-    }
     $ownerAcl = Get-Acl -LiteralPath $atomicRoot
     $expectedOwner = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     $actualOwner = $ownerAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value
@@ -237,10 +234,10 @@ try {
     Assert-True -Condition ($unexpectedChild.Count -eq 0) -Label 'child inherits only policy principals'
 
     # A permissive directory must be rejected by the reverification helper.
-    $loose = Join-Path $testRoot 'loose-root'
-    [void] [IO.Directory]::CreateDirectory($loose)
+    $loose2 = Join-Path $testRoot 'loose-root'
+    [void] [IO.Directory]::CreateDirectory($loose2)
     Assert-Throws -Label 'inherited ACL is rejected' -Action {
-        Assert-PolicyPrivateAcl -Path $loose
+        Assert-PolicyPrivateDacl -Path $loose2
     }
 
     # A reparse point must never be accepted as the private root.
@@ -250,16 +247,60 @@ try {
         Get-PolicyDirectoryIdentity -Path $reparse
     }
 
-    # Literal directory APIs only, and no racy create-then-protect fallback.
+    # --- Exploit-derived: the Git image must be trusted and PATH-independent ---
+    $image = Get-PolicyGitImage
+    Assert-True -Condition ([IO.Path]::IsPathFullyQualified($image)) -Label 'git image is absolute'
+    Assert-True -Condition ([IO.File]::Exists($image)) -Label 'git image exists'
+    Assert-True -Condition ($image.EndsWith('git.exe', [StringComparison]::Ordinal)) -Label 'git image is a git binary'
+
+    $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
+    $realHead = Invoke-PolicyGit -WorkingDirectory $repoRoot -Arguments @('rev-parse', '--verify', 'HEAD')
+    Assert-True -Condition ($realHead -cmatch '^[0-9a-f]{40}$') -Label 'trusted git returns a real HEAD'
+
+    # A hostile Git environment must not reach the child process.
+    $savedDir = $env:GIT_DIR
+    $savedWork = $env:GIT_WORK_TREE
+    $savedCount = $env:GIT_CONFIG_COUNT
+    try {
+        $env:GIT_DIR = 'C:\attacker\.git'
+        $env:GIT_WORK_TREE = 'C:\attacker'
+        $env:GIT_CONFIG_COUNT = '1'
+        $env:GIT_CONFIG_KEY_0 = 'core.pager'
+        $env:GIT_CONFIG_VALUE_0 = 'cmd.exe /c echo pwned'
+        $env:GIT_SSH_COMMAND = 'cmd.exe'
+        $hostileHead = Invoke-PolicyGit -WorkingDirectory $repoRoot -Arguments @('rev-parse', '--verify', 'HEAD')
+        Assert-True -Condition ($hostileHead -ceq $realHead) -Label 'hostile Git environment does not reach the child'
+    }
+    finally {
+        $env:GIT_DIR = $savedDir
+        $env:GIT_WORK_TREE = $savedWork
+        $env:GIT_CONFIG_COUNT = $savedCount
+        Remove-Item Env:GIT_CONFIG_KEY_0, Env:GIT_CONFIG_VALUE_0, Env:GIT_SSH_COMMAND -ErrorAction SilentlyContinue
+    }
+
+    # A non-repository must fail closed, not be forged into a clean checkout.
+    $notARepo = Join-Path $testRoot 'not-a-repo'
+    [void] [IO.Directory]::CreateDirectory($notARepo)
+    Assert-Throws -Label 'non-repository base checkout fails closed' -Action {
+        Assert-PolicyBaseCheckout `
+            -Workspace $notARepo `
+            -Repository 'crutkas/MSYS2-packages' `
+            -ExpectedCommit ('0' * 40)
+    }
+
+    # Source-level guarantees.
     $moduleText = [IO.File]::ReadAllText($modulePath)
     Assert-True -Condition (-not $moduleText.Contains('New-Item')) -Label 'no New-Item in module'
     Assert-True -Condition (-not $moduleText.Contains('Set-PolicyPrivateAcl')) -Label 'racy create-then-protect fallback removed'
+    Assert-True -Condition (-not ($moduleText -cmatch '&\s+git\b')) -Label 'no bare & git invocation'
     Assert-True -Condition (-not ($moduleText -cmatch 'Set-Acl\s+-Path')) -Label 'Set-Acl uses -LiteralPath'
     Assert-True -Condition (-not ($moduleText -cmatch 'Get-Acl\s+-Path')) -Label 'Get-Acl uses -LiteralPath'
     Assert-True -Condition (-not ($moduleText -cmatch 'Get-ChildItem\s+-Path')) -Label 'Get-ChildItem uses -LiteralPath'
-    Assert-True -Condition ($moduleText.Contains('FileSystemAclExtensions')) -Label 'atomic create API is used'
+    Assert-True -Condition ($moduleText.Contains('ProcessStartInfo')) -Label 'git runs via ProcessStartInfo'
+    Assert-True -Condition ($moduleText.Contains('EnvironmentVariables.Clear()')) -Label 'child git environment is cleared'
+    Assert-True -Condition ($moduleText.Contains('[IO.Directory]::Move')) -Label 'exclusive publication uses a rename'
     Assert-True -Condition ($moduleText.Contains('refusing to create the private root')) -Label 'reflection inability fails closed'
-    Assert-True -Condition ($moduleText.Contains('GIT_CONFIG_COUNT') -or $true) -Label 'module parsed'
+    Assert-True -Condition (-not $moduleText.Contains('POLICY_GIT_EXECUTABLE')) -Label 'no git executable override in module'
 }
 finally {
     if ([IO.Directory]::Exists($testRoot)) {

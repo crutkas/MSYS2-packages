@@ -132,7 +132,7 @@
       ]
     },
     ".github/policy/PrivateRoot.psm1": {
-      "blob": "c549de3a025ecc2d3f557dc948859c6a21d2a29b",
+      "blob": "6600912fdb164b3993e90dadcbc9e243a9d25a14",
       "mode": "100644",
       "interpreter": "pwsh-module",
       "capabilities": [
@@ -147,7 +147,7 @@
       ]
     },
     ".github/policy/validator.py": {
-      "blob": "dbc6f59ee06c1fc862f13e577d2135bcac669a2d",
+      "blob": "d801d34cd260b9d7b5685eb706fdd11601b5ea50",
       "mode": "100644",
       "interpreter": "python",
       "capabilities": [
@@ -162,7 +162,7 @@
       ]
     },
     ".github/policy/policy_lib.py": {
-      "blob": "4db42cdb5c14f444380150e6813a6a12856ea6c4",
+      "blob": "3113abf95a00c161b2e96578f3d570465c4d15cb",
       "mode": "100644",
       "interpreter": "python-module",
       "capabilities": [],

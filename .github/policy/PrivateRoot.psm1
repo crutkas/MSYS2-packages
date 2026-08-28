@@ -210,38 +210,22 @@ function Get-PolicyExpectedPrincipal {
     )
 }
 
-function Assert-PolicyPrivateAcl {
+function Assert-PolicyPrivateDacl {
     <#
-        Reverifies the private root after creation. This binds identity as well
-        as permissions: the path must still resolve to the same volume and file
-        object, so a directory swapped for a junction or a freshly recreated
-        directory between create and verify is rejected rather than trusted.
+        DACL-only checks, usable before the directory is published. Verifies the
+        descriptor really landed: protected (non-inherited), owned by the policy
+        identity, exactly the expected principals with FullControl, the required
+        inheritance so children are covered, no non-Allow ACE, and no inherited
+        ACE resolving from an ancestor.
     #>
     param(
         [Parameter(Mandatory)]
-        [string] $Path,
-
-        [string] $ExpectedVolumeId = '',
-
-        [string] $ExpectedFileId = ''
+        [string] $Path
     )
 
-    $full = Assert-PolicyExistingDirectory -Path $Path -Label 'private root'
-
-    $identity = Get-PolicyDirectoryIdentity -Path $full
-    if ($ExpectedVolumeId -ne '' -and $identity.VolumeId -cne $ExpectedVolumeId) {
-        throw 'private root moved to a different volume.'
-    }
-    if ($ExpectedFileId -ne '' -and $identity.FileId -cne $ExpectedFileId) {
-        throw 'private root was replaced by a different directory object.'
-    }
-
-    $acl = Get-Acl -LiteralPath $full -ErrorAction Stop
+    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
     if (-not $acl.AreAccessRulesProtected) {
         throw 'private root inherits access rules.'
-    }
-    if (-not $acl.AreAuditRulesProtected -and $acl.AreAuditRulesProtected -is [bool]) {
-        # Audit inheritance is informational only; DACL protection is the control.
     }
 
     $expected = Get-PolicyExpectedPrincipal
@@ -285,31 +269,30 @@ function Assert-PolicyPrivateAcl {
     if (@($acl.GetAccessRules($false, $true, [Security.Principal.SecurityIdentifier])).Count -ne 0) {
         throw 'private root still resolves inherited access rules.'
     }
-    return $identity
 }
 
 function Get-PolicyDirectoryIdentity {
     <#
-        Captures a stable identity for the private root so a later check can
-        prove it is still the same object.
+        Stable identity for the private root.
 
-        Windows exposes a true 128-bit file id only through a directory handle
-        opened with FILE_FLAG_BACKUP_SEMANTICS, which .NET does not surface
-        without P/Invoke; adding an unsafe interop dependency to this policy
-        helper would cost more than it buys. The identity therefore binds the
-        volume root, the creation timestamp, and the canonical full path.
+        Volume identity is the NTFS volume serial number read from the storage
+        layer, not a path string. Object identity is a 256-bit secret nonce
+        written inside the root at creation time under an owner-only DACL.
 
-        Residual, stated plainly: an attacker who can delete our directory and
-        recreate one with an identical creation timestamp on the same volume
-        could defeat this specific check. That is already out of reach here --
-        the root is created by an exclusive ACL-at-create under RUNNER_TEMP, is
-        owned by the policy identity, denies all other principals, and is
-        reverified for reparse points and ownership. The runner is
-        single-tenant, so this is defence in depth, not the primary control.
+        A 128-bit NTFS file id would require CreateFile with
+        FILE_FLAG_BACKUP_SEMANTICS plus GetFileInformationByHandle, which .NET
+        does not surface without P/Invoke; the only way to reach it from
+        PowerShell is runtime type compilation, which is precisely the dynamic
+        surface this policy forbids elsewhere. The nonce is used instead and is
+        strictly stronger against the replacement threat: NTFS file ids can be
+        reused after deletion, whereas a 256-bit secret cannot be reproduced by
+        an attacker who did not read it. The residual is stated in README.
     #>
     param(
         [Parameter(Mandatory)]
-        [string] $Path
+        [string] $Path,
+
+        [string] $Nonce = ''
     )
 
     $info = [IO.DirectoryInfo]::new($Path)
@@ -320,71 +303,147 @@ function Get-PolicyDirectoryIdentity {
     if (($info.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw 'private root is a reparse point.'
     }
-    return [pscustomobject]@{
-        VolumeId = [IO.Path]::GetPathRoot($info.FullName)
-        FileId = '{0}|{1}' -f $info.CreationTimeUtc.Ticks, $info.FullName
+    if ($null -ne [IO.Directory]::ResolveLinkTarget($Path, $true)) {
+        throw 'private root resolves through a link.'
     }
+
+    $drive = ([IO.Path]::GetPathRoot($info.FullName)).TrimEnd('\')
+    $volume = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='$drive'" -ErrorAction Stop
+    $serial = $volume.VolumeSerialNumber
+    if ([string]::IsNullOrWhiteSpace($serial)) {
+        throw 'private root volume serial is unavailable.'
+    }
+
+    return [pscustomobject]@{
+        VolumeSerial = $serial
+        Nonce = $Nonce
+        FullName = $info.FullName
+    }
+}
+
+function Assert-PolicyPrivateAcl {
+    <#
+        Full reverification: canonical existing directory, no reparse point or
+        link, matching volume serial, matching secret nonce, and the protected
+        DACL. Existence is never treated as success.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string] $Path,
+
+        [string] $ExpectedVolumeSerial = '',
+
+        [string] $ExpectedNonce = ''
+    )
+
+    $full = Assert-PolicyExistingDirectory -Path $Path -Label 'private root'
+    $identity = Get-PolicyDirectoryIdentity -Path $full
+
+    if ($ExpectedVolumeSerial -ne '' -and $identity.VolumeSerial -cne $ExpectedVolumeSerial) {
+        throw 'private root moved to a different volume.'
+    }
+    if ($ExpectedNonce -ne '') {
+        $claim = [IO.Path]::Combine($full, '.policy-root')
+        if (-not [IO.File]::Exists($claim)) {
+            throw 'private root claim is absent.'
+        }
+        $record = [IO.File]::ReadAllText($claim) | ConvertFrom-Json
+        if ($null -eq $record.nonce -or ($record.nonce -cne $ExpectedNonce)) {
+            throw 'private root was replaced by a different directory object.'
+        }
+        $identity.Nonce = $record.nonce
+    }
+
+    Assert-PolicyPrivateDacl -Path $full
+    return $identity
 }
 
 function New-PolicyPrivateDirectory {
     <#
-        Creates the private root with its protected, non-inherited ACL applied
-        by the create call itself. FileSystemAclExtensions::Create passes the
-        security descriptor to the underlying CreateDirectory, so the directory
-        never exists with inherited permissions and there is no window in which
-        a less privileged principal could open or populate it.
+        Creates a directory that is genuinely exclusive AND protected from the
+        instant it becomes reachable at its final name.
 
-        The create must also establish exclusive absence: CreateDirectory with a
-        security descriptor fails if the path already exists, so an attacker who
-        pre-plants the directory (or a reparse point pointing elsewhere) loses
-        the race rather than inheriting our trust. Existence alone is never
-        treated as success -- the caller reverifies identity and ACL.
+        FileSystemAclExtensions::Create is NOT exclusive: when the target
+        already exists it neither throws nor applies the security descriptor, so
+        an attacker-planted directory with a permissive ACL would survive
+        untouched. A check-then-create guard around it is also racy.
 
-        If the platform cannot supply that overload we FAIL CLOSED. There is no
-        create-then-protect fallback, because that fallback is exactly the race
-        this function exists to remove.
+        So the directory is created under an unguessable staging name -- where
+        the descriptor genuinely is applied because the path is fresh -- the
+        descriptor is proven to have landed, and only then is it published with
+        Directory.Move, which fails if the destination already exists. The
+        rename is the exclusivity primitive.
+
+        If the ACL-at-create API is unavailable this FAILS CLOSED. There is no
+        create-then-protect fallback.
     #>
     param(
         [Parameter(Mandatory)]
         [string] $Path
     )
 
+    $parent = [IO.Path]::GetDirectoryName($Path)
+    if ([string]::IsNullOrEmpty($parent) -or -not [IO.Directory]::Exists($parent)) {
+        throw 'private root parent does not exist.'
+    }
+
     $extensions = [Type]::GetType(
         'System.IO.FileSystemAclExtensions, System.IO.FileSystem.AccessControl'
     )
     if ($null -eq $extensions) {
-        throw 'atomic ACL-at-create API is unavailable; refusing to create the private root.'
+        throw 'ACL-at-create API is unavailable; refusing to create the private root.'
     }
     $create = $extensions.GetMethod(
         'Create',
         [Type[]]@([IO.DirectoryInfo], [Security.AccessControl.DirectorySecurity])
     )
     if ($null -eq $create) {
-        throw 'atomic ACL-at-create overload is unavailable; refusing to create the private root.'
+        throw 'ACL-at-create overload is unavailable; refusing to create the private root.'
     }
 
-    if ([IO.Directory]::Exists($Path) -or [IO.File]::Exists($Path)) {
-        throw 'private root already exists.'
+    $staging = [IO.Path]::Combine(
+        $parent,
+        ('.policy-staging-' + [Guid]::NewGuid().ToString('N'))
+    )
+    if ([IO.Directory]::Exists($staging) -or [IO.File]::Exists($staging)) {
+        throw 'private root staging path already exists.'
     }
 
-    $acl = New-PolicyPrivateAcl
-    $directory = [IO.DirectoryInfo]::new($Path)
+    [void] $create.Invoke($null, @([IO.DirectoryInfo]::new($staging), (New-PolicyPrivateAcl)))
     try {
-        [void] $create.Invoke($null, @($directory, $acl))
+        $staged = [IO.DirectoryInfo]::new($staging)
+        $staged.Refresh()
+        if (-not $staged.Exists) {
+            throw 'private root staging directory was not created.'
+        }
+        if (($staged.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'private root staging directory is a reparse point.'
+        }
+        # Prove the descriptor landed before the name becomes reachable.
+        Assert-PolicyPrivateDacl -Path $staging
+
+        # Fails if $Path already exists: this is the exclusive publication.
+        [IO.Directory]::Move($staging, $Path)
     }
     catch {
-        throw "private root could not be created atomically: $($_.Exception.Message)"
+        if ([IO.Directory]::Exists($staging)) {
+            [IO.Directory]::Delete($staging, $true)
+        }
+        throw
     }
 
-    $directory.Refresh()
-    if (-not $directory.Exists) {
-        throw 'private root was not created atomically.'
+    $published = [IO.DirectoryInfo]::new($Path)
+    $published.Refresh()
+    if (-not $published.Exists) {
+        throw 'private root was not published.'
     }
-    if (($directory.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    if (($published.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw 'private root resolved to a reparse point.'
     }
+    Assert-PolicyPrivateDacl -Path $Path
     return $true
 }
+
 
 function New-PolicyPrivateRoot {
     param(
@@ -440,6 +499,9 @@ function New-PolicyPrivateRoot {
     [void] (New-PolicyPrivateDirectory -Path $root)
     $canonicalRoot = Assert-PolicyExistingDirectory -Path $root -Label 'private root'
     $identity = Assert-PolicyPrivateAcl -Path $canonicalRoot
+    $nonceBytes = [byte[]]::new(32)
+    [Security.Cryptography.RandomNumberGenerator]::Fill($nonceBytes)
+    $nonce = [Convert]::ToHexString($nonceBytes).ToLowerInvariant()
 
     $claim = [IO.Path]::Combine($canonicalRoot, '.policy-root')
     $stream = [IO.File]::Open($claim, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
@@ -450,6 +512,7 @@ function New-PolicyPrivateRoot {
             run_attempt = $RunAttempt
             job = $JobName
             matrix_sha256 = Get-PolicyMatrixDigest -MatrixDiscriminator $MatrixDiscriminator
+            nonce = $nonce
         } | ConvertTo-Json -Compress
         $content = [Text.Encoding]::UTF8.GetBytes($record)
         $stream.Write($content, 0, $content.Length)
@@ -462,10 +525,141 @@ function New-PolicyPrivateRoot {
     [void] (
         Assert-PolicyPrivateAcl `
             -Path $canonicalRoot `
-            -ExpectedVolumeId $identity.VolumeId `
-            -ExpectedFileId $identity.FileId
+            -ExpectedVolumeSerial $identity.VolumeSerial `
+            -ExpectedNonce $nonce
     )
     return $canonicalRoot
+}
+
+$script:PolicyTrustedGitImages = @(
+    'C:\Program Files\Git\cmd\git.exe',
+    'C:\Program Files\Git\bin\git.exe',
+    'C:\Program Files (x86)\Git\cmd\git.exe',
+    'C:\Program Files (x86)\Git\bin\git.exe'
+)
+
+function Get-PolicyGitImage {
+    <#
+        Resolves the one trusted Git image from a fixed allowlist. There is no
+        environment or parameter override: an unqualified git invocation would
+        resolve through
+        PATH, PATHEXT, a PowerShell alias or function, or an ambient shim, and a
+        planted stub can forge origin, HEAD, tree, and cleanliness -- the exact
+        answers this module exists to verify.
+    #>
+    foreach ($candidate in $script:PolicyTrustedGitImages) {
+        if (-not [IO.Path]::IsPathFullyQualified($candidate)) { continue }
+        if (-not [IO.File]::Exists($candidate)) { continue }
+        $info = [IO.FileInfo]::new($candidate)
+        if (($info.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+        if ($null -ne [IO.File]::ResolveLinkTarget($candidate, $true)) { continue }
+        if (-not [String]::Equals(
+                [IO.Path]::GetFullPath($candidate),
+                $candidate,
+                [StringComparison]::Ordinal)) {
+            continue
+        }
+        return $candidate
+    }
+    throw 'no canonical trusted git image is available.'
+}
+
+function Invoke-PolicyGit {
+    <#
+        Runs the trusted Git image through ProcessStartInfo/ArgumentList with a
+        rebuilt environment. UseShellExecute is false and the environment
+        dictionary is cleared, so GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE,
+        GIT_CONFIG*, GIT_SSH*, GIT_PROXY_COMMAND, GIT_EXTERNAL_DIFF, PATH, and
+        PATHEXT from the caller cannot reach the child. Forced configuration is
+        supplied through that rebuilt environment, which is authoritative here
+        precisely because nothing was inherited.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string] $WorkingDirectory,
+
+        [Parameter(Mandatory)]
+        [string[]] $Arguments
+    )
+
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = Get-PolicyGitImage
+    $startInfo.WorkingDirectory = $WorkingDirectory
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.CreateNoWindow = $true
+    foreach ($argument in $Arguments) {
+        [void] $startInfo.ArgumentList.Add($argument)
+    }
+
+    $startInfo.EnvironmentVariables.Clear()
+    foreach ($name in @('SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP')) {
+        $value = [Environment]::GetEnvironmentVariable($name)
+        if (-not [string]::IsNullOrEmpty($value)) {
+            $startInfo.EnvironmentVariables[$name] = $value
+        }
+    }
+    $systemRoot = $startInfo.EnvironmentVariables['SYSTEMROOT']
+    if ([string]::IsNullOrEmpty($systemRoot)) {
+        $systemRoot = $startInfo.EnvironmentVariables['WINDIR']
+    }
+    $startInfo.EnvironmentVariables['PATH'] =
+        if ([string]::IsNullOrEmpty($systemRoot)) { '' }
+        else { [IO.Path]::Combine($systemRoot, 'System32') }
+    foreach ($pair in @(
+            @('GIT_CONFIG_NOSYSTEM', '1'),
+            @('GIT_ATTR_NOSYSTEM', '1'),
+            @('GIT_TERMINAL_PROMPT', '0'),
+            @('GIT_OPTIONAL_LOCKS', '0'),
+            @('GIT_NO_REPLACE_OBJECTS', '1'),
+            @('GIT_ALLOW_PROTOCOL', 'none'),
+            @('HOME', ''),
+            @('USERPROFILE', ''),
+            @('HOMEDRIVE', ''),
+            @('HOMEPATH', ''),
+            @('XDG_CONFIG_HOME', ''),
+            @('LC_ALL', 'C'))) {
+        $startInfo.EnvironmentVariables[$pair[0]] = $pair[1]
+    }
+    $forced = @(
+        'core.fsmonitor=',
+        'core.hooksPath=',
+        'core.askPass=',
+        'core.editor=false',
+        'core.pager=cat',
+        'core.sshCommand=',
+        'core.alternateRefsCommand=',
+        'core.symlinks=false',
+        'diff.external=',
+        'protocol.allow=never',
+        'uploadpack.packObjectsHook=',
+        'credential.helper=',
+        'safe.directory=*',
+        'gc.auto=0'
+    )
+    for ($index = 0; $index -lt $forced.Count; $index++) {
+        $parts = $forced[$index].Split('=', 2)
+        $startInfo.EnvironmentVariables["GIT_CONFIG_KEY_$index"] = $parts[0]
+        $startInfo.EnvironmentVariables["GIT_CONFIG_VALUE_$index"] = $parts[1]
+    }
+    $startInfo.EnvironmentVariables['GIT_CONFIG_COUNT'] = [string] $forced.Count
+
+    $process = [Diagnostics.Process]::Start($startInfo)
+    try {
+        $stdout = $process.StandardOutput.ReadToEnd()
+        [void] $process.StandardError.ReadToEnd()
+        if (-not $process.WaitForExit(30000)) {
+            throw 'git did not exit within the timeout.'
+        }
+        if ($process.ExitCode -ne 0) {
+            throw "git exited with code $($process.ExitCode)."
+        }
+    }
+    finally {
+        $process.Dispose()
+    }
+    return $stdout.Trim()
 }
 
 function Assert-PolicyBaseCheckout {
@@ -488,18 +682,18 @@ function Assert-PolicyBaseCheckout {
     }
     $canonicalWorkspace = Assert-PolicyExistingDirectory -Path $Workspace -Label 'protected base checkout'
 
-    $actualCommit = (& git -C $canonicalWorkspace rev-parse --verify HEAD).Trim()
-    if ($LASTEXITCODE -ne 0 -or $actualCommit -cne $ExpectedCommit) {
+    $actualCommit = Invoke-PolicyGit -WorkingDirectory $canonicalWorkspace `
+        -Arguments @('-C', $canonicalWorkspace, 'rev-parse', '--verify', 'HEAD')
+    if ($actualCommit -cne $ExpectedCommit) {
         throw 'protected base checkout HEAD does not match the event base.'
     }
-    $actualTree = (& git -C $canonicalWorkspace rev-parse --verify 'HEAD^{tree}').Trim()
-    if ($LASTEXITCODE -ne 0 -or $actualTree -cnotmatch '^[0-9a-f]{40}$') {
+    $actualTree = Invoke-PolicyGit -WorkingDirectory $canonicalWorkspace `
+        -Arguments @('-C', $canonicalWorkspace, 'rev-parse', '--verify', 'HEAD^{tree}')
+    if ($actualTree -cnotmatch '^[0-9a-f]{40}$') {
         throw 'protected base checkout tree is invalid.'
     }
-    $origin = (& git -C $canonicalWorkspace remote get-url origin).Trim()
-    if ($LASTEXITCODE -ne 0) {
-        throw 'protected base checkout has no readable origin.'
-    }
+    $origin = Invoke-PolicyGit -WorkingDirectory $canonicalWorkspace `
+        -Arguments @('-C', $canonicalWorkspace, 'remote', 'get-url', 'origin')
     $allowedOrigins = @(
         "https://github.com/$Repository",
         "https://github.com/$Repository.git"
@@ -507,8 +701,9 @@ function Assert-PolicyBaseCheckout {
     if ($origin -cnotin $allowedOrigins) {
         throw 'protected base checkout origin is not the bound repository.'
     }
-    $porcelain = & git -C $canonicalWorkspace status --porcelain=v2 --untracked-files=all
-    if ($LASTEXITCODE -ne 0 -or $porcelain) {
+    $porcelain = Invoke-PolicyGit -WorkingDirectory $canonicalWorkspace `
+        -Arguments @('-C', $canonicalWorkspace, 'status', '--porcelain=v2', '--untracked-files=all')
+    if ($porcelain) {
         throw 'protected base checkout is not clean.'
     }
     return $actualTree
@@ -518,7 +713,10 @@ Export-ModuleMember -Function @(
     'Assert-PolicyLexicalPath',
     'Assert-PolicyExistingDirectory',
     'Assert-PolicyPrivateAcl',
+    'Assert-PolicyPrivateDacl',
     'Get-PolicyDirectoryIdentity',
+    'Get-PolicyGitImage',
+    'Invoke-PolicyGit',
     'Get-PolicyExpectedPrincipal',
     'Get-PolicyMatrixDigest',
     'Get-PolicyPrivateRootPath',

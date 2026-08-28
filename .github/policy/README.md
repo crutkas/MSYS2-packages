@@ -69,20 +69,42 @@ permitted, only the approved `$env:` anchors may be interpolated into a command
 target, and an unrecognized command is denied as `COMMAND_UNMODELED` rather than
 being success-shaped.
 
-The private root is created by a literal directory API with its restrictive,
-non-inherited ACL supplied to the create call itself, so it never exists with
-inherited permissions. The create also establishes exclusive absence: creating
-over an existing path fails, so an attacker who pre-plants the directory loses
-the race instead of inheriting our trust, and intermediates are created the same
-way. If the atomic API is unavailable the helper **fails closed** — there is no
-create-then-protect fallback, because that fallback is the race the design
-exists to remove. Afterwards the root is reverified for owner, protected DACL,
-exact principal set, full-control rights, inheritance and propagation flags,
-absence of inherited or non-allow ACEs, reparse points, and object identity.
-Existence alone is never treated as success. Every temp and root operation uses
-literal path APIs. The root stores only an ephemeral local decision report. It
-is never uploaded or accepted as a payload lock; the required check conclusion
-is the admission signal.
+The private root is created exclusively. The .NET ACL-at-create helper is **not**
+exclusive on its own: when the target already exists it neither throws nor
+applies the security descriptor, so an attacker-planted directory with a
+permissive ACL would survive untouched, and a check-then-create guard around it
+is racy. The module therefore creates the directory under an unguessable
+staging name — where the descriptor genuinely is applied because the path is
+fresh — proves the descriptor landed, and only then publishes it with a rename,
+which fails if the destination already exists. That rename is the exclusivity
+primitive. If the ACL-at-create API is unavailable the helper **fails closed**;
+there is no create-then-protect fallback, because that fallback is the race the
+design exists to remove.
+
+Afterwards the root is reverified for owner and group, protected DACL, exact
+principal set, full-control rights, inheritance and propagation flags, absence
+of inherited or non-allow ACEs, reparse points, resolved link targets, volume
+identity, and object identity. Existence alone is never treated as success.
+Every temp and root operation uses literal path APIs. The root stores only an
+ephemeral local decision report. It is never uploaded or accepted as a payload
+lock; the required check conclusion is the admission signal.
+
+Object identity binds the NTFS volume serial number read from the storage layer
+plus a 256-bit secret nonce written inside the root at creation under the
+owner-only DACL. **Residual, stated plainly:** a true 128-bit NTFS file id would
+need `CreateFile` with `FILE_FLAG_BACKUP_SEMANTICS` and
+`GetFileInformationByHandle`, which .NET does not surface without P/Invoke, and
+the only route to it from PowerShell is runtime type compilation — precisely the
+dynamic surface this policy forbids elsewhere. The nonce is used instead and is
+strictly stronger against the replacement threat, since NTFS file ids can be
+reused after deletion whereas a 256-bit secret cannot be reproduced by an
+attacker who never read it. What the nonce does not detect is a volume-level
+object substitution that preserves the nonce file, which already requires write
+access inside an owner-only DACL on a single-tenant runner.
+
+Branch rules are read paginated. A duplicate or conflicting rule hiding on the
+second page is still authoritative to GitHub, so it must be visible to the
+checks below rather than silently truncated away.
 
 The protected base checkout is the root of trust, so it is proven first: its
 origin, HEAD commit, tree, and cleanliness are verified before the approval
@@ -91,17 +113,30 @@ read. The live base tree and the event base SHA are then required to equal the
 already-verified local values, and every commit and tree SHA is matched against
 `SHA1_RE` before it is interpolated into an API URL.
 
-Git itself is invoked only through an absolute, trusted executable — never
-resolved through `PATH` — with a fixed literal argument vector drawn from a
-closed command table. The child environment is rebuilt from scratch rather than
-filtered, so `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_CONFIG*`,
-`GIT_SSH*`, `GIT_PROXY_COMMAND`, `GIT_EXTERNAL_DIFF`,
-`GIT_ALTERNATE_OBJECT_DIRECTORIES`, and the rest cannot survive from the
-caller. Forced configuration supplied through that scrubbed environment
-neutralises every remaining command-execution vector — `core.fsmonitor`,
-`core.hooksPath`, `core.sshCommand`, `core.askPass`, `core.pager`,
-`core.editor`, `diff.external`, `uploadpack.packObjectsHook`,
-`credential.helper` — and disables system and per-user config entirely.
+Git itself is invoked only through a canonical image chosen from a fixed
+allowlist — never resolved through `PATH`, and with **no environment or
+parameter override of any kind**. An override that accepts "any absolute file"
+is equivalent to arbitrary code execution here: a native stub can forge origin,
+HEAD, tree, and cleanliness through the same code path and defeat the base
+verification entirely. The allowlisted path must also be canonical — a real
+file, not a symlink or reparse point, whose resolved path is itself the
+allowlisted path — so a redirected entry is refused. The image is passed as
+`argv[0]`; `subprocess`'s `executable=` is never used, because it would let
+`argv[0]` keep saying `git` while another binary runs.
+
+The argument vector is a fixed literal drawn from a closed command table, and
+the child environment is rebuilt from scratch rather than filtered, so `GIT_DIR`,
+`GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_CONFIG*`, `GIT_SSH*`,
+`GIT_PROXY_COMMAND`, `GIT_EXTERNAL_DIFF`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`,
+and the rest cannot survive from the caller. Forced configuration supplied
+through that scrubbed environment neutralises every remaining
+command-execution vector — `core.fsmonitor`, `core.hooksPath`,
+`core.sshCommand`, `core.askPass`, `core.pager`, `core.editor`,
+`diff.external`, `uploadpack.packObjectsHook`, `credential.helper` — and
+disables system and per-user config entirely. The PowerShell guard uses the same
+allowlisted image through `ProcessStartInfo`/`ArgumentList` with a cleared
+environment dictionary, so no unqualified invocation, `PATH`, `PATHEXT`,
+PowerShell alias, or ambient config can reach it.
 
 Helper capabilities are a closed vocabulary (`github-api-read`,
 `git-read-local`, `dotnet-filesystem`, `dotnet-acl`, `dotnet-reflection`,
@@ -110,9 +145,15 @@ surface scan — and the surfaces it actually exercises must equal the surfaces
 it declares: an undeclared surface denies, and a declared-but-unused surface
 denies as dormant authority. Python helpers may not import or call the
 forbidden module and builtin sets, may not reach through dunder attributes, and
-may only spawn a literal, non-splatted `git` argument vector with an explicit
-scrubbed environment and `shell` disabled. PowerShell helpers may not reference
-network, package, dynamic-execution, or acquisition surfaces at all.
+may only spawn a subprocess whose `argv[0]` is either the literal `git` or a
+call to a modelled trusted-image resolver. Splatted arguments, splatted
+keywords, empty commands, computed images, `executable=`, `preexec_fn`,
+`start_new_session`, `creationflags`, `startupinfo`, `pass_fds`, and `user` are
+all refused, as is `shell=True`, an ambient environment, or no environment at
+all. Aliased and `from`-imported entry points resolve to the same rules.
+PowerShell helpers may not reference network, package, dynamic-execution, or
+acquisition surfaces at all; comments are scanned too, so helper authors must
+avoid spelling the forbidden tokens even in prose.
 
 Integer identities are exact: `is_exact_int` rejects `bool` everywhere, because
 Python treats `True` as `1`. Strict JSON parsing rejects duplicate keys and the
