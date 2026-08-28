@@ -10,11 +10,16 @@ _binutils_release_tag=cygwinarm64-binutils-pr21-3356eec-20260827
 _binutils_package_head=3356eec1411983cc252b04afac32bca5f3b8d824
 _binutils_package_sha256=3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b
 _binutils_linker_sha256=075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f
+_binutils_objdump_sha256=bb0d53db4128aff7f6b20c46be4e3625b1d82134476d7b03e58ed22015136e6e
+_binutils_nm_sha256=80b4716108b362ba05f48cd9228d20a4193897b4a5eeb8eb19e80f4c83e3e90a
 _binutils_source_commit=3f05fc4d3e0eeab265f2157e3257a7067b6e7223
 _binutils_source_tree=ecca625d45883e13128283a8c1750dac7997f729
 _binutils_source_archive_sha256=d11c2b4453318a6168287fe74655c54aa15bf12f415f9ffe3f0ea32e30a3411e
 _binutils_source_scanner_sha256=fb437d60202cd818642082fc2b86adf7ccc98cc5ce147c674efc1a46520621bd
 _binutils_package_scanner_sha256=888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9
+_private_base_sha256=a2d047e8ee213c3c6a49a8de427eb1069df12207c0422ff1b3cbb5c905c34221
+_host_isl_sha256=cdd0a4ce0bf0d9e3f3eff2b770b8143e09e126a614de8b55bb5d30fc596b92d1
+_host_mpc_sha256=0f5073ec2e8be265854ee3c7cb1079b5e8e02264d53e659d8414988c6c182f16
 _runtime_version=3.6.10.r0.ga527ace21
 _runtime_pkgrel=1
 _sysroot_version=3.6.10.r0.ga527ace21
@@ -33,7 +38,7 @@ pkgname=(
   mingw-w64-cross-msysarm64-sqlite
 )
 pkgver=3.53.4
-pkgrel=1
+pkgrel=2
 pkgdesc="Native ARM64 MSYS SQLite for aarch64-pc-msys"
 arch=('x86_64')
 url="https://www.sqlite.org/"
@@ -50,25 +55,26 @@ makedepends=(
   "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
   "mingw-w64-cross-msysarm64-sysroot=${_sysroot_version}-${_sysroot_pkgrel}"
   "mingw-w64-cross-msysarm64-w32api-runtime=${_w32api_version}-${_w32api_pkgrel}"
-  'python'
 )
 options=('!strip' 'staticlibs' '!buildflags' '!emptydirs')
 source=(
   "sqlite-amalgamation-${_srcver}.zip::https://www.sqlite.org/${_sqlite_year}/sqlite-amalgamation-${_srcver}.zip"
   LICENSE
   README.md
+  admission-shared-state.json
   sqlite-smoke.c
   validate-sqlite.sh
-  0001-shell-require-Win32-for-precise-file-time.patch
+  validate-pseudo-reloc-reports.ps1
   "check-aarch64-pseudo-relocs.ps1::https://raw.githubusercontent.com/crutkas/MSYS2-packages/${_binutils_package_head}/.ci/check-aarch64-pseudo-relocs.ps1"
 )
 sha256sums=(
   '1e71ddf93849c6a6ecf58b827c0692073d2dd7ee40196158068f7b29f422e87d'
   '0b76663a90e034f3d7f2af5bfada4cedec5ebc275361899eccc5c18e6f01ff1f'
-  '8ddf6ee335f7f4cabf40376db3e4fc5ddabc61b5c7fe24dba679a6d4078cf525'
+  '76dad633b8ccd0f1b69ef70b80c970c7cadd2f86034bda8777bc0a6d10c02f15'
+  '3e29bd64a6eb94c2a0048218916f7c3d6c29f0a392cfcae6804f2be103571c19'
   'a98a5030567f02f6ae1d63bbbf376a2300984ba07e9cbc8453859759db8ca4ce'
-  '8f280537cd0ae4af9d476ecc14b9d812a3932e75634346a64ec9460da5a1888c'
-  '3ad4b5b808158c3cef7499b6e8a4d5fce79af727a7f50529faf097702507902b'
+  'e4f83a6e97825c2036090d288c1fb3e227a652a6c63e42b865f8c2431aba7d8c'
+  '058a27b0fee510c22794dce98c598d7fee3a25e99944ffb51933fb612a74674a'
   '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9'
 )
 
@@ -101,8 +107,14 @@ _sqlite_features=(
 
 prepare() {
   cd "${srcdir}/sqlite-amalgamation-${_srcver}"
-  patch -Np1 -i \
-    "${srcdir}/0001-shell-require-Win32-for-precise-file-time.patch"
+  grep -Fx '#if defined(_WIN64) && _WIN32_WINNT >= _WIN32_WINNT_WIN8' \
+    shell.c
+  sed -i \
+    's/^#if defined(_WIN64) && _WIN32_WINNT >= _WIN32_WINNT_WIN8$/#if defined(_WIN32) \&\& defined(_WIN64) \&\& _WIN32_WINNT >= _WIN32_WINNT_WIN8/' \
+    shell.c
+  grep -Fx \
+    '#if defined(_WIN32) && defined(_WIN64) && _WIN32_WINNT >= _WIN32_WINNT_WIN8' \
+    shell.c
 }
 
 build() {
@@ -206,6 +218,7 @@ build() {
     "${build_dir}/sqlite3.def" \
     "${build_dir}/sqlite3.o" \
     -lm
+  "${_target}-ranlib" -D "${build_dir}/libsqlite3.dll.a"
 
   "${_target}-ar" crD \
     "${build_dir}/libsqlite3.a" \
@@ -283,6 +296,10 @@ EOF
       "${_sqlite_year}" "${_srcver}"
     printf 'source-sha256\t%s\n' \
       '1e71ddf93849c6a6ecf58b827c0692073d2dd7ee40196158068f7b29f422e87d'
+    printf 'private-base\tmsys2-base-x86_64-20260611.tar.xz\n'
+    printf 'private-base-sha256\t%s\n' "${_private_base_sha256}"
+    printf 'host-isl\t0.27-1\t%s\n' "${_host_isl_sha256}"
+    printf 'host-mpc\t1.4.1-1\t%s\n' "${_host_mpc_sha256}"
     printf 'target\t%s\n' "${_target}"
     printf 'compiler\t%s\n' "$("${_target}-gcc" -dumpfullversion)"
     printf 'binutils-version\t%s-%s\n' \
@@ -292,6 +309,8 @@ EOF
     printf 'binutils-package-sha256\t%s\n' "${_binutils_package_sha256}"
     printf 'binutils-linker\t%s\n' "${selected_linker}"
     printf 'binutils-linker-sha256\t%s\n' "${_binutils_linker_sha256}"
+    printf 'binutils-objdump-sha256\t%s\n' "${_binutils_objdump_sha256}"
+    printf 'binutils-nm-sha256\t%s\n' "${_binutils_nm_sha256}"
     printf 'binutils-source-commit\t%s\n' "${_binutils_source_commit}"
     printf 'binutils-source-tree\t%s\n' "${_binutils_source_tree}"
     printf 'binutils-source-archive-sha256\t%s\n' \
@@ -330,6 +349,7 @@ check() {
   local dynamic_smoke_object="${report_dir}/sqlite-api-dynamic-smoke.o"
   local static_smoke_object="${report_dir}/sqlite-api-static-smoke.o"
   local scanner="${srcdir}/check-aarch64-pseudo-relocs.ps1"
+  local report_binder="${srcdir}/validate-pseudo-reloc-reports.ps1"
   local scanner_dir="${report_dir}/pseudo-relocs"
   local binutils_bindir="${MSYSARM64_BINUTILS_BINDIR:-/opt/bin}"
   local -a target_flags=(
@@ -432,15 +452,15 @@ check() {
   fi
 
   local objdump_path nm_path pe pe_name output
+  local -a scanned_pes=(
+    "${target_root}/bin/msys-sqlite3-0.dll"
+    "${target_root}/bin/sqlite3.exe"
+    "${dynamic_smoke}"
+    "${static_smoke}"
+  )
   objdump_path="$(realpath "$(command -v "${_target}-objdump")")"
   nm_path="$(realpath "$(command -v "${_target}-nm")")"
-  : > "${scanner_dir}/summary.tsv"
-  for pe in \
-    "${target_root}/bin/msys-sqlite3-0.dll" \
-    "${target_root}/bin/sqlite3.exe" \
-    "${dynamic_smoke}" \
-    "${static_smoke}"
-  do
+  for pe in "${scanned_pes[@]}"; do
     pe_name=$(basename "${pe}")
     output="${scanner_dir}/${pe_name}.json"
     pwsh -NoLogo -NoProfile -File "$(cygpath -w "${scanner}")" \
@@ -448,26 +468,27 @@ check() {
       -OutputPath "$(cygpath -w "${output}")" \
       -Objdump "$(cygpath -w "${objdump_path}")" \
       -Nm "$(cygpath -w "${nm_path}")"
-    python -c '
-import json
-import pathlib
-import sys
-
-path = pathlib.Path(sys.argv[1])
-data = json.loads(path.read_text(encoding="utf-8-sig"))
-assert data["result"] == "pass"
-assert data["policy_violations"] == []
-assert all(flag in (8, 16, 32, 64) for flag in data["flags"])
-assert not ({12, 21} & set(data["flags"]))
-data["input_path"] = pathlib.PureWindowsPath(data["input_path"]).name
-path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-print("{}\t{}\t{}\t{}".format(
-    path.stem,
-    data["table_format"],
-    data["record_count"],
-    ",".join(str(flag) for flag in data["flags"]),
-))
-' "${output}" >> "${scanner_dir}/summary.tsv"
+  done
+  rm -f "${scanner_dir}/summary.tsv"
+  local first_report=1
+  for pe in "${scanned_pes[@]}"; do
+    local -a binder_args=(
+      -ReportDirectory "$(cygpath -w "${scanner_dir}")"
+      -PePath "$(cygpath -w "${pe}")"
+      -ScannerPath "$(cygpath -w "${scanner}")"
+      -ObjdumpPath "$(cygpath -w "${objdump_path}")"
+      -NmPath "$(cygpath -w "${nm_path}")"
+      -ExpectedScannerSha256 "${_binutils_package_scanner_sha256}"
+      -ExpectedObjdumpSha256 "${_binutils_objdump_sha256}"
+      -ExpectedNmSha256 "${_binutils_nm_sha256}"
+      -SummaryPath "$(cygpath -w "${scanner_dir}/summary.tsv")"
+    )
+    if [[ "${first_report}" -eq 0 ]]; then
+      binder_args+=(-AppendSummary)
+    fi
+    pwsh -NoLogo -NoProfile -File "$(cygpath -w "${report_binder}")" \
+      "${binder_args[@]}"
+    first_report=0
   done
   test "$(wc -l < "${scanner_dir}/summary.tsv")" -eq 4
 
@@ -548,11 +569,17 @@ package_mingw-w64-cross-msysarm64-libsqlite-devel() {
   cp -a "${target_root}/lib" "${pkgroot}/"
   install -Dm644 "${srcdir}/README.md" "${docroot}/README.md"
   install -Dm644 \
+    "${srcdir}/admission-shared-state.json" \
+    "${docroot}/admission-shared-state.json"
+  install -Dm644 \
     "${srcdir}/sqlite-smoke.c" \
     "${docroot}/sqlite-smoke.c"
   install -Dm755 \
     "${srcdir}/validate-sqlite.sh" \
     "${docroot}/validate-sqlite.sh"
+  install -Dm644 \
+    "${srcdir}/validate-pseudo-reloc-reports.ps1" \
+    "${docroot}/validate-pseudo-reloc-reports.ps1"
   install -Dm644 \
     "${srcdir}/check-aarch64-pseudo-relocs.ps1" \
     "${docroot}/check-aarch64-pseudo-relocs.ps1"

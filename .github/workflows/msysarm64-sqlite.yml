@@ -21,6 +21,7 @@ permissions:
 
 env:
   SOURCE_DATE_EPOCH: 1752710400
+  SOURCE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
 
 jobs:
   build:
@@ -35,157 +36,289 @@ jobs:
     runs-on: windows-2025
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Configure Git line endings
+      - name: Capture runner state and configure Git
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           git config --global core.autocrlf false
           git config --global core.eol lf
+          $expectedHead = $env:SOURCE_HEAD_SHA
+          $actualHead = git rev-parse HEAD
+          if ($actualHead -ne $expectedHead) {
+            throw "checkout head mismatch: $actualHead != $expectedHead"
+          }
+          $tree = git rev-parse 'HEAD^{tree}'
+          $state = Join-Path $env:RUNNER_TEMP 'runner-shared-state'
+          New-Item -ItemType Directory -Force -Path $state | Out-Null
+          [ordered]@{
+            expected_head = $expectedHead
+            actual_head = $actualHead
+            tree = $tree
+            result = 'pass'
+          } | ConvertTo-Json |
+            Set-Content -Encoding utf8NoBOM `
+              (Join-Path $state 'checkout-identity.json')
+          $log = 'C:\msys64\var\log\pacman.log'
+          $db = 'C:\msys64\var\lib\pacman\local'
+          if (Test-Path $log) {
+            Copy-Item -LiteralPath $log -Destination (Join-Path $state 'before.log')
+          }
+          $manifest = [System.Collections.Generic.List[string]]::new()
+          if (Test-Path $db) {
+            foreach ($file in Get-ChildItem -LiteralPath $db -Recurse -File |
+                Sort-Object FullName) {
+              $relative = $file.FullName.Substring($db.Length + 1).
+                Replace('\', '/')
+              $hash = (Get-FileHash -Algorithm SHA256 $file.FullName).
+                Hash.ToLowerInvariant()
+              $manifest.Add("$hash  $relative")
+            }
+          }
+          [IO.File]::WriteAllLines(
+            (Join-Path $state 'before-db.sha256'),
+            $manifest,
+            [Text.UTF8Encoding]::new($false))
 
-      - name: Prepare MSYS build host
+      - name: Materialize immutable private MSYS root
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $pacman = 'C:\msys64\usr\bin\pacman.exe'
-          & $pacman --noconfirm -Syuu
-          if ($LASTEXITCODE -ne 0) { throw 'first system update failed' }
-          & $pacman --noconfirm -Suu
-          if ($LASTEXITCODE -ne 0) { throw 'second system update failed' }
-          & $pacman --noconfirm --needed -S `
-            base-devel git python `
-            gmp isl libiconv libintl libzstd mpc mpfr zlib
-          if ($LASTEXITCODE -ne 0) { throw 'build-host dependency install failed' }
-
-      - name: Download and hash exact ARM64 toolchain inputs
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $inputDir = Join-Path $env:RUNNER_TEMP 'msysarm64-toolchain'
-          New-Item -ItemType Directory -Force -Path $inputDir | Out-Null
-
+          $inputRoot = Join-Path $env:RUNNER_TEMP 'immutable-inputs'
+          $baseDir = Join-Path $inputRoot 'base'
+          $hostDir = Join-Path $inputRoot 'host'
+          $toolchainDir = Join-Path $inputRoot 'toolchain'
+          $safetyDir = Join-Path $inputRoot 'archive-safety'
+          New-Item -ItemType Directory -Force `
+            -Path $baseDir, $hostDir, $toolchainDir, $safetyDir | Out-Null
           $assets = @(
             @(
+              'base',
+              'msys2-base-x86_64-20260611.tar.xz',
+              'https://github.com/msys2/msys2-installer/releases/download/2026-06-11/msys2-base-x86_64-20260611.tar.xz',
+              53555380,
+              'a2d047e8ee213c3c6a49a8de427eb1069df12207c0422ff1b3cbb5c905c34221'
+            ),
+            @(
+              'host',
+              'isl-0.27-1-x86_64.pkg.tar.zst',
+              'https://repo.msys2.org/msys/x86_64/isl-0.27-1-x86_64.pkg.tar.zst',
+              768472,
+              'cdd0a4ce0bf0d9e3f3eff2b770b8143e09e126a614de8b55bb5d30fc596b92d1'
+            ),
+            @(
+              'host',
+              'mpc-1.4.1-1-x86_64.pkg.tar.zst',
+              'https://repo.msys2.org/msys/x86_64/mpc-1.4.1-1-x86_64.pkg.tar.zst',
+              87944,
+              '0f5073ec2e8be265854ee3c7cb1079b5e8e02264d53e659d8414988c6c182f16'
+            ),
+            @(
+              'toolchain',
               'mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst',
               'https://github.com/crutkas/MSYS2-packages/releases/download/cygwinarm64-binutils-pr21-3356eec-20260827/mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst',
+              6545114,
               '3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b'
             ),
             @(
+              'toolchain',
               'mingw-w64-cross-cygwinarm64-gcc-libs-stage1-15.0.1dev-2-x86_64.pkg.tar.zst',
               'https://github.com/crutkas/MSYS2-packages/releases/download/cygwinarm64-gcc-static-runtime-20260815/mingw-w64-cross-cygwinarm64-gcc-libs-stage1-15.0.1dev-2-x86_64.pkg.tar.zst',
+              357954,
               '17a8fbc22227c541ff3179179d307045302f6b18fbc6207cf9d863a9e4dad98c'
             ),
             @(
+              'toolchain',
               'mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-2-x86_64.pkg.tar.zst',
               'https://github.com/crutkas/MSYS2-packages/releases/download/cygwinarm64-gcc-static-runtime-20260815/mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-2-x86_64.pkg.tar.zst',
+              43966034,
               '063579211851ed69370a6362f2795e39d9be0235a2bfe2f58da1bbd73a1d108e'
             ),
             @(
+              'toolchain',
               'mingw-w64-cross-cygwinarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst',
               'https://github.com/crutkas/MSYS2-packages/releases/download/cygwinarm64-libstdcxx-headers-pr7-20260815/mingw-w64-cross-cygwinarm64-libstdc%2B%2B-headers-15.0.1dev-1-x86_64.pkg.tar.zst',
+              2184212,
               '1e018d384e5e16b76524b69677819b660e6611480a85a7f7b8a412403bf15ea6'
             ),
             @(
+              'toolchain',
               'mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
               'https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-runtime-pr10-a527-20260824/mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+              9319013,
               '263f8f7e3614ac41337ce3a223f2bb26b6459aef6f34670525cdd4c03ec3ae21'
             ),
             @(
+              'toolchain',
               'mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
               'https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-runtime-pr10-a527-20260824/mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+              4743,
               '33861708e7f981b4eef5b93ef135ab3a43d2757533f64df6f61a146d823c355f'
             ),
             @(
+              'toolchain',
               'mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
               'https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-runtime-pr10-a527-20260824/mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+              86822,
               'e30609e09eab2fa07aba2e6196b05f34e5e9107abc4ab8832966684758c743ca'
             ),
             @(
+              'toolchain',
               'mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
               'https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-runtime-pr10-a527-20260824/mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+              9893043,
               '158c505f45025a466950faa7c85c9fd85e9d32384dd27b53586ffc75d71ca78e'
             ),
             @(
+              'toolchain',
               'mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
               'https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-runtime-pr10-a527-20260824/mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+              4426157,
               'c18b51e483991770b8e06cc2d8f7002d06784d3071ac213a8fee24bb831267d1'
             ),
             @(
+              'toolchain',
               'mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst',
               'https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-gcc-pr13-support-20260826/mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst',
+              2349635,
               '7727936f4212e5af04e9739eca60f157c0875796c1e82fcfb79fd4398b111e24'
             ),
             @(
+              'toolchain',
               'mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst',
               'https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-gcc-pr13-support-20260826/mingw-w64-cross-msysarm64-libstdc%2B%2B-headers-15.0.1dev-1-x86_64.pkg.tar.zst',
+              1520166,
               '9715aab6894379bf5ab936a3a559f286fb4aedbb64f0774d7457182e00648e08'
             ),
             @(
+              'toolchain',
               'mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst',
               'https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-gcc-pr13-20260826/mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst',
+              4963824,
               '990f163cacf9ffce1b58445be91fedc57f135cc26a88d7dba109806446b41438'
             ),
             @(
+              'toolchain',
               'mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst',
               'https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-gcc-pr13-20260826/mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst',
+              83876291,
               'a74887c76a933ec424933bf662729d94975b83138af783bd93f2e7acd95c3a22'
             )
           )
 
           foreach ($asset in $assets) {
-            $path = Join-Path $inputDir $asset[0]
-            & curl.exe --fail --location --retry 5 --output $path $asset[1]
-            if ($LASTEXITCODE -ne 0) { throw "download failed: $($asset[0])" }
+            $directory = switch ($asset[0]) {
+              'base' { $baseDir }
+              'host' { $hostDir }
+              'toolchain' { $toolchainDir }
+            }
+            $path = Join-Path $directory $asset[1]
+            & curl.exe --fail --location --retry 5 --output $path $asset[2]
+            if ($LASTEXITCODE -ne 0) { throw "download failed: $($asset[1])" }
+            if ((Get-Item $path).Length -ne $asset[3]) {
+              throw "size mismatch: $($asset[1])"
+            }
             $actual = (Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant()
-            if ($actual -ne $asset[2]) { throw "SHA-256 mismatch: $($asset[0])" }
+            if ($actual -ne $asset[4]) { throw "SHA-256 mismatch: $($asset[1])" }
+            & '.\.ci\Test-ArchiveSafety.ps1' `
+              -ArchivePath $path `
+              -OutputPath (Join-Path $safetyDir "$($asset[1]).json")
           }
 
-          Get-ChildItem -File $inputDir |
-            Sort-Object Name |
-            ForEach-Object {
-              '{0}  {1}' -f
-                (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant(),
-                $_.Name
-            } |
-            Set-Content -Encoding ascii (Join-Path $inputDir 'input-assets.sha256')
+          foreach ($directory in @($baseDir, $hostDir, $toolchainDir)) {
+            $inputLines = @(
+              Get-ChildItem -File $directory |
+              Sort-Object Name |
+              ForEach-Object {
+                '{0}  {1}' -f
+                  (Get-FileHash -Algorithm SHA256 $_.FullName).
+                    Hash.ToLowerInvariant(),
+                  $_.Name
+              } |
+              ForEach-Object { $_ }
+            )
+            [IO.File]::WriteAllText(
+              (Join-Path $directory 'input-assets.sha256'),
+              (($inputLines -join "`n") + "`n"),
+              [Text.UTF8Encoding]::new($false))
+          }
 
-      - name: Install exact toolchain in one transaction
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $env:MSYS = 'winsymlinks:sys'
-          $inputDir = Join-Path $env:RUNNER_TEMP 'msysarm64-toolchain'
+          $privateParent = Join-Path $env:RUNNER_TEMP 'sqlite-private-root'
+          New-Item -ItemType Directory -Force -Path $privateParent | Out-Null
+          tar.exe -xf (Join-Path $baseDir 'msys2-base-x86_64-20260611.tar.xz') `
+            -C $privateParent
+          if ($LASTEXITCODE -ne 0) { throw 'private base extraction failed' }
+          $privateRoot = Join-Path $privateParent 'msys64'
+          $config = Join-Path $privateRoot 'etc\pacman-private.conf'
+          @'
+          [options]
+          Architecture = x86_64
+          SigLevel = Required DatabaseOptional
+          LocalFileSigLevel = Never
+          '@ | Set-Content -Encoding ascii $config
+          $hooks = Join-Path $privateRoot 'etc\pacman.d\hooks-empty'
+          New-Item -ItemType Directory -Force -Path $hooks | Out-Null
+          $privateBash = Join-Path $privateRoot 'usr\bin\bash.exe'
+          $oldPath = $env:PATH
+          try {
+            $env:PATH = "$(Join-Path $privateRoot 'usr\bin');$oldPath"
+            $keyScript = @(
+              'set -euo pipefail',
+              'export PATH=/usr/bin',
+              'pacman-key --gpgdir /etc/pacman.d/gnupg --init',
+              'pacman-key --gpgdir /etc/pacman.d/gnupg --populate msys2'
+            ) -join '; '
+            & $privateBash --noprofile --norc -lc $keyScript
+            if ($LASTEXITCODE -ne 0) {
+              throw 'private keyring initialization failed'
+            }
+          }
+          finally {
+            $env:PATH = $oldPath
+          }
+
+          $pacman = Join-Path $privateRoot 'usr\bin\pacman.exe'
           $packages = @(
-            'mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst',
-            'mingw-w64-cross-cygwinarm64-gcc-libs-stage1-15.0.1dev-2-x86_64.pkg.tar.zst',
-            'mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-2-x86_64.pkg.tar.zst',
-            'mingw-w64-cross-cygwinarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst',
-            'mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
-            'mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
-            'mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
-            'mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
-            'mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
-            'mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst',
-            'mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst',
-            'mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst',
-            'mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst'
-          ) | ForEach-Object { Join-Path $inputDir $_ }
-          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -U $packages
-          if ($LASTEXITCODE -ne 0) { throw 'atomic toolchain install failed' }
+            Get-ChildItem -File $hostDir -Filter '*.pkg.tar.zst'
+            Get-ChildItem -File $toolchainDir -Filter '*.pkg.tar.zst'
+          ) | Sort-Object Name | ForEach-Object { $_.FullName }
+          $oldPath = $env:PATH
+          $env:MSYS = 'winsymlinks:sys'
+          try {
+            $env:PATH = "$(Join-Path $privateRoot 'usr\bin');$oldPath"
+            & $pacman `
+              --config /etc/pacman-private.conf `
+              --root / `
+              --dbpath /var/lib/pacman `
+              --cachedir /var/cache/pacman/pkg `
+              --logfile /var/log/pacman.log `
+              --gpgdir /etc/pacman.d/gnupg `
+              --hookdir /usr/share/libalpm/hooks `
+              --hookdir /etc/pacman.d/hooks-empty `
+              --noconfirm --upgrade -- $packages
+            if ($LASTEXITCODE -ne 0) {
+              throw 'immutable private toolchain transaction failed'
+            }
+          }
+          finally {
+            $env:PATH = $oldPath
+          }
+          "SQLITE_PRIVATE_ROOT=$privateRoot" >> $env:GITHUB_ENV
+          "SQLITE_INPUT_ROOT=$inputRoot" >> $env:GITHUB_ENV
 
       - name: Verify exact toolchain and system symlinks
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $bash = 'C:\msys64\usr\bin\bash.exe'
+          $bash = Join-Path $env:SQLITE_PRIVATE_ROOT 'usr\bin\bash.exe'
           $script = @'
           set -euo pipefail
-          export PATH=/opt/bin:/usr/bin:/mingw64/bin:$PATH
+          export PATH=/opt/bin:/usr/bin:$PATH
           test "$(aarch64-pc-msys-gcc -dumpmachine)" = aarch64-pc-msys
           test "$(aarch64-pc-msys-gcc -dumpfullversion)" = 15.0.1
           expected_tools=(
@@ -226,36 +359,47 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $env:MSYS2_PATH_TYPE = 'inherit'
-          $env:PATH = 'C:\msys64\usr\bin;C:\msys64\mingw64\bin;' + $env:PATH
-          $bash = 'C:\msys64\usr\bin\bash.exe'
-          $repo = & 'C:\msys64\usr\bin\cygpath.exe' -u $env:GITHUB_WORKSPACE
-          $inputManifest = & 'C:\msys64\usr\bin\cygpath.exe' -u `
-            (Join-Path $env:RUNNER_TEMP 'msysarm64-toolchain\input-assets.sha256')
-          $toolchainDir = & 'C:\msys64\usr\bin\cygpath.exe' -u `
-            (Join-Path $env:RUNNER_TEMP 'msysarm64-toolchain')
+          $bash = Join-Path $env:SQLITE_PRIVATE_ROOT 'usr\bin\bash.exe'
+          $cygpath = Join-Path $env:SQLITE_PRIVATE_ROOT 'usr\bin\cygpath.exe'
+          $repo = & $cygpath -u $env:GITHUB_WORKSPACE
+          $inputRoot = & $cygpath -u $env:SQLITE_INPUT_ROOT
+          $baseArchive = "$inputRoot/base/msys2-base-x86_64-20260611.tar.xz"
+          $hostDir = "$inputRoot/host"
+          $toolchainDir = "$inputRoot/toolchain"
+          $checkoutIdentity = & $cygpath -u (
+            Join-Path $env:RUNNER_TEMP `
+              'runner-shared-state\checkout-identity.json')
           $script = @"
           set -euo pipefail
-          export PATH=/opt/bin:/usr/bin:/mingw64/bin:`$PATH
+          export PATH="/opt/bin:/usr/bin:/c/Program Files/PowerShell/7:`$PATH"
           export SOURCE_DATE_EPOCH=$env:SOURCE_DATE_EPOCH
           cd '$repo/mingw-w64-cross-msysarm64-sqlite'
           makepkg --noconfirm --nodeps --cleanbuild
           mapfile -t packages < <(makepkg --packagelist)
           test "`${#packages[@]}" -eq 3
-          bash '$repo/.ci/canonicalize-packages.sh' "`${packages[@]}"
+          bash '$repo/.ci/canonicalize-msysarm64-sqlite-packages.sh' \
+            "`${packages[@]}"
           artifact_dir='$repo/artifacts/msysarm64-sqlite'
           rm -rf "`$artifact_dir"
           mkdir -p "`$artifact_dir/sqlite-report"
           cp "`${packages[@]}" "`$artifact_dir/"
           cp -a src/sqlite-report/. "`$artifact_dir/sqlite-report/"
           cp src/native-smoke/*.exe "`$artifact_dir/"
-          cp '$inputManifest' \
+          cp '$inputRoot/toolchain/input-assets.sha256' \
             "`$artifact_dir/input-assets.sha256"
+          cp -a '$inputRoot/archive-safety' "`$artifact_dir/input-archive-safety"
+          cp '$inputRoot/base/input-assets.sha256' "`$artifact_dir/base-input.sha256"
+          cp '$inputRoot/host/input-assets.sha256' "`$artifact_dir/host-inputs.sha256"
+          cp admission-shared-state.json "`$artifact_dir/admission-shared-state.json"
+          cp '$checkoutIdentity' \
+            "`$artifact_dir/checkout-identity.json"
           bash '$repo/.ci/validate-msysarm64-sqlite-ci.sh' \
             "`$artifact_dir" \
             "`$artifact_dir/transaction-report" \
             '$repo' \
-            '$toolchainDir'
+            '$toolchainDir' \
+            '$baseArchive' \
+            '$hostDir'
           (cd "`$artifact_dir" && sha256sum *.pkg.tar.zst > SHA256SUMS)
           "@
           & $bash --noprofile --norc -lc $script
@@ -352,7 +496,185 @@ jobs:
             throw 'static API smoke imports the SQLite DLL'
           }
 
-      - uses: actions/upload-artifact@v4
+      - name: Seal per-run package and isolation evidence
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $artifact = Join-Path $env:GITHUB_WORKSPACE `
+            'artifacts\msysarm64-sqlite'
+          $state = Join-Path $env:RUNNER_TEMP 'runner-shared-state'
+          $log = 'C:\msys64\var\log\pacman.log'
+          $db = 'C:\msys64\var\lib\pacman\local'
+          $afterLog = Join-Path $state 'after.log'
+          if (Test-Path $log) {
+            Copy-Item -LiteralPath $log -Destination $afterLog
+          }
+          $afterManifest = [System.Collections.Generic.List[string]]::new()
+          if (Test-Path $db) {
+            foreach ($file in Get-ChildItem -LiteralPath $db -Recurse -File |
+                Sort-Object FullName) {
+              $relative = $file.FullName.Substring($db.Length + 1).
+                Replace('\', '/')
+              $hash = (Get-FileHash -Algorithm SHA256 $file.FullName).
+                Hash.ToLowerInvariant()
+              $afterManifest.Add("$hash  $relative")
+            }
+          }
+          $afterDb = Join-Path $state 'after-db.sha256'
+          [IO.File]::WriteAllLines(
+            $afterDb,
+            $afterManifest,
+            [Text.UTF8Encoding]::new($false))
+          $beforeLog = Join-Path $state 'before.log'
+          $beforeDb = Join-Path $state 'before-db.sha256'
+          $beforeLogSha = if (Test-Path $beforeLog) {
+            (Get-FileHash -Algorithm SHA256 $beforeLog).Hash.ToLowerInvariant()
+          } else { $null }
+          $afterLogSha = if (Test-Path $afterLog) {
+            (Get-FileHash -Algorithm SHA256 $afterLog).Hash.ToLowerInvariant()
+          } else { $null }
+          $beforeDbSha = (Get-FileHash -Algorithm SHA256 $beforeDb).
+            Hash.ToLowerInvariant()
+          $afterDbSha = (Get-FileHash -Algorithm SHA256 $afterDb).
+            Hash.ToLowerInvariant()
+          if ($beforeLogSha -ne $afterLogSha -or $beforeDbSha -ne $afterDbSha) {
+            throw 'runner shared state changed during private build'
+          }
+          Copy-Item -LiteralPath $beforeDb `
+            -Destination (Join-Path $artifact 'runner-shared-db.sha256')
+
+          $packages = @(
+            Get-ChildItem -LiteralPath $artifact -File `
+              -Filter '*.pkg.tar.zst' |
+              Sort-Object Name |
+              ForEach-Object {
+                [ordered]@{
+                  name = $_.Name
+                  bytes = $_.Length
+                  sha256 = (Get-FileHash -Algorithm SHA256 $_.FullName).
+                    Hash.ToLowerInvariant()
+                }
+              }
+          )
+          $smokes = @(
+            Get-ChildItem -LiteralPath $artifact -File `
+              -Filter 'sqlite-api-*-smoke.exe' |
+              Sort-Object Name |
+              ForEach-Object {
+                [ordered]@{
+                  name = $_.Name
+                  bytes = $_.Length
+                  sha256 = (Get-FileHash -Algorithm SHA256 $_.FullName).
+                    Hash.ToLowerInvariant()
+                }
+              }
+          )
+          $checkoutIdentity = Get-Content -LiteralPath (
+            Join-Path $artifact 'checkout-identity.json'
+          ) -Raw | ConvertFrom-Json
+          $packageLines = @($packages | ForEach-Object {
+            "$($_.sha256)`t$($_.bytes)`t$($_.name)"
+          })
+          [IO.File]::WriteAllText(
+            (Join-Path $artifact 'inner-package-sha256.tsv'),
+            (($packageLines -join "`n") + "`n"),
+            [Text.UTF8Encoding]::new($false))
+          $smokeManifestLines = @($smokes | ForEach-Object {
+            "$($_.sha256)`t$($_.bytes)`t$($_.name)"
+          })
+          [IO.File]::WriteAllText(
+            (Join-Path $artifact 'smoke-sha256.tsv'),
+            (($smokeManifestLines -join "`n") + "`n"),
+            [Text.UTF8Encoding]::new($false))
+          $attestation = [ordered]@{
+            schema = 2
+            run_id = $env:GITHUB_RUN_ID
+            run_attempt = $env:GITHUB_RUN_ATTEMPT
+            event = $env:GITHUB_EVENT_NAME
+            head_sha = $env:SOURCE_HEAD_SHA
+            ref = $env:GITHUB_REF
+            checkout = $checkoutIdentity
+            private_base = [ordered]@{
+              name = 'msys2-base-x86_64-20260611.tar.xz'
+              bytes = 53555380
+              sha256 =
+                'a2d047e8ee213c3c6a49a8de427eb1069df12207c0422ff1b3cbb5c905c34221'
+            }
+            input_manifests = [ordered]@{
+              base = (Get-FileHash -Algorithm SHA256 `
+                (Join-Path $artifact 'base-input.sha256')).
+                  Hash.ToLowerInvariant()
+              host = (Get-FileHash -Algorithm SHA256 `
+                (Join-Path $artifact 'host-inputs.sha256')).
+                  Hash.ToLowerInvariant()
+              toolchain = (Get-FileHash -Algorithm SHA256 `
+                (Join-Path $artifact 'input-assets.sha256')).
+                  Hash.ToLowerInvariant()
+            }
+            actions = [ordered]@{
+              checkout = '11d5960a326750d5838078e36cf38b85af677262'
+              upload_artifact = 'ea165f8d65b6e75b540449e92b4886f43607fa02'
+              download_artifact = 'd3f86a106a0bac45b974a628896c90dbdf5c8093'
+            }
+            packages = $packages
+            smokes = $smokes
+            runner_shared = [ordered]@{
+              before_log_bytes = if (Test-Path $beforeLog) {
+                (Get-Item $beforeLog).Length
+              } else { $null }
+              after_log_bytes = if (Test-Path $afterLog) {
+                (Get-Item $afterLog).Length
+              } else { $null }
+              before_log_sha256 = $beforeLogSha
+              after_log_sha256 = $afterLogSha
+              before_db_files = @(Get-Content $beforeDb).Count
+              after_db_files = @(Get-Content $afterDb).Count
+              before_db_manifest_sha256 = $beforeDbSha
+              after_db_manifest_sha256 = $afterDbSha
+              result = 'byte-identical'
+            }
+          }
+          $attestation | ConvertTo-Json -Depth 8 |
+            Set-Content -Encoding utf8NoBOM `
+              (Join-Path $artifact 'run-attestation.json')
+
+          & '.\.ci\Sanitize-Evidence.ps1' `
+            -EvidenceRoot $artifact `
+            -SensitivePath @(
+              $env:GITHUB_WORKSPACE,
+              $env:RUNNER_TEMP,
+              $env:SQLITE_PRIVATE_ROOT,
+              $env:SQLITE_INPUT_ROOT
+            )
+
+          $manifest = [System.Collections.Generic.List[string]]::new()
+          foreach ($file in Get-ChildItem -LiteralPath $artifact -Recurse -File |
+              Where-Object {
+                $_.Name -notin @(
+                  'evidence-manifest.sha256',
+                  'EVIDENCE-SEAL.sha256'
+                )
+              } |
+              Sort-Object FullName) {
+            $relative = $file.FullName.Substring($artifact.Length + 1).
+              Replace('\', '/')
+            $hash = (Get-FileHash -Algorithm SHA256 $file.FullName).
+              Hash.ToLowerInvariant()
+            $manifest.Add("$hash  $relative")
+          }
+          $manifestPath = Join-Path $artifact 'evidence-manifest.sha256'
+          [IO.File]::WriteAllText(
+            $manifestPath,
+            (($manifest -join "`n") + "`n"),
+            [Text.UTF8Encoding]::new($false))
+          $seal = (Get-FileHash -Algorithm SHA256 $manifestPath).
+            Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText(
+            (Join-Path $artifact 'EVIDENCE-SEAL.sha256'),
+            "$seal  evidence-manifest.sha256`n",
+            [Text.UTF8Encoding]::new($false))
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: msysarm64-sqlite-packages
           path: artifacts/msysarm64-sqlite
@@ -364,7 +686,12 @@ jobs:
     runs-on: windows-11-vs2026-arm
 
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: msysarm64-sqlite-packages
           path: artifacts
@@ -373,15 +700,88 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $architecture =
+          $artifact = (Resolve-Path 'artifacts').Path
+          $manifestPath = Join-Path $artifact 'evidence-manifest.sha256'
+          foreach ($line in Get-Content -LiteralPath $manifestPath) {
+            if ($line -notmatch '^([0-9a-f]{64})  (.+)$') {
+              throw "invalid evidence manifest line: $line"
+            }
+            $path = Join-Path $artifact $Matches[2].Replace('/', '\')
+            $actual = (Get-FileHash -Algorithm SHA256 $path).
+              Hash.ToLowerInvariant()
+            if ($actual -ne $Matches[1]) {
+              throw "artifact evidence mismatch: $($Matches[2])"
+            }
+          }
+          $expectedSeal = (
+            Get-Content -LiteralPath (Join-Path $artifact 'EVIDENCE-SEAL.sha256')
+          ) -replace '\s+.*$', ''
+          $actualSeal = (Get-FileHash -Algorithm SHA256 $manifestPath).
+            Hash.ToLowerInvariant()
+          if ($actualSeal -ne $expectedSeal) {
+            throw 'build artifact seal mismatch'
+          }
+
+          $processArchitecture =
+            [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture
+          $osArchitecture =
             [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
-          if ($architecture -ne
+          if ($processArchitecture -ne
               [System.Runtime.InteropServices.Architecture]::Arm64) {
-            throw "runner is not ARM64: $architecture"
+            throw "PowerShell process is not ARM64: $processArchitecture"
+          }
+          Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class NativeMachine {
+              [DllImport("kernel32.dll", SetLastError = true)]
+              public static extern bool IsWow64Process2(
+                  IntPtr process,
+                  out ushort processMachine,
+                  out ushort nativeMachine);
+          }
+          '@
+          function Get-MachinePair {
+            param([Parameter(Mandatory = $true)][IntPtr] $Handle)
+            [ushort] $processMachine = 0
+            [ushort] $nativeMachine = 0
+            if (-not [NativeMachine]::IsWow64Process2(
+                $Handle, [ref] $processMachine, [ref] $nativeMachine)) {
+              throw "IsWow64Process2 failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
+            }
+            return [ordered]@{
+              process_machine = ('0x{0:x4}' -f $processMachine)
+              native_machine = ('0x{0:x4}' -f $nativeMachine)
+            }
+          }
+          function Get-PeMachine {
+            param([Parameter(Mandatory = $true)][string] $Path)
+            $stream = [IO.File]::OpenRead($Path)
+            try {
+              $reader = [IO.BinaryReader]::new($stream)
+              if ($reader.ReadUInt16() -ne 0x5a4d) { throw "not PE: $Path" }
+              $stream.Position = 0x3c
+              $peOffset = $reader.ReadUInt32()
+              $stream.Position = $peOffset
+              if ($reader.ReadUInt32() -ne 0x00004550) {
+                throw "missing PE signature: $Path"
+              }
+              return ('0x{0:x4}' -f $reader.ReadUInt16())
+            }
+            finally {
+              $stream.Dispose()
+            }
+          }
+          $currentPair = Get-MachinePair `
+            -Handle ([Diagnostics.Process]::GetCurrentProcess().Handle)
+          if ($currentPair.native_machine -ne '0xaa64') {
+            throw "native machine is not AA64: $($currentPair.native_machine)"
           }
 
           $root = Join-Path $env:RUNNER_TEMP 'msysarm64-native'
+          $evidence = Join-Path $env:GITHUB_WORKSPACE 'native-evidence'
           New-Item -ItemType Directory -Force -Path $root | Out-Null
+          New-Item -ItemType Directory -Force -Path $evidence | Out-Null
           $runtimeName =
             'mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst'
           $runtimePath = Join-Path $env:RUNNER_TEMP $runtimeName
@@ -396,13 +796,20 @@ jobs:
               '158c505f45025a466950faa7c85c9fd85e9d32384dd27b53586ffc75d71ca78e') {
             throw 'runtime SHA-256 mismatch'
           }
+          if ((Get-Item $runtimePath).Length -ne 9893043) {
+            throw 'runtime size mismatch'
+          }
 
           $archives = @(
             $runtimePath,
-            (Get-Item 'artifacts\mingw-w64-cross-msysarm64-libsqlite-3.53.4-1-x86_64.pkg.tar.zst').FullName,
-            (Get-Item 'artifacts\mingw-w64-cross-msysarm64-sqlite-3.53.4-1-x86_64.pkg.tar.zst').FullName
+            (Get-Item 'artifacts\mingw-w64-cross-msysarm64-libsqlite-3.53.4-2-x86_64.pkg.tar.zst').FullName,
+            (Get-Item 'artifacts\mingw-w64-cross-msysarm64-sqlite-3.53.4-2-x86_64.pkg.tar.zst').FullName
           )
           foreach ($archive in $archives) {
+            & '.\.ci\Test-ArchiveSafety.ps1' `
+              -ArchivePath $archive `
+              -OutputPath (Join-Path $evidence `
+                "archive-$((Get-Item $archive).Name).json")
             & tar.exe -xf $archive -C $root
             if ($LASTEXITCODE -ne 0) { throw "archive extraction failed: $archive" }
           }
@@ -452,9 +859,48 @@ jobs:
           $startInfo.RedirectStandardInput = $true
           $startInfo.RedirectStandardOutput = $true
           $startInfo.RedirectStandardError = $true
+          $startInfo.Environment['PATH'] = "$bin;$env:PATH"
           $process = [System.Diagnostics.Process]::new()
           $process.StartInfo = $startInfo
           if (-not $process.Start()) { throw 'failed to start SQLite CLI' }
+          Start-Sleep -Milliseconds 250
+          if ($process.HasExited) {
+            throw 'SQLite exited before module inspection'
+          }
+          $sqlitePair = Get-MachinePair -Handle $process.Handle
+          if ($sqlitePair.process_machine -ne '0x0000' -or
+              $sqlitePair.native_machine -ne '0xaa64') {
+            throw "SQLite machine pair is not native AA64: $($sqlitePair | ConvertTo-Json -Compress)"
+          }
+          $requiredModules = @(
+            'sqlite3.exe',
+            'msys-sqlite3-0.dll',
+            'msys-2.0.dll'
+          )
+          $modules = @(
+            $process.Modules |
+              Where-Object { $_.ModuleName -in $requiredModules } |
+              ForEach-Object {
+                $machine = Get-PeMachine -Path $_.FileName
+                if ($machine -ne '0xaa64') {
+                  throw "loaded module is not AA64: $($_.FileName) $machine"
+                }
+                [ordered]@{
+                  name = $_.ModuleName
+                  path = '<native-root>' +
+                    $_.FileName.Substring($root.Length).Replace('\', '/')
+                  machine = $machine
+                  sha256 = (Get-FileHash -Algorithm SHA256 $_.FileName).
+                    Hash.ToLowerInvariant()
+                }
+              }
+          )
+          $moduleNames = @($modules | ForEach-Object { $_.name })
+          foreach ($required in $requiredModules) {
+            if ($moduleNames -notcontains $required) {
+              throw "required loaded module missing: $required"
+            }
+          }
           $process.StandardInput.WriteLine($sql)
           $process.StandardInput.Close()
           $stdout = $process.StandardOutput.ReadToEnd()
@@ -478,19 +924,215 @@ jobs:
               throw "missing SQL result '$expected': $($lines -join ', ')"
             }
           }
-          @(
-            "runner-architecture`t$architecture",
+          $smokeLines = @(
+            "process-architecture`t$processArchitecture",
+            "os-architecture`t$osArchitecture",
+            "powershell-process-machine`t$($currentPair.process_machine)",
+            "powershell-native-machine`t$($currentPair.native_machine)",
+            "sqlite-process-machine`t$($sqlitePair.process_machine)",
+            "sqlite-native-machine`t$($sqlitePair.native_machine)",
             "sqlite-version`t$version",
             "dynamic-api-data-export-smoke`tpassed",
             "static-api-data-export-smoke`tpassed",
             "sql-transport`tstdin",
             $lines
-          ) | Set-Content -Encoding ascii native-sql-smoke.txt
+          )
+          $smokeLines | Set-Content -Encoding ascii `
+            (Join-Path $evidence 'native-sql-smoke.txt')
+          $native = [ordered]@{
+            schema = 2
+            run_id = $env:GITHUB_RUN_ID
+            head_sha = $env:SOURCE_HEAD_SHA
+            build_artifact_seal = $actualSeal
+            process_architecture = "$processArchitecture"
+            os_architecture = "$osArchitecture"
+            powershell = $currentPair
+            sqlite = $sqlitePair
+            loaded_modules = $modules
+            smoke = $smokeLines
+            result = 'pass'
+          }
+          $native | ConvertTo-Json -Depth 8 |
+            Set-Content -Encoding utf8NoBOM `
+              (Join-Path $evidence 'native-identity.json')
+          & '.\.ci\Sanitize-Evidence.ps1' `
+            -EvidenceRoot $evidence `
+            -SensitivePath @(
+              $env:GITHUB_WORKSPACE,
+              $env:RUNNER_TEMP,
+              $root
+            )
+          $nativeManifest = [System.Collections.Generic.List[string]]::new()
+          foreach ($file in Get-ChildItem -LiteralPath $evidence -Recurse -File |
+              Sort-Object FullName) {
+            $relative = $file.FullName.Substring($evidence.Length + 1).
+              Replace('\', '/')
+            $hash = (Get-FileHash -Algorithm SHA256 $file.FullName).
+              Hash.ToLowerInvariant()
+            $nativeManifest.Add("$hash  $relative")
+          }
+          $nativeManifestPath = Join-Path $evidence 'native-manifest.sha256'
+          [IO.File]::WriteAllText(
+            $nativeManifestPath,
+            (($nativeManifest -join "`n") + "`n"),
+            [Text.UTF8Encoding]::new($false))
+          $nativeSeal = (Get-FileHash -Algorithm SHA256 $nativeManifestPath).
+            Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText(
+            (Join-Path $evidence 'NATIVE-SEAL.sha256'),
+            "$nativeSeal  native-manifest.sha256`n",
+            [Text.UTF8Encoding]::new($false))
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: msysarm64-sqlite-native-smoke
-          path: native-sql-smoke.txt
+          path: native-evidence
+          if-no-files-found: error
+
+  reproducibility:
+    if: >-
+      ${{
+        github.repository == 'crutkas/MSYS2-packages' &&
+        (github.event_name == 'pull_request' ||
+         (github.event_name == 'push' &&
+          startsWith(github.ref, 'refs/tags/msysarm64-sqlite-')))
+      }}
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: msysarm64-sqlite-packages
+          path: compare/current
+
+      - name: Compare authenticated push, PR, and tag package bytes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          push_run=
+          for attempt in $(seq 1 40); do
+            push_run=$(
+              gh api \
+                "repos/${GITHUB_REPOSITORY}/actions/workflows/msysarm64-sqlite.yml/runs?event=push&head_sha=${SOURCE_HEAD_SHA}&per_page=100" \
+                --jq '.workflow_runs[] | select(.head_branch == "crutkas-arm64-msys-sqlite" and .conclusion == "success") | .id' \
+                | head -n1
+            )
+            if [[ "$push_run" =~ ^[0-9]+$ ]]; then
+              break
+            fi
+            sleep 15
+          done
+          [[ "$push_run" =~ ^[0-9]+$ ]]
+          test "$push_run" != "${GITHUB_RUN_ID}"
+          gh run download "$push_run" --repo "$GITHUB_REPOSITORY" \
+            --name msysarm64-sqlite-packages --dir compare/push
+          if [[ "${GITHUB_EVENT_NAME}" == pull_request ]]; then
+            current_event=pr
+            pr_run=$GITHUB_RUN_ID
+            tag_run=
+          else
+            current_event=tag
+            tag_run=$GITHUB_RUN_ID
+            pr_run=$(
+              gh api \
+                "repos/${GITHUB_REPOSITORY}/actions/workflows/msysarm64-sqlite.yml/runs?event=pull_request&head_sha=${SOURCE_HEAD_SHA}&per_page=100" \
+                --jq '.workflow_runs[] | select(.head_branch == "crutkas-arm64-msys-sqlite" and .conclusion == "success") | .id' \
+                | head -n1
+            )
+            [[ "$pr_run" =~ ^[0-9]+$ ]]
+            test "$pr_run" != "${GITHUB_RUN_ID}"
+            gh run download "$pr_run" --repo "$GITHUB_REPOSITORY" \
+              --name msysarm64-sqlite-packages --dir compare/pr
+          fi
+
+          verify_inner() {
+            local root=$1
+            local manifest=$2
+            while IFS=$'\t' read -r expected_hash expected_bytes name; do
+              test -f "$root/$name"
+              test "$(stat -c %s "$root/$name")" = "$expected_bytes"
+              test "$(sha256sum "$root/$name" | awk '{print $1}')" = \
+                "$expected_hash"
+            done < "$root/$manifest"
+          }
+          for event in push current; do
+            verify_inner "compare/$event" inner-package-sha256.tsv
+            verify_inner "compare/$event" smoke-sha256.tsv
+            test "$(jq -r .head_sha "compare/$event/run-attestation.json")" = \
+              "$SOURCE_HEAD_SHA"
+            test "$(jq -r .checkout.actual_head \
+              "compare/$event/run-attestation.json")" = "$SOURCE_HEAD_SHA"
+          done
+          if [[ "$current_event" == tag ]]; then
+            verify_inner compare/pr inner-package-sha256.tsv
+            verify_inner compare/pr smoke-sha256.tsv
+            test "$(jq -r .head_sha compare/pr/run-attestation.json)" = \
+              "$SOURCE_HEAD_SHA"
+            test "$(jq -r .checkout.actual_head \
+              compare/pr/run-attestation.json)" = "$SOURCE_HEAD_SHA"
+          fi
+          diff -u compare/push/inner-package-sha256.tsv \
+            compare/current/inner-package-sha256.tsv
+          diff -u compare/push/smoke-sha256.tsv \
+            compare/current/smoke-sha256.tsv
+          test "$(jq -r .checkout.tree compare/push/run-attestation.json)" = \
+            "$(jq -r .checkout.tree compare/current/run-attestation.json)"
+          if [[ "$current_event" == tag ]]; then
+            diff -u compare/push/inner-package-sha256.tsv \
+              compare/pr/inner-package-sha256.tsv
+            diff -u compare/push/smoke-sha256.tsv \
+              compare/pr/smoke-sha256.tsv
+            test "$(jq -r .checkout.tree compare/push/run-attestation.json)" = \
+              "$(jq -r .checkout.tree compare/pr/run-attestation.json)"
+          fi
+
+          mkdir -p reproducibility
+          jq -n \
+            --arg head_sha "$SOURCE_HEAD_SHA" \
+            --arg push_run "$push_run" \
+            --arg pr_run "$pr_run" \
+            --arg tag_run "$tag_run" \
+            --arg scope "$current_event" \
+            --arg package_manifest_sha256 \
+              "$(sha256sum compare/current/inner-package-sha256.tsv | awk '{print $1}')" \
+            --arg smoke_manifest_sha256 \
+              "$(sha256sum compare/current/smoke-sha256.tsv | awk '{print $1}')" \
+            '{
+              schema: 1,
+              head_sha: $head_sha,
+              scope: $scope,
+              runs: {
+                push: $push_run,
+                pull_request: $pr_run,
+                tag: $tag_run
+              },
+              package_manifest_sha256: $package_manifest_sha256,
+              smoke_manifest_sha256: $smoke_manifest_sha256,
+              package_bytes_equal: true,
+              smoke_bytes_equal: true,
+              result: "pass"
+            }' > reproducibility/cross-run-equality.json
+          cp compare/current/inner-package-sha256.tsv reproducibility/
+          cp compare/current/smoke-sha256.tsv reproducibility/
+          (
+            cd reproducibility
+            sha256sum cross-run-equality.json \
+              inner-package-sha256.tsv smoke-sha256.tsv \
+              > reproducibility-manifest.sha256
+            sha256sum reproducibility-manifest.sha256 \
+              > REPRODUCIBILITY-SEAL.sha256
+          )
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: msysarm64-sqlite-reproducibility
+          path: reproducibility
           if-no-files-found: error
 
   release:
@@ -503,30 +1145,59 @@ jobs:
     needs:
       - build
       - native-sql-smoke
+      - reproducibility
     runs-on: ubuntu-latest
     permissions:
       actions: read
       contents: write
 
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: msysarm64-sqlite-*
           merge-multiple: true
           path: release
 
-      - name: Create fork-only prerelease
+      - name: Create fork-only draft prerelease
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           cd release
-          sha256sum -- *.pkg.tar.zst > SHA256SUMS
-          tar -czf validation-reports.tar.gz \
-            dumpbin sqlite-report transaction-report
+          git check-ref-format "refs/tags/${GITHUB_REF_NAME}"
+          mapfile -t tag_refs < <(
+            git ls-remote --tags "https://github.com/${GITHUB_REPOSITORY}.git" \
+              "refs/tags/${GITHUB_REF_NAME}" \
+              "refs/tags/${GITHUB_REF_NAME}^{}"
+          )
+          test "${#tag_refs[@]}" -eq 2
+          tag_object=$(
+            printf '%s\n' "${tag_refs[@]}" \
+              | awk -v ref="refs/tags/${GITHUB_REF_NAME}" '$2 == ref {print $1}'
+          )
+          peeled_commit=$(
+            printf '%s\n' "${tag_refs[@]}" \
+              | awk -v ref="refs/tags/${GITHUB_REF_NAME}^{}" '$2 == ref {print $1}'
+          )
+          [[ "$tag_object" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$peeled_commit" =~ ^[0-9a-f]{40}$ ]]
+          test "$tag_object" != "$peeled_commit"
+          test "$peeled_commit" = "$GITHUB_SHA"
+          printf 'tag\t%s\nobject\t%s\ncommit\t%s\n' \
+            "$GITHUB_REF_NAME" "$tag_object" "$peeled_commit" \
+            > tag-identity.tsv
+          test "$(jq -r .head_sha run-attestation.json)" = "$GITHUB_SHA"
+          test "$(jq -r .head_sha native-identity.json)" = "$GITHUB_SHA"
+          test "$(jq -r .head_sha cross-run-equality.json)" = "$GITHUB_SHA"
+          sha256sum -c SHA256SUMS
+          tar -czf admission-evidence.tar.gz \
+            --exclude='*.pkg.tar.zst' \
+            --exclude='sqlite-api-*-smoke.exe' \
+            --exclude='admission-evidence.tar.gz' \
+            .
           cat > release-notes.md <<EOF
-          Fork-only native \`aarch64-pc-msys\` SQLite 3.53.4-1.
+          Fork-only native \`aarch64-pc-msys\` SQLite 3.53.4-2.
 
           Source: \`sqlite-amalgamation-3530400.zip\`
           Source SHA-256: \`1e71ddf93849c6a6ecf58b827c0692073d2dd7ee40196158068f7b29f422e87d\`
@@ -541,13 +1212,231 @@ jobs:
           The x64-hosted cross build, complete AArch64 PE/object/import/archive
           and pseudo-relocation audit, static/dynamic API checks, isolated
           pacman install/remove/reinstall lifecycle, ownership checks, and
-          native Windows ARM64 transaction smoke all passed before this release.
+          native Windows ARM64 transaction smoke, and authenticated push/PR/tag
+          byte-equality gate all passed before this draft was created.
           EOF
           gh release create "${GITHUB_REF_NAME}" \
             --repo crutkas/MSYS2-packages \
             --verify-tag \
+            --draft \
             --prerelease \
-            --title "AArch64 MSYS SQLite 3.53.4-1" \
+            --title "AArch64 MSYS SQLite 3.53.4-2" \
             --notes-file release-notes.md \
-            -- *.pkg.tar.zst SHA256SUMS input-assets.sha256 \
-              native-sql-smoke.txt validation-reports.tar.gz
+            -- *.pkg.tar.zst sqlite-api-*-smoke.exe \
+              SHA256SUMS inner-package-sha256.tsv smoke-sha256.tsv \
+              run-attestation.json cross-run-equality.json \
+              native-identity.json native-sql-smoke.txt \
+              EVIDENCE-SEAL.sha256 NATIVE-SEAL.sha256 \
+              REPRODUCIBILITY-SEAL.sha256 admission-evidence.tar.gz
+
+  independent-release-audit:
+    if: >-
+      ${{
+        github.repository == 'crutkas/MSYS2-packages' &&
+        github.event_name == 'push' &&
+        startsWith(github.ref, 'refs/tags/msysarm64-sqlite-')
+      }}
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - name: Redownload, audit, and publish draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p redownload audit/evidence audit/packages audit-report
+          release_json=$(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              | jq -c --arg tag "$GITHUB_REF_NAME" \
+                '.[] | select(.tag_name == $tag)'
+          )
+          test "$(wc -l <<<"$release_json")" -eq 1
+          release_id=$(jq -r .id <<<"$release_json")
+          printf '%s\n' "$release_id" > audit-report/release-id.txt
+          test "$(jq -r .draft <<<"$release_json")" = true
+          test "$(jq -r .prerelease <<<"$release_json")" = true
+          jq -r '.assets[] | [.id, .name, .size, (.digest // "")] | @tsv' \
+            <<<"$release_json" > audit-report/release-assets.tsv
+          while IFS=$'\t' read -r asset_id name size digest; do
+            [[ "$asset_id" =~ ^[0-9]+$ ]]
+            gh api \
+              -H 'Accept: application/octet-stream' \
+              "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
+              > "redownload/$name"
+            test "$(stat -c %s "redownload/$name")" = "$size"
+            if [[ -n "$digest" ]]; then
+              test "sha256:$(sha256sum "redownload/$name" | awk '{print $1}')" = \
+                "$digest"
+            fi
+          done < audit-report/release-assets.tsv
+
+          (
+            cd redownload
+            sha256sum -c SHA256SUMS
+          )
+          verify_inner() {
+            local manifest=$1
+            while IFS=$'\t' read -r expected_hash expected_bytes name; do
+              test -f "redownload/$name"
+              test "$(stat -c %s "redownload/$name")" = "$expected_bytes"
+              test "$(sha256sum "redownload/$name" | awk '{print $1}')" = \
+                "$expected_hash"
+            done < "redownload/$manifest"
+          }
+          verify_inner inner-package-sha256.tsv
+          verify_inner smoke-sha256.tsv
+
+          safe_names() {
+            local archive=$1
+            local names verbose
+            names=$(tar -tf "$archive")
+            while IFS= read -r entry; do
+              [[ "$entry" != /* ]]
+              [[ "$entry" != \\* ]]
+              [[ ! "$entry" =~ ^[A-Za-z]: ]]
+              [[ "$entry" != *\\* ]]
+              IFS=/ read -ra parts <<<"$entry"
+              for part in "${parts[@]}"; do
+                test "$part" != ..
+              done
+            done <<<"$names"
+            verbose=$(tar -tvf "$archive")
+            if grep -Eq '^[lh]' <<<"$verbose"; then
+              echo "release archive contains a link: $archive" >&2
+              return 1
+            fi
+          }
+          for archive in redownload/*.pkg.tar.zst \
+              redownload/admission-evidence.tar.gz; do
+            safe_names "$archive"
+          done
+          for package in redownload/*.pkg.tar.zst; do
+            name=$(basename "$package" .pkg.tar.zst)
+            mkdir -p "audit/packages/$name"
+            tar -xf "$package" -C "audit/packages/$name"
+            grep -Fx 'builddir = <private-build-root>' \
+              "audit/packages/$name/.BUILDINFO"
+            grep -Fx 'startdir = <private-build-root>' \
+              "audit/packages/$name/.BUILDINFO"
+            if grep -RIE \
+                '([A-Za-z]:\\a\\|[A-Za-z]:\\Users\\runner|/home/runner/|/[cd]/a/)' \
+                "audit/packages/$name"; then
+              echo "absolute runner path found in package: $name" >&2
+              exit 1
+            fi
+          done
+          tar -xzf redownload/admission-evidence.tar.gz -C audit/evidence
+          cp redownload/*.pkg.tar.zst redownload/sqlite-api-*-smoke.exe \
+            audit/evidence/
+
+          verify_seal() {
+            local root=$1
+            local manifest=$2
+            local seal=$3
+            (
+              cd "$root"
+              sha256sum -c "$manifest"
+              test "$(sha256sum "$manifest" | awk '{print $1}')" = \
+                "$(awk '{print $1}' "$seal")"
+            )
+          }
+          verify_seal audit/evidence evidence-manifest.sha256 \
+            EVIDENCE-SEAL.sha256
+          verify_seal audit/evidence native-manifest.sha256 \
+            NATIVE-SEAL.sha256
+          verify_seal audit/evidence reproducibility-manifest.sha256 \
+            REPRODUCIBILITY-SEAL.sha256
+          test "$(jq -r .result audit/evidence/native-identity.json)" = pass
+          test "$(jq -r .result audit/evidence/cross-run-equality.json)" = pass
+          test "$(jq -r .head_sha audit/evidence/run-attestation.json)" = \
+            "$GITHUB_SHA"
+          test "$(jq -r .head_sha audit/evidence/native-identity.json)" = \
+            "$GITHUB_SHA"
+          test "$(jq -r .head_sha \
+            audit/evidence/cross-run-equality.json)" = "$GITHUB_SHA"
+          test "$(awk -F '\t' '$1 == \"commit\" {print $2}' \
+            audit/evidence/tag-identity.tsv)" = "$GITHUB_SHA"
+          test "$(jq -r .package_bytes_equal \
+            audit/evidence/cross-run-equality.json)" = true
+          test "$(jq -r .smoke_bytes_equal \
+            audit/evidence/cross-run-equality.json)" = true
+          if grep -RIE \
+              '([A-Za-z]:\\a\\|[A-Za-z]:\\Users\\runner|/home/runner/|/[cd]/a/)' \
+              audit/evidence; then
+            echo 'absolute runner path found in release evidence' >&2
+            exit 1
+          fi
+
+          jq -n \
+            --arg tag "$GITHUB_REF_NAME" \
+            --arg head_sha "$GITHUB_SHA" \
+            --arg release_id "$release_id" \
+            --arg assets_sha256 \
+              "$(sha256sum audit-report/release-assets.tsv | awk '{print $1}')" \
+            '{
+              schema: 1,
+              tag: $tag,
+              head_sha: $head_sha,
+              release_id: $release_id,
+              assets_manifest_sha256: $assets_sha256,
+              archive_safety: "pass",
+              inner_hashes: "pass",
+              evidence_seals: "pass",
+              sanitized_paths: "pass",
+              result: "pass"
+            }' > audit-report/independent-release-audit.json
+          (
+            cd audit-report
+            sha256sum independent-release-audit.json release-assets.tsv \
+              release-id.txt \
+              > independent-audit-manifest.sha256
+            sha256sum independent-audit-manifest.sha256 \
+              > INDEPENDENT-AUDIT-SEAL.sha256
+          )
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: msysarm64-sqlite-independent-release-audit
+          path: audit-report
+          if-no-files-found: error
+
+      - name: Attach audit seal and publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            audit-report/independent-release-audit.json \
+            audit-report/release-assets.tsv \
+            audit-report/release-id.txt \
+            audit-report/independent-audit-manifest.sha256 \
+            audit-report/INDEPENDENT-AUDIT-SEAL.sha256
+          release_id=$(cat audit-report/release-id.txt)
+          [[ "$release_id" =~ ^[0-9]+$ ]]
+          live_release=$(
+            gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}"
+          )
+          test "$(jq -r .tag_name <<<"$live_release")" = "$GITHUB_REF_NAME"
+          test "$(jq -r .draft <<<"$live_release")" = true
+          for asset in \
+            independent-release-audit.json \
+            release-assets.tsv \
+            release-id.txt \
+            independent-audit-manifest.sha256 \
+            INDEPENDENT-AUDIT-SEAL.sha256
+          do
+            test "$(
+              jq -r --arg name "$asset" \
+                '[.assets[] | select(.name == $name)] | length' \
+                <<<"$live_release"
+            )" -eq 1
+          done
+          gh api --method PATCH \
+            "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+            -F draft=false -F prerelease=true > /dev/null

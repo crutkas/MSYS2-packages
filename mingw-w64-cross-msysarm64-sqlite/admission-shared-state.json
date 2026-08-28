@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "machine_cutoff": "2026-08-27T08:55:35-07:00",
+  "before": {
+    "pacman_log_bytes": 155150,
+    "pacman_log_sha256": "925ce045782b49e6454956eae9ee0a5b700b17c805843d18329509f4e2a492c8",
+    "pacman_db_files": 1178,
+    "canonical_db_manifest_sha256": "93a39fb4e4105489b733275fa94e8cc718f25c239f0064cd64c4a68832a68c34"
+  },
+  "after": {
+    "pacman_log_bytes": 155150,
+    "pacman_log_sha256": "925ce045782b49e6454956eae9ee0a5b700b17c805843d18329509f4e2a492c8",
+    "pacman_db_files": 1178,
+    "canonical_db_manifest_sha256": "93a39fb4e4105489b733275fa94e8cc718f25c239f0064cd64c4a68832a68c34"
+  },
+  "result": "byte-identical",
+  "admission_audit_report_sha256": "4323190b92c7794f563e662dd6075e393781a28eaee1dbade0a0cb190e9c030f",
+  "admission_audit_manifest_sha256": "67250a67e1a121a4bc751e7bd05ecf501d6c3f1166b6c6d4d95faebd95c79ed9"
+}

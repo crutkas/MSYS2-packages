@@ -153,7 +153,12 @@ printf '%s\n' \
   sqlite3_data_directory \
   sqlite3_temp_directory \
   sqlite3_version \
-  | diff -u - "${report_dir}/sqlite-def-data-exports.txt"
+  > "${report_dir}/sqlite-def-data-exports.expected.txt"
+test "$(
+  cat "${report_dir}/sqlite-def-data-exports.expected.txt"
+)" = "$(
+  cat "${report_dir}/sqlite-def-data-exports.txt"
+)"
 
 awk '
     /^\[Ordinal\/Name Pointer\] Table/ {
@@ -170,9 +175,11 @@ awk '
     }
   ' "${report_dir}/pe/msys-sqlite3-0.dll.headers.txt" \
   > "${report_dir}/sqlite-dll-exports.txt"
-diff -u \
-  "${report_dir}/sqlite-def-exports.txt" \
-  "${report_dir}/sqlite-dll-exports.txt"
+test "$(
+  cat "${report_dir}/sqlite-def-exports.txt"
+)" = "$(
+  cat "${report_dir}/sqlite-dll-exports.txt"
+)"
 
 "${nm}" -g "${payload_prefix}/lib/libsqlite3.dll.a" \
   > "${report_dir}/sqlite-import-library-symbols.txt"
@@ -184,9 +191,11 @@ awk '
   ' "${report_dir}/sqlite-import-library-symbols.txt" \
   | LC_ALL=C sort \
   > "${report_dir}/sqlite-import-library-exports.txt"
-diff -u \
-  "${report_dir}/sqlite-def-exports.txt" \
-  "${report_dir}/sqlite-import-library-exports.txt"
+test "$(
+  cat "${report_dir}/sqlite-def-exports.txt"
+)" = "$(
+  cat "${report_dir}/sqlite-import-library-exports.txt"
+)"
 for symbol in sqlite3_data_directory sqlite3_temp_directory sqlite3_version; do
   grep -Eq "[[:space:]]I[[:space:]]+__nm_${symbol}$" \
     "${report_dir}/sqlite-import-library-symbols.txt"
@@ -210,6 +219,10 @@ for archive in "${payload_archives[@]}"; do
   printf '%s\t%s\n' "${base}" "${member_count}" \
     >> "${report_dir}/archive-member-counts.txt"
 done
+grep -Fx $'libsqlite3.a\t1' \
+  "${report_dir}/archive-member-counts.txt"
+grep -Fx $'libsqlite3.dll.a\t356' \
+  "${report_dir}/archive-member-counts.txt"
 
 grep -Fx "prefix=${target_prefix}" \
   "${payload_prefix}/lib/pkgconfig/sqlite3.pc"

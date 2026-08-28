@@ -1,6 +1,6 @@
 # AArch64 MSYS SQLite layer
 
-This fork-only package source-builds SQLite 3.53.4 for `aarch64-pc-msys`.
+This fork-only package source-builds SQLite 3.53.4-2 for `aarch64-pc-msys`.
 It is an independent layer on `crutkas-aarch64-gcc-layer` and does not consume
 MinGW, Cygwin, x64 MSYS, or sibling native-library package outputs.
 
@@ -32,6 +32,9 @@ independent target sysroot can support them:
 - w32api version: `14.0.0.r0.g9b3dd0125-1`
 - binutils release: `cygwinarm64-binutils-pr21-3356eec-20260827`
 - binutils package: `2.44.50-2`
+- private build base: `msys2-base-x86_64-20260611.tar.xz`
+- private build base SHA-256: `a2d047e8ee213c3c6a49a8de427eb1069df12207c0422ff1b3cbb5c905c34221`
+- pinned host additions: `isl-0.27-1` and `mpc-1.4.1-1`
 
 The focused workflow independently downloads and hashes every exact asset. The
 final w32api package SHA-256 is
@@ -40,6 +43,12 @@ the configured libstdc++ header package SHA-256 is
 `9715aab6894379bf5ab936a3a559f286fb4aedbb64f0774d7457182e00648e08`.
 Both are immutable fork-support assets produced at GCC head
 `42f1fb808363203a83c7f6f935ab7e4bdffbe127`.
+
+The build and lifecycle roots are separate extractions of the immutable base.
+Neither root synchronizes a repository or consumes the runner's MSYS
+installation. The two host additions and 13 target-toolchain packages are
+downloaded by exact filename, size, and SHA-256, preflighted before extraction,
+and installed atomically. GitHub Actions are pinned by full commit.
 
 The `a527` runtime/sysroot is the immutable final runtime input. The fixed
 binutils package is 6,545,114 bytes with SHA-256
@@ -75,13 +84,21 @@ syntax.
 The build and post-package validators:
 
 - inspect every emitted PE, object, and archive member as AArch64 PE/COFF;
-- verify static and import-library archive maps;
+- verify static and import-library archive maps (357 members total);
 - enumerate every import and reject Cygwin, MinGW, x86, or unknown DLLs;
 - verify the package-owned SQLite DLL and exact runtime DLL are AArch64;
 - compile dynamic and static API/data-export consumers against the staged
   devel split;
-- scan the DLL, CLI, and both API consumers for rejected pseudo-relocations;
+- bind each DLL/CLI/API scanner result to its input SHA-256 and the exact
+  scanner, objdump, and nm identities;
 - reject package file overlap and verify pacman ownership;
 - install, remove, and reinstall all three SQLite packages atomically; and
-- run commit/rollback, integrity, and compile-option SQL on a native GitHub
-  Windows ARM64 runner.
+- record native ProcessArchitecture, IsWow64Process2 values, loaded module
+  paths/machines, and WAL/commit/rollback/integrity results;
+- publish per-run inner package/smoke hashes and require authenticated
+  push/PR/tag byte equality; and
+- create a draft release, independently redownload and audit its assets, attach
+  an audit seal, and publish only after every check passes.
+
+The frozen `3.53.4-1` prerelease is historical and noncanonical. Consumers must
+use only a replacement `3.53.4-2` release carrying the full admission evidence.
