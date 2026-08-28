@@ -139,8 +139,8 @@ build() {
   local target_specs="${target_prefix}/lib/cygwin-compile-only.specs"
   local target_gcc="${sysroot_root}/opt/bin/${_target}-gcc.exe"
   local target_gxx="${sysroot_root}/opt/bin/${_target}-g++.exe"
-  local target_cc="${target_gcc} -nodefaultlibs"
-  local target_cxx="${target_gxx} -nodefaultlibs"
+  local target_cc="${target_gcc}"
+  local target_cxx="${target_gxx}"
 
   export PATH="${sysroot_root}/opt/bin:${PATH}"
   export CPPFLAGS="${CPPFLAGS} -D__MINGW_NOTHROW="
@@ -241,7 +241,7 @@ check() {
   verbose_argv="$(
     (
       set -x
-      "${target_gcc}" -nodefaultlibs \
+      "${target_gcc}" \
         --sysroot="${target_prefix}" \
         -specs="${target_specs}" \
         -### -E -x c /dev/null \
