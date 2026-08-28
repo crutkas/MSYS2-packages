@@ -62,11 +62,44 @@ jobs:
       LIBGCRYPT_SIGNER_NIIBE_SHA256: d1f4ff42ae91c6441b0fb2dba2bc9745494bc929a2b332e3fcf9a7d7e9320a63
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Reject mutable external Action references
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $workflow = Join-Path $env:GITHUB_WORKSPACE `
+            '.github\workflows\arm64-msys-libgcrypt.yml'
+          $workflowText = Get-Content -Raw -LiteralPath $workflow
+          $usesKeys = @(
+            [regex]::Matches(
+              $workflowText, '(?m)^\s*(?:-\s*)?(?:\{\s*)?uses\s*:')
+          )
+          $usesRefs = @(
+            [regex]::Matches(
+              $workflowText,
+              '(?m)^\s*(?:-\s*)?(?:\{\s*)?uses\s*:\s*(?<ref>[^,\s#}]+)')
+          )
+          if ($usesKeys.Count -ne $usesRefs.Count) {
+            throw 'An Action reference uses unsupported or empty syntax.'
+          }
+          $actionRefs = @($usesRefs | ForEach-Object { $_.Groups['ref'].Value })
+          $externalRefs = @($actionRefs | Where-Object { $_ -notlike './*' })
+          if ($externalRefs.Count -eq 0) {
+            throw 'No external Action references were found; pin audit scope is invalid.'
+          }
+          $mutableRefs = @(
+            $externalRefs |
+              Where-Object { $_ -cnotmatch '^[^@\s]+@[0-9a-f]{40}$' }
+          )
+          if ($mutableRefs.Count -ne 0) {
+            throw "Mutable external Action references: $($mutableRefs -join ', ')"
+          }
+          "external_action_refs=$($externalRefs.Count) status=green"
 
       - name: Require immutable dependency admission
         shell: pwsh
@@ -99,7 +132,7 @@ jobs:
           "@
           }
 
-      - uses: msys2/setup-msys2@v2
+      - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
         with:
           msystem: MSYS
           install: base-devel git autotools pkgconf
@@ -798,7 +831,7 @@ jobs:
             throw "Manifest coverage mismatch: $payloadCount/$($manifestLines.Count)"
           }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: ${{ !cancelled() }}
         with:
           name: arm64-msys-libgcrypt-diagnostic-a527
@@ -812,7 +845,7 @@ jobs:
     needs: cross-build
     runs-on: windows-11-arm
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: arm64-msys-libgcrypt-diagnostic-a527
           path: artifact
@@ -1015,7 +1048,7 @@ jobs:
             throw "Native manifest coverage mismatch: $payloadCount/$($manifestLines.Count)"
           }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: ${{ !cancelled() }}
         with:
           name: arm64-msys-libgcrypt-native-corrected-runtime
