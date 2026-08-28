@@ -139,8 +139,10 @@ build() {
   local target_specs="${target_prefix}/lib/cygwin-compile-only.specs"
   local target_gcc="${sysroot_root}/opt/bin/${_target}-gcc.exe"
   local target_gxx="${sysroot_root}/opt/bin/${_target}-g++.exe"
-  local target_cc="${target_gcc}"
-  local target_cxx="${target_gxx}"
+  local target_cc="${target_gcc} -nodefaultlibs"
+  local target_cxx="${target_gxx} -nodefaultlibs"
+  local target_link_flags="--sysroot=${target_prefix} -specs=${target_specs} -Wl,-u,_pei386_runtime_relocator"
+  local target_runtime_libs="-lmsys-2.0 -lc -lm -lutil -ladvapi32 -lshell32 -luser32 -lkernel32 -lgcc -lgcc_eh"
 
   export PATH="${sysroot_root}/opt/bin:${PATH}"
   export CPPFLAGS="${CPPFLAGS} -D__MINGW_NOTHROW="
@@ -184,7 +186,7 @@ EOF
       -Wl,--no-undefined \
       -Wl,-u,_pei386_runtime_relocator \
       "${probe_source}" \
-      -lmsys-2.0 -lc -lm -lutil -ladvapi32 -lshell32 -luser32 -lkernel32 \
+      ${target_runtime_libs} \
       -o "${probe_dll}"
     rm -f "${probe_source}" "${probe_dll}"
 
@@ -200,8 +202,8 @@ EOF
     CPPFLAGS="${CPPFLAGS:-} -isystem ${target_prefix}/include -isystem ${target_prefix}/include/w32api" \
     CFLAGS="${CFLAGS:-} --sysroot=${target_prefix}" \
     CXXFLAGS="${CXXFLAGS:-} --sysroot=${target_prefix}" \
-    LIBS="${LIBS:-} -lmsys-2.0 -lc -lm -lutil -ladvapi32 -lshell32 -luser32 -lkernel32" \
-    LDFLAGS="${LDFLAGS:-} --sysroot=${target_prefix} -specs=${target_specs} -Wl,-u,_pei386_runtime_relocator" \
+    LIBS="${LIBS:-} ${target_runtime_libs}" \
+    LDFLAGS="${LDFLAGS:-} ${target_link_flags}" \
       "${srcdir}/${_source_root}/configure" \
       --build="${CHOST}" \
       --host="${_target}" \
@@ -212,6 +214,9 @@ EOF
       --with-build-cc=gcc \
       "${_common_configure_args[@]}"
   )
+  sed -i 's@exec \$\*  --sysroot=@exec $* ${LDFLAGS:-} ${LIBS:-} --sysroot=@' "${target_build}/mk_shared_lib.sh"
+  export LDFLAGS="${LDFLAGS:-} ${target_link_flags}"
+  export LIBS="${LIBS:-} ${target_runtime_libs}"
   make -C "${target_build}" -j"$(nproc)"
   make -C "${target_build}" DESTDIR="${srcdir}/dest" TIC_PATH="${helper_build}/progs/tic.exe" install
 }
@@ -250,6 +255,18 @@ check() {
   )"
   grep -F -- "-specs=${target_specs}" <<<"${verbose_argv}"
   ! grep -F -- 'C:Users' <<<"${verbose_argv}"
+  link_argv="$(
+    (
+      set -x
+      "${target_gcc}" -nodefaultlibs \
+        --sysroot="${target_prefix}" \
+        -specs="${target_specs}" \
+        -### -x c /dev/null \
+        -o /dev/null
+    ) 2>&1
+  )"
+  grep -F -- '-nodefaultlibs' <<<"${link_argv}"
+  ! grep -F -- '-lcygwin' <<<"${link_argv}"
   test -f "${install_prefix}/bin/tic.exe"
   test -f "${install_prefix}/lib/libncursesw.dll.a"
   test -f "${install_prefix}/lib/pkgconfig/ncursesw.pc"
@@ -305,7 +322,7 @@ EOF
     -lpanelw \
     -lmenuw \
     -lncursesw \
-    -lmsys-2.0 -lc -lm -lutil -ladvapi32 -lshell32 -luser32 -lkernel32 \
+    -lmsys-2.0 -lc -lm -lutil -ladvapi32 -lshell32 -luser32 -lkernel32 -lgcc -lgcc_eh \
     -o "${workdir}/smoke.exe"
 
   "${objdump}" -f "${workdir}/smoke.exe" | grep -F "file format pe-aarch64-little"
