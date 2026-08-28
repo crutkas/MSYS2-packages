@@ -27,6 +27,14 @@ try {
   Assert (-not ($scriptText -match '(?m)(?:--login|\s-lc\s)')) `
     'private build shell must never run login initialization'
 
+  $buildRoot = Join-Path $tmp 'build-root'
+  $smokeFixture = Join-Path $buildRoot 'pkgbase\src\smoke'
+  New-Item -ItemType Directory -Force $smokeFixture | Out-Null
+  [IO.File]::WriteAllBytes((Join-Path $smokeFixture 'npth-dynamic-smoke.exe'), [byte[]](1..4))
+  [IO.File]::WriteAllBytes((Join-Path $smokeFixture 'npth-static-smoke.exe'), [byte[]](5..8))
+  Assert ((Get-NativeSmokeDirectory -BuildRoot $buildRoot) -eq $smokeFixture) `
+    'native smoke discovery must use the deterministic build root'
+
   # --- New-PacmanCommonArgs: explicit paths, no forbidden flags ---
   $common = New-PacmanCommonArgs -Root $tmp -Config (Join-Path $tmp 'pacman-build.conf')
   foreach ($flag in @('--root', '--dbpath', '--cachedir', '--logfile', '--config', '--hookdir', '--gpgdir', '--noconfirm')) {

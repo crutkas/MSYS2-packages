@@ -156,6 +156,22 @@ function Get-PackageSeal {
   return $seal
 }
 
+function Get-NativeSmokeDirectory {
+  param([Parameter(Mandatory)] [string] $BuildRoot)
+  $matches = @(
+    Get-ChildItem -LiteralPath $BuildRoot -Directory -Recurse |
+      Where-Object {
+        $_.Name -eq 'smoke' -and
+        (Test-Path -LiteralPath (Join-Path $_.FullName 'npth-dynamic-smoke.exe')) -and
+        (Test-Path -LiteralPath (Join-Path $_.FullName 'npth-static-smoke.exe'))
+      }
+  )
+  if ($matches.Count -ne 1) {
+    throw "Expected one complete native smoke bundle under $BuildRoot, found $($matches.Count)."
+  }
+  return $matches[0].FullName
+}
+
 function Invoke-BuildCandidate {
   <# Full deterministic build: materialize the private pacman config, install the
      host and target closures, run makepkg with the pinned SOURCE_DATE_EPOCH, and
@@ -200,6 +216,7 @@ function Invoke-BuildCandidate {
 
   $deterministicRoot = Join-Path $Root 'usr\src\debug\mingw-w64-cross-msysarm64-npth-1.8'
   $recipeStage = Join-Path $deterministicRoot 'recipe'
+  $buildRoot = Join-Path $deterministicRoot 'build'
   if (Test-Path -LiteralPath $deterministicRoot) {
     Remove-Item -LiteralPath $deterministicRoot -Recurse -Force
   }
@@ -246,10 +263,7 @@ makepkg --cleanbuild --check --noconfirm
     $metadataDir = Join-Path $OutputDir ("$($package.Name).metadata")
     $seals.Add((Get-PackageSeal -Archive $package.FullName -Bsdtar $Bsdtar -MetadataDir $metadataDir))
   }
-  $smoke = Join-Path $recipeStage 'src\smoke'
-  if (-not (Test-Path -LiteralPath $smoke)) {
-    throw 'The checked build did not produce its native smoke bundle.'
-  }
+  $smoke = Get-NativeSmokeDirectory -BuildRoot $buildRoot
   Copy-Item -LiteralPath $smoke -Destination (Join-Path $OutputDir 'native-smoke') -Recurse
 
   [ordered]@{
