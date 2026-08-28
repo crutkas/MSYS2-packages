@@ -148,6 +148,16 @@ EOF
 exec "${perl_ld}" "\$@"
 EOF
     chmod +x "${perl_config_cc}" "${perl_config_ld}"
+    perl -0pi -e '
+      my $old = q{    if $cc -o try $flag $ccflags $ldflags try.c 2>/dev/null && ./try; then};
+      my $new = q{    if $cc -o try.exe $flag $ccflags $ldflags try.c 2>/dev/null; then};
+      my $old_count = () = /\Q$old\E/g;
+      my $new_count = () = /\Q$new\E/g;
+      die "unexpected ARM64 C99 probe text\n" if $old_count + $new_count != 1;
+      if ($old_count) {
+        s/\Q$old\E/$new/ or die "expected ARM64 C99 probe rewrite failed\n";
+      }
+    ' Configure
 
     "${perl_cc}" -dM -E -xc - <<< '' > "${probe_dir}/probe.predefines.txt"
     if ! grep -Fx '#define __aarch64__ 1' "${probe_dir}/probe.predefines.txt" >/dev/null; then

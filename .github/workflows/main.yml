@@ -61,6 +61,11 @@ jobs:
         run: |
           python -c "from pathlib import Path; files=[Path(r'temp\perl\PKGBUILD'), Path(r'temp\.github\workflows\main.yml')]; allowed={9,10,13}; bad=[f'{path}:{idx}:0x{b:02x}' for path in files for idx,b in enumerate(path.read_bytes(),1) if b < 32 and b not in allowed]; assert not bad, 'Control characters found:\n' + '\n'.join(bad)"
 
+      - name: Verify ARM64 Perl probe rewrites
+        shell: pwsh
+        run: |
+          python temp\.ci\test-perl-arm64-configure-probes.py
+
       - name: Init MSYS2
         id: msys2
         if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-arm64-msys-perl' || github.head_ref == 'crutkas-arm64-msys-perl' || github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.head_ref == 'crutkas-congenial-system') }}
