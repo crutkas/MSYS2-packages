@@ -183,8 +183,8 @@ EOF
       -shared \
       -Wl,--no-undefined \
       -Wl,-u,_pei386_runtime_relocator \
-      -lmsys-2.0 -lc -lm -lutil -ladvapi32 -lshell32 -luser32 -lkernel32 \
       "${probe_source}" \
+      -lmsys-2.0 -lc -lm -lutil -ladvapi32 -lshell32 -luser32 -lkernel32 \
       -o "${probe_dll}"
     rm -f "${probe_source}" "${probe_dll}"
 
