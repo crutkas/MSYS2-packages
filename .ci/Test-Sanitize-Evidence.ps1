@@ -50,6 +50,7 @@ D:\Users\runneradmin\AppData\Local\Temp\report.txt
             throw "expected sanitization token missing: $token"
         }
     }
+    Write-Output 'Complete-evidence path sanitization regression passed'
 }
 finally {
     if (Test-Path -LiteralPath $fixtureRoot) {
