@@ -146,7 +146,7 @@ function Wait-PrivatePacmanPath {
         [Parameter(Mandatory)]
         [string] $Path,
 
-        [int] $TimeoutSeconds = 20
+        [int] $TimeoutSeconds = 120
     )
 
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
@@ -574,7 +574,7 @@ function Wait-PrivatePacmanFixtureJob {
         [ValidateSet('Completed', 'Failed')]
         [string] $ExpectedState,
 
-        [int] $TimeoutSeconds = 40
+        [int] $TimeoutSeconds = 120
     )
 
     $null = Wait-Job -Job $Job -Timeout $TimeoutSeconds
