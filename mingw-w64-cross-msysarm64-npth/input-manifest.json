@@ -54,7 +54,8 @@
       "sha256": "2c1b712855cc80d9920499ef2acaebbec18ca9808b0c4a1ea87785d9469a9a4c"
     },
     "signer": "E0AA0F031DBD80FFBA57B06D5A62D0CAB6264964",
-    "localDbEntryCount": 1178
+    "localDbPackageCount": 90,
+    "sharedDbReferenceFileCount": 1178
   },
   "scanner": {
     "purpose": "Canonical AArch64 pseudo-relocation scanner, downloaded (never vendored) from an immutable raw commit.",

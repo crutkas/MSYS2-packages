@@ -212,6 +212,7 @@ function Invoke-LifecycleAudit {
   $sharedBefore = Get-TreeSeal -Path $SharedDatabase
   $sharedLogBefore = Get-FileSeal -Path $SharedLog
   $sharedEntriesBefore = Get-LocalDbEntryCount -LocalDbPath $SharedDatabase
+  $sharedFilesBefore = @(Get-ChildItem -LiteralPath $SharedDatabase -Recurse -File -Force).Count
   if ($ExpectedSharedDbEntries -gt 0 -and $sharedEntriesBefore -ne $ExpectedSharedDbEntries) {
     throw "Shared C:\msys64 local DB has $sharedEntriesBefore entries, expected $ExpectedSharedDbEntries"
   }
@@ -337,6 +338,7 @@ SigLevel = Never
   $sharedAfter = Get-TreeSeal -Path $SharedDatabase
   $sharedLogAfter = Get-FileSeal -Path $SharedLog
   $sharedEntriesAfter = Get-LocalDbEntryCount -LocalDbPath $SharedDatabase
+  $sharedFilesAfter = @(Get-ChildItem -LiteralPath $SharedDatabase -Recurse -File -Force).Count
   $baseAfter = Get-TreeSeal -Path $PrivateBaseLocalDb
   $baseEntriesAfter = Get-LocalDbEntryCount -LocalDbPath $PrivateBaseLocalDb
   $sharedAfter | Set-Content -Encoding ascii (Join-Path $ReportDirectory 'shared-db-after.sha256')
@@ -348,6 +350,9 @@ SigLevel = Never
       ($ExpectedSharedDbEntries -gt 0 -and $sharedEntriesAfter -ne $ExpectedSharedDbEntries)) {
     throw "Shared C:\msys64 local DB entry count changed to $sharedEntriesAfter (before $sharedEntriesBefore)"
   }
+  if ($sharedFilesAfter -ne $sharedFilesBefore) {
+    throw "Shared C:\msys64 local DB file count changed to $sharedFilesAfter (before $sharedFilesBefore)"
+  }
   if ($sharedLogAfter.sha256 -ne $sharedLogBefore.sha256 -or $sharedLogAfter.size -ne $sharedLogBefore.size) {
     throw 'Shared C:\msys64 pacman log changed during the transaction'
   }
@@ -356,7 +361,17 @@ SigLevel = Never
     throw "Private base local DB entry count changed to $baseEntriesAfter (expected $baseEntriesBefore)"
   }
 
-  Write-Output "Lifecycle audit passed: install/remove/reinstall verified; shared C:\msys64 database unchanged ($sharedEntriesBefore entries) and private base unchanged ($baseEntriesBefore entries)."
+  [ordered]@{
+    shared_package_entries_before = $sharedEntriesBefore
+    shared_package_entries_after = $sharedEntriesAfter
+    shared_database_files_before = $sharedFilesBefore
+    shared_database_files_after = $sharedFilesAfter
+    private_base_package_entries_before = $baseEntriesBefore
+    private_base_package_entries_after = $baseEntriesAfter
+  } | ConvertTo-Json |
+    Set-Content -Encoding utf8 (Join-Path $ReportDirectory 'database-counts.json')
+
+  Write-Output "Lifecycle audit passed: install/remove/reinstall verified; shared C:\msys64 database unchanged ($sharedEntriesBefore packages, $sharedFilesBefore files) and private base unchanged ($baseEntriesBefore packages)."
 }
 
 $script:LifecycleDotSourced = $false

@@ -61,7 +61,8 @@ Assert ($manifest.privateBase.archive.bytes -eq 53555380) 'privateBase archive s
 Assert ($manifest.privateBase.archive.sha256 -eq 'a2d047e8ee213c3c6a49a8de427eb1069df12207c0422ff1b3cbb5c905c34221') 'privateBase archive sha mismatch'
 Assert ($manifest.privateBase.signature.bytes -eq 566) 'privateBase signature size mismatch'
 Assert ($manifest.privateBase.signer -eq 'E0AA0F031DBD80FFBA57B06D5A62D0CAB6264964') 'privateBase signer mismatch'
-Assert ($manifest.privateBase.localDbEntryCount -eq 1178) 'privateBase localDbEntryCount must be 1178'
+Assert ($manifest.privateBase.localDbPackageCount -eq 90) 'privateBase localDbPackageCount must match the immutable base'
+Assert ($manifest.privateBase.sharedDbReferenceFileCount -eq 1178) 'shared DB reference file count must remain bound'
 
 # --- scanner --------------------------------------------------------------
 Assert ($manifest.scanner.commit -match $hex40) 'scanner commit must be a 40-char sha'

@@ -472,7 +472,7 @@ jobs:
             -CandidateArchive $candidates `
             -ReportDirectory $report `
             -PrivateBaseLocalDb (Join-Path $root 'var\lib\pacman\local') `
-            -ExpectedBaseDbEntries ([int]$m.privateBase.localDbEntryCount)
+            -ExpectedBaseDbEntries ([int]$m.privateBase.localDbPackageCount)
 
       - name: Upload lifecycle report
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
