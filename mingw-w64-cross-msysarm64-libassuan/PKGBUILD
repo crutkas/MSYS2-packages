@@ -149,6 +149,10 @@ build() {
     no_undefined="-no-undefined" \
     export_symbols="-export-symbols ${srcdir}/${_realname}-${pkgver}/src/libassuan.exports"
   make DESTDIR="${srcdir}/dest" install
+  # Libtool's import archive leaves the armap timestamp wall-clock dependent.
+  # Reindex both archives in GNU deterministic mode before any audit or package.
+  "${_target}-ranlib" -D "${srcdir}/dest/usr/lib/libassuan.dll.a"
+  "${_target}-ranlib" -D "${srcdir}/dest/usr/lib/libassuan.a"
 
   local _config="${srcdir}/dest/usr/bin/libassuan-config"
   local _la="${srcdir}/dest/usr/lib/libassuan.la"
