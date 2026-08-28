@@ -139,6 +139,8 @@ build() {
   local target_specs="${target_prefix}/lib/cygwin-compile-only.specs"
   local target_gcc="${sysroot_root}/opt/bin/${_target}-gcc.exe"
   local target_gxx="${sysroot_root}/opt/bin/${_target}-g++.exe"
+  local target_cc="${target_gcc} -nodefaultlibs"
+  local target_cxx="${target_gxx} -nodefaultlibs"
 
   export PATH="${sysroot_root}/opt/bin:${PATH}"
   export CPPFLAGS="${CPPFLAGS} -D__MINGW_NOTHROW="
@@ -166,16 +168,17 @@ build() {
     local probe_exe="${target_build}/configure-probe.exe"
 
     printf 'int main(void){return 0;}\n' > "${probe_source}"
-    "${target_gcc}" \
+    ${target_cc} \
       --sysroot="${target_prefix}" \
       -specs="${target_specs}" \
       -Wl,-u,_pei386_runtime_relocator \
+      -lmsys-2.0 -lc -lm -lutil -ladvapi32 -lshell32 -luser32 -lkernel32 \
       "${probe_source}" \
       -o "${probe_exe}"
     rm -f "${probe_source}" "${probe_exe}"
 
-    CC="${target_gcc}" \
-    CXX="${target_gxx}" \
+    CC="${target_cc}" \
+    CXX="${target_cxx}" \
     AR="${_target}-ar" \
     RANLIB="${_target}-ranlib" \
     STRIP="${_target}-strip" \
@@ -186,7 +189,7 @@ build() {
     CPPFLAGS="${CPPFLAGS:-} -isystem ${target_prefix}/include -isystem ${target_prefix}/include/w32api" \
     CFLAGS="${CFLAGS:-} --sysroot=${target_prefix}" \
     CXXFLAGS="${CXXFLAGS:-} --sysroot=${target_prefix}" \
-    LIBS="${LIBS:-} -lmsys-2.0" \
+    LIBS="${LIBS:-} -lmsys-2.0 -lc -lm -lutil -ladvapi32 -lshell32 -luser32 -lkernel32" \
     LDFLAGS="${LDFLAGS:-} --sysroot=${target_prefix} -specs=${target_specs} -Wl,-u,_pei386_runtime_relocator" \
       "${srcdir}/${_source_root}/configure" \
       --build="${CHOST}" \
@@ -227,7 +230,7 @@ check() {
   verbose_argv="$(
     (
       set -x
-      "${target_gcc}" \
+      "${target_gcc}" -nodefaultlibs \
         --sysroot="${target_prefix}" \
         -specs="${target_specs}" \
         -### -E -x c /dev/null \
@@ -281,7 +284,7 @@ int main(void)
 }
 EOF
 
-  "${_target}-gcc" \
+  "${target_gcc}" -nodefaultlibs \
     --sysroot="${target_prefix}" \
     -specs="${target_prefix}/lib/cygwin-compile-only.specs" \
     -I"${install_prefix}/include" \
@@ -291,6 +294,7 @@ EOF
     -lpanelw \
     -lmenuw \
     -lncursesw \
+    -lmsys-2.0 -lc -lm -lutil -ladvapi32 -lshell32 -luser32 -lkernel32 \
     -o "${workdir}/smoke.exe"
 
   "${objdump}" -f "${workdir}/smoke.exe" | grep -F "file format pe-aarch64-little"
