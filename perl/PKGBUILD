@@ -136,10 +136,10 @@ if [ \$status -eq 0 ] && [ -n "\$out" ]; then
       done
       if [ -n "\$src" ]; then
         cp -f "\$src" try.exe 2>/dev/null || true
-        cat > try <<'EOF'
+        cat > try <<'TRYEOF'
 #!/bin/sh
 exec "$(dirname "$0")/try.exe" "$@"
-EOF
+TRYEOF
         chmod +x try 2>/dev/null || true
       fi
       ;;
