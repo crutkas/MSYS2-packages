@@ -135,8 +135,12 @@ if [ \$status -eq 0 ] && [ -n "\$out" ]; then
         fi
       done
       if [ -n "\$src" ]; then
-        cp -f "\$src" try 2>/dev/null || true
         cp -f "\$src" try.exe 2>/dev/null || true
+        cat > try <<'EOF'
+#!/bin/sh
+exec "$(dirname "$0")/try.exe" "$@"
+EOF
+        chmod +x try 2>/dev/null || true
       fi
       ;;
   esac
