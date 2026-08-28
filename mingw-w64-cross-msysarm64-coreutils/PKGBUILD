@@ -1,0 +1,503 @@
+# Maintainer: Chris Reddington <crutkas@microsoft.com>
+
+_target=aarch64-pc-msys
+_target_root=/opt/${_target}
+_binutils_version=2.44.50-2
+_gcc_version=15.0.1dev-1
+_runtime_version=3.6.10.r0.ga527ace21-1
+_w32api_version=14.0.0.r0.g9b3dd0125-1
+_gmp_version=6.3.0-2
+_libiconv_version=1.18-1
+_libintl_version=0.22.5-1
+_linker_sha256=075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f
+_scanner_sha256=888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9
+_private_pacman=/opt/private-bin/pacman
+
+pkgname=mingw-w64-cross-msysarm64-coreutils
+pkgver=8.32
+pkgrel=1
+pkgdesc="Native GNU coreutils semantic-exception payload for aarch64-pc-msys"
+arch=('x86_64')
+url="https://www.gnu.org/software/coreutils/"
+license=('GPL3')
+groups=('mingw-w64-cross-toolchain' 'mingw-w64-cross')
+depends=(
+  "mingw-w64-cross-msysarm64-runtime=${_runtime_version}"
+  "mingw-w64-cross-msysarm64-gmp=${_gmp_version}"
+  "mingw-w64-cross-msysarm64-libiconv=${_libiconv_version}"
+  "mingw-w64-cross-msysarm64-libintl=${_libintl_version}"
+)
+makedepends=(
+  'autotools'
+  'gcc'
+  'gettext-devel'
+  'help2man'
+  'make'
+  'python'
+  "mingw-w64-cross-cygwinarm64-binutils=${_binutils_version}"
+  "mingw-w64-cross-msysarm64-gcc=${_gcc_version}"
+  "mingw-w64-cross-msysarm64-gcc-libs=${_gcc_version}"
+  "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}"
+  "mingw-w64-cross-msysarm64-sysroot=${_runtime_version}"
+  "mingw-w64-cross-msysarm64-w32api-runtime=${_w32api_version}"
+  "mingw-w64-cross-msysarm64-gmp-devel=${_gmp_version}"
+  "mingw-w64-cross-msysarm64-libiconv-devel=${_libiconv_version}"
+  "mingw-w64-cross-msysarm64-libintl-devel=${_libintl_version}"
+)
+options=('!strip' '!buildflags' '!emptydirs')
+validpgpkeys=('6C37DC12121A5006BC1DB804DF6FD971306037D9')
+source=(
+  "https://ftp.gnu.org/gnu/coreutils/coreutils-${pkgver}.tar.xz"
+  "https://ftp.gnu.org/gnu/coreutils/coreutils-${pkgver}.tar.xz.sig"
+  "001-coreutils-8.30.patch::https://raw.githubusercontent.com/crutkas/MSYS2-packages/73248abe/coreutils/001-coreutils-8.30.patch"
+  "002-coreutils-8.32-enable-stdbuf.patch::https://raw.githubusercontent.com/crutkas/MSYS2-packages/73248abe/coreutils/002-coreutils-8.32-enable-stdbuf.patch"
+  "003-coreutils-8.32-fix-test-cases.patch::https://raw.githubusercontent.com/crutkas/MSYS2-packages/73248abe/coreutils/003-coreutils-8.32-fix-test-cases.patch"
+  "004-msystem-osname-cygwin.patch::https://raw.githubusercontent.com/crutkas/MSYS2-packages/73248abe/coreutils/004-msystem-osname-cygwin.patch"
+  "check-aarch64-pseudo-relocs.ps1::https://raw.githubusercontent.com/crutkas/MSYS2-packages/3356eec1411983cc252b04afac32bca5f3b8d824/.ci/check-aarch64-pseudo-relocs.ps1"
+  path-manifest.json
+  dependency-lock.json
+)
+sha256sums=(
+  '4458d8de7849df44ccab15e16b1548b285224dbba5f08fac070c1c0e0bcc4cfa'
+  '71b944375b322ba77c9c56b687b48df885c676d4fd7c465b3706713a9b62ce0a'
+  '467bde24da0ccea48260f58d3c94a84de4e027ab598a926003642f791da47ca2'
+  'e3be62b9aceb3231f09f05bc3bd8b18f6aaa495f5063781cdd261d560a7e80d0'
+  'ad9e0582373500c0668e38483401169f48d6a2f8ad8d28ef8e7b06e4a3e08a74'
+  '3922afd54b2323772f5cbd0638d0887ef858199bbaf4076a1db318173021c3dc'
+  '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9'
+  'SKIP'
+  'SKIP'
+)
+
+_assert_final_toolchain() {
+  local actual compiler resolved tool
+
+  export PATH="/opt/bin:${PATH}"
+  test -x "${_private_pacman}"
+  test "${PACMAN:-}" = "${_private_pacman}"
+  test "${MSYSTEM:-}" = MSYS
+  test "${CARCH:-}" = x86_64
+  test "$(uname -m)" = x86_64
+  test "$("${_private_pacman}" -Q mingw-w64-cross-cygwinarm64-binutils)" = \
+    "mingw-w64-cross-cygwinarm64-binutils ${_binutils_version}"
+  test "$("${_private_pacman}" -Q mingw-w64-cross-msysarm64-gcc)" = \
+    "mingw-w64-cross-msysarm64-gcc ${_gcc_version}"
+  test "$("${_private_pacman}" -Q mingw-w64-cross-msysarm64-gcc-libs)" = \
+    "mingw-w64-cross-msysarm64-gcc-libs ${_gcc_version}"
+  test "$("${_private_pacman}" -Q mingw-w64-cross-msysarm64-runtime)" = \
+    "mingw-w64-cross-msysarm64-runtime ${_runtime_version}"
+  test "$("${_private_pacman}" -Q mingw-w64-cross-msysarm64-runtime-devel)" = \
+    "mingw-w64-cross-msysarm64-runtime-devel ${_runtime_version}"
+  test "$("${_private_pacman}" -Q mingw-w64-cross-msysarm64-sysroot)" = \
+    "mingw-w64-cross-msysarm64-sysroot ${_runtime_version}"
+  test "$("${_private_pacman}" -Q mingw-w64-cross-msysarm64-w32api-runtime)" = \
+    "mingw-w64-cross-msysarm64-w32api-runtime ${_w32api_version}"
+  test "$("${_private_pacman}" -Q mingw-w64-cross-msysarm64-gmp)" = \
+    "mingw-w64-cross-msysarm64-gmp ${_gmp_version}"
+  test "$("${_private_pacman}" -Q mingw-w64-cross-msysarm64-gmp-devel)" = \
+    "mingw-w64-cross-msysarm64-gmp-devel ${_gmp_version}"
+  test "$("${_private_pacman}" -Q mingw-w64-cross-msysarm64-libiconv)" = \
+    "mingw-w64-cross-msysarm64-libiconv ${_libiconv_version}"
+  test "$("${_private_pacman}" -Q mingw-w64-cross-msysarm64-libiconv-devel)" = \
+    "mingw-w64-cross-msysarm64-libiconv-devel ${_libiconv_version}"
+  test "$("${_private_pacman}" -Q mingw-w64-cross-msysarm64-libintl)" = \
+    "mingw-w64-cross-msysarm64-libintl ${_libintl_version}"
+  test "$("${_private_pacman}" -Q mingw-w64-cross-msysarm64-libintl-devel)" = \
+    "mingw-w64-cross-msysarm64-libintl-devel ${_libintl_version}"
+
+  actual="$(sha256sum /opt/bin/aarch64-pc-cygwin-ld.exe | cut -d ' ' -f 1)"
+  test "${actual}" = "${_linker_sha256}"
+  actual="$(sha256sum "${srcdir}/check-aarch64-pseudo-relocs.ps1" |
+    cut -d ' ' -f 1)"
+  test "${actual}" = "${_scanner_sha256}"
+
+  compiler="$(command -v "${_target}-gcc")"
+  test "${compiler}" = "/opt/bin/${_target}-gcc"
+  test "$("${_private_pacman}" -Qoq "${compiler}.exe")" = \
+    mingw-w64-cross-msysarm64-gcc
+  test "$("${compiler}" -dumpmachine)" = "${_target}"
+  test "$("${compiler}" -dumpfullversion)" = 15.0.1
+  test "$("${compiler}" -print-sysroot)" = "${_target_root}"
+
+  for tool in ar as ld nm objdump ranlib strip; do
+    resolved="$("${compiler}" -B/opt/bin/ "-print-prog-name=${tool}")"
+    case "${resolved}" in
+      /opt/bin/aarch64-pc-cygwin-${tool}|\
+      /opt/bin/aarch64-pc-cygwin-${tool}.exe)
+        ;;
+      *)
+        printf 'ERROR: compiler selected non-admitted %s: %s\n' \
+          "${tool}" "${resolved}" >&2
+        return 1
+        ;;
+    esac
+  done
+}
+
+_assert_no_host_leakage() {
+  local search flags variable value
+
+  search="$("${_target}-gcc" -B/opt/bin/ --sysroot="${_target_root}" \
+    -print-search-dirs)"
+  search="${search//${_target_root}/TARGET_ROOT}"
+  if grep -Eiq \
+      '(^|[;:])(C:[\\/]msys64|/usr/(include|lib)|/mingw|/ucrt|x86_64)' \
+      <<< "${search}"; then
+    printf 'ERROR: target compiler search path leaks host/shared roots\n' >&2
+    printf '%s\n' "${search}" >&2
+    return 1
+  fi
+  flags="${CPPFLAGS} ${CFLAGS} ${LDFLAGS}"
+  flags="${flags//${_target_root}/TARGET_ROOT}"
+  case "${flags}" in
+    *C:\\msys64*|*/usr/include*|*/usr/lib*|*/mingw*|*/ucrt*|*x86_64*)
+      printf 'ERROR: target flags leak host/shared roots\n' >&2
+      return 1
+      ;;
+  esac
+  for variable in CPATH C_INCLUDE_PATH CPLUS_INCLUDE_PATH LIBRARY_PATH \
+    PKG_CONFIG_PATH PKG_CONFIG_LIBDIR
+  do
+    value="${!variable:-}"
+    value="${value//${_target_root}/TARGET_ROOT}"
+    if grep -Eiq \
+        'C:[\\/]msys64|(^|:)/usr/(include|lib)|/mingw|/ucrt|x86_64' \
+        <<< "${value}"; then
+      printf 'ERROR: %s leaks host/shared roots: %s\n' \
+        "${variable}" "${value}" >&2
+      return 1
+    fi
+  done
+}
+
+prepare() {
+  cd "${srcdir}/coreutils-${pkgver}"
+
+  patch -Nbp1 -i "${srcdir}/001-coreutils-8.30.patch"
+  patch -Nbp1 -i "${srcdir}/002-coreutils-8.32-enable-stdbuf.patch"
+  patch -Nbp1 -i "${srcdir}/003-coreutils-8.32-fix-test-cases.patch"
+  patch -Nbp1 -i "${srcdir}/004-msystem-osname-cygwin.patch"
+  autoreconf -fiv
+}
+
+build() {
+  local build_dir="${srcdir}/build-${_target}"
+  local dependency_root="${_target_root}/usr"
+  local prefix_map="-ffile-prefix-map=${srcdir}=. -fdebug-prefix-map=${srcdir}=. -fmacro-prefix-map=${srcdir}=."
+
+  _assert_final_toolchain
+  rm -rf "${build_dir}" "${srcdir}/dest"
+  mkdir -p "${build_dir}" "${srcdir}/dest"
+
+  export PATH="/opt/bin:${PATH}"
+  export CC="${_target}-gcc"
+  export AR="/opt/bin/${_target}-ar"
+  export AS="/opt/bin/${_target}-as"
+  export LD="/opt/bin/${_target}-ld"
+  export NM="/opt/bin/${_target}-nm"
+  export OBJDUMP="/opt/bin/${_target}-objdump"
+  export RANLIB="/opt/bin/${_target}-ranlib"
+  export STRIP="/opt/bin/${_target}-strip"
+  export CPPFLAGS="-isystem ${_target_root}/include -isystem ${_target_root}/include/w32api -isystem ${dependency_root}/include"
+  export CFLAGS="-O2 -pipe ${prefix_map} -B/opt/bin/ --sysroot=${_target_root}"
+  export LDFLAGS="-B/opt/bin/ --sysroot=${_target_root} -specs=${_target_root}/lib/cygwin-compile-only.specs -L${dependency_root}/lib"
+  export LIBS="-liconv -lintl"
+  export gl_cv_have_weak=no
+  export gl_cv_func_strtod_works=yes
+  export gl_cv_func_strtold_works=yes
+
+  _assert_no_host_leakage
+  (
+    cd "${build_dir}"
+    CC_FOR_BUILD=gcc \
+    CFLAGS_FOR_BUILD='-O2 -pipe' \
+      "${srcdir}/coreutils-${pkgver}/configure" \
+      --build="${CHOST}" \
+      --host="${_target}" \
+      --prefix=/usr \
+      --libexecdir=/usr/lib \
+      --sysconfdir=/etc \
+      --localstatedir=/var \
+      --program-transform-name=s/kill/gkill/ \
+      --with-gmp="${dependency_root}" \
+      --with-libiconv-prefix="${dependency_root}" \
+      --with-libintl-prefix="${dependency_root}" \
+      --enable-install-program=arch,hostname \
+      --enable-no-install-program=uptime
+  )
+  make -C "${build_dir}" -j"$(nproc)"
+  make -C "${build_dir}" DESTDIR="${srcdir}/dest" install
+
+  if [[ -f "${srcdir}/dest/usr/lib/coreutils/libstdbuf.so.exe" ]]; then
+    mv "${srcdir}/dest/usr/lib/coreutils/libstdbuf.so.exe" \
+      "${srcdir}/dest/usr/lib/coreutils/libstdbuf.dll"
+  fi
+}
+
+check() {
+  local root="${srcdir}/dest"
+  local report="${srcdir}/coreutils-report"
+  local work="${srcdir}/coreutils-audit-work"
+  local objdump=/opt/bin/${_target}-objdump
+  local ar=/opt/bin/${_target}-ar
+  local nm=/opt/bin/${_target}-nm
+  local file info imports member armap stdbuf_dll
+  local -a expected pe_files archives objects exports
+
+  _assert_final_toolchain
+  rm -rf "${report}" "${work}"
+  mkdir -p "${report}/pseudo-relocs" "${work}"
+  mapfile -t expected < <(
+    python - "${srcdir}/path-manifest.json" <<'PY'
+import json
+import sys
+for path in json.load(open(sys.argv[1], encoding="utf-8"))["baseline"]["paths"]:
+    print(path)
+PY
+  )
+  test "${#expected[@]}" -eq 108
+  for file in "${expected[@]}"; do
+    test -f "${root}/${file}"
+  done
+
+  cat > "${work}/abi-probe.c" <<'EOF'
+#if !defined(__aarch64__) || !defined(__MSYS__)
+#error wrong target personality
+#endif
+_Static_assert(sizeof(void *) == 8, "AArch64 pointer width required");
+_Static_assert(sizeof(long) == 8, "MSYS AArch64 must use LP64");
+int main(void) { return 0; }
+EOF
+  "${_target}-gcc" \
+    -B/opt/bin/ \
+    --sysroot="${_target_root}" \
+    -specs="${_target_root}/lib/cygwin-compile-only.specs" \
+    "${work}/abi-probe.c" \
+    -o "${work}/abi-probe.exe"
+  info="$("${objdump}" -f "${work}/abi-probe.exe")"
+  grep -Fqi 'architecture: aarch64' <<< "${info}"
+  grep -Fqi 'file format pei-aarch64-little' <<< "${info}"
+  "${objdump}" -h "${work}/abi-probe.exe" | grep -Eq '\.(pdata|xdata)'
+  imports="$("${objdump}" -p "${work}/abi-probe.exe" |
+    sed -n 's/^[[:space:]]*DLL Name: //p')"
+  grep -Fqi 'msys-2.0.dll' <<< "${imports}"
+  ! grep -Eiq \
+    'cygwin1\.dll|x86_64|i[3-6]86|msvcrt|ucrtbase|libwinpthread|libgcc_s_seh' \
+    <<< "${imports}"
+  pwsh -NoProfile -File "${srcdir}/check-aarch64-pseudo-relocs.ps1" \
+    -PePath "${work}/abi-probe.exe" \
+    -OutputPath "${report}/pseudo-relocs/abi-probe.exe.json" \
+    -Objdump "${objdump}.exe" \
+    -Nm "${nm}.exe"
+
+  cat > "${work}/gmp-probe.c" <<'EOF'
+#include <gmp.h>
+
+int main(void)
+{
+  mpz_t value;
+  int result;
+
+  mpz_init_set_ui(value, 21);
+  mpz_mul_ui(value, value, 2);
+  result = mpz_cmp_ui(value, 42);
+  mpz_clear(value);
+  return result == 0 ? 0 : 1;
+}
+EOF
+  "${_target}-gcc" \
+    -B/opt/bin/ \
+    --sysroot="${_target_root}" \
+    -specs="${_target_root}/lib/cygwin-compile-only.specs" \
+    -I"${_target_root}/usr/include" \
+    "${work}/gmp-probe.c" \
+    -L"${_target_root}/usr/lib" \
+    -lgmp \
+    -o "${work}/gmp-dynamic-probe.exe"
+  "${_target}-gcc" \
+    -B/opt/bin/ \
+    --sysroot="${_target_root}" \
+    -specs="${_target_root}/lib/cygwin-compile-only.specs" \
+    -I"${_target_root}/usr/include" \
+    "${work}/gmp-probe.c" \
+    "${_target_root}/usr/lib/libgmp.a" \
+    -o "${work}/gmp-static-probe.exe"
+  cat > "${work}/stdbuf-behavior-probe.c" <<'EOF'
+#include <stdio.h>
+#include <unistd.h>
+
+int main(void)
+{
+  fputs("ready\n", stdout);
+  sleep(2);
+  return 0;
+}
+EOF
+  "${_target}-gcc" \
+    -B/opt/bin/ \
+    --sysroot="${_target_root}" \
+    -specs="${_target_root}/lib/cygwin-compile-only.specs" \
+    "${work}/stdbuf-behavior-probe.c" \
+    -o "${work}/stdbuf-behavior-probe.exe"
+  for file in \
+    "${work}/gmp-dynamic-probe.exe" \
+    "${work}/gmp-static-probe.exe" \
+    "${work}/stdbuf-behavior-probe.exe"
+  do
+    info="$("${objdump}" -f "${file}")"
+    grep -Fqi 'architecture: aarch64' <<< "${info}"
+    grep -Fqi 'file format pei-aarch64-little' <<< "${info}"
+    imports="$("${objdump}" -p "${file}" |
+      sed -n 's/^[[:space:]]*DLL Name: //p')"
+    grep -Fqi 'msys-2.0.dll' <<< "${imports}"
+    ! grep -Eiq \
+      'cygwin1\.dll|x86_64|i[3-6]86|msvcrt|ucrtbase|libwinpthread|libgcc_s_seh' \
+      <<< "${imports}"
+    pwsh -NoProfile -File "${srcdir}/check-aarch64-pseudo-relocs.ps1" \
+      -PePath "${file}" \
+      -OutputPath "${report}/pseudo-relocs/${file##*/}.json" \
+      -Objdump "${objdump}.exe" \
+      -Nm "${nm}.exe"
+  done
+  imports="$("${objdump}" -p "${work}/gmp-dynamic-probe.exe" |
+    sed -n 's/^[[:space:]]*DLL Name: //p')"
+  grep -Eiq '^msys-gmp-[0-9]+\.dll$' <<< "${imports}"
+  imports="$("${objdump}" -p "${work}/gmp-static-probe.exe" |
+    sed -n 's/^[[:space:]]*DLL Name: //p')"
+  ! grep -Eiq '^msys-gmp-[0-9]+\.dll$' <<< "${imports}"
+
+  mapfile -d '' -t pe_files < <(
+    find "${root}" -type f \( -name '*.exe' -o -name '*.dll' \) -print0 |
+      LC_ALL=C sort -z
+  )
+  test "${#pe_files[@]}" -eq 108
+  : > "${report}/pe-audit.txt"
+  : > "${report}/imports.txt"
+  for file in "${pe_files[@]}"; do
+    info="$("${objdump}" -f "${file}")"
+    grep -Fqi 'architecture: aarch64' <<< "${info}"
+    grep -Eqi 'file format pei?-aarch64-little' <<< "${info}"
+    imports="$("${objdump}" -p "${file}" |
+      sed -n 's/^[[:space:]]*DLL Name: //p')"
+    grep -Fqi 'msys-2.0.dll' <<< "${imports}"
+    ! grep -Eiq \
+      'cygwin1\.dll|x86_64|i[3-6]86|msvcrt|ucrtbase|libwinpthread|libgcc_s_seh' \
+      <<< "${imports}"
+    printf '%s\n%s\n' "${file#${root}/}" "${info}" \
+      >> "${report}/pe-audit.txt"
+    printf '%s\n%s\n' "${file#${root}/}" "${imports}" \
+      >> "${report}/imports.txt"
+    pwsh -NoProfile -File "${srcdir}/check-aarch64-pseudo-relocs.ps1" \
+      -PePath "${file}" \
+      -OutputPath "${report}/pseudo-relocs/${file##*/}.json" \
+      -Objdump "${objdump}.exe" \
+      -Nm "${nm}.exe"
+  done
+
+  stdbuf_dll="${root}/usr/lib/coreutils/libstdbuf.dll"
+  test -f "${stdbuf_dll}"
+  "${objdump}" -p "${stdbuf_dll}" > "${report}/libstdbuf-pe.txt"
+  "${nm}" --defined-only "${stdbuf_dll}" > "${report}/libstdbuf-symbols.txt"
+  test -s "${report}/libstdbuf-symbols.txt"
+  mapfile -t exports < <(
+    awk '
+      /^\[Ordinal\/Name Pointer\]/ { in_exports = 1; next }
+      in_exports && NF == 0 { exit }
+      in_exports && $1 == "[" { print $NF }
+    ' "${report}/libstdbuf-pe.txt" | LC_ALL=C sort
+  )
+  test "${#exports[@]}" -eq 2
+  diff -u \
+    <(printf '%s\n' __gcc_deregister_frame __gcc_register_frame) \
+    <(printf '%s\n' "${exports[@]}")
+
+  mapfile -d '' -t archives < <(
+    find "${root}" -type f \( -name '*.a' -o -name '*.dll.a' \) -print0 |
+      LC_ALL=C sort -z
+  )
+  for file in "${archives[@]}"; do
+    armap="$("${nm}" --print-armap "${file}")"
+    grep -Fq 'Archive index:' <<< "${armap}"
+    while IFS= read -r member; do
+      test -n "${member}"
+      "${ar}" p "${file}" "${member}" > "${work}/member.o"
+      info="$("${objdump}" -f "${work}/member.o")"
+      grep -Fqi 'architecture: aarch64' <<< "${info}"
+      grep -Fqi 'file format pe-aarch64-little' <<< "${info}"
+    done < <("${ar}" t "${file}")
+  done
+  mapfile -d '' -t objects < <(find "${root}" -type f -name '*.o' -print0)
+  for file in "${objects[@]}"; do
+    info="$("${objdump}" -f "${file}")"
+    grep -Fqi 'architecture: aarch64' <<< "${info}"
+    grep -Fqi 'file format pe-aarch64-little' <<< "${info}"
+  done
+
+  {
+    printf 'target=%s\n' "${_target}"
+    printf 'personality=MSYS\n'
+    printf 'abi=LP64/AAPCS64/SEH\n'
+    printf 'staged-pe-count=%s\n' "${#pe_files[@]}"
+    printf 'package-pe-count=30\n'
+    printf 'linked-consumer-count=4\n'
+    printf 'busybox-direct-overlap=54\n'
+    printf 'busybox-semantic-proof-count=24\n'
+    printf 'dependency-removal-count=0\n'
+    printf 'libstdbuf-export-count=2\n'
+    printf 'busybox-cross-package=5\n'
+    printf 'remaining-coreutils-x64-gap=0\n'
+    printf 'scanner-sha256=%s\n' "${_scanner_sha256}"
+    printf 'linker-sha256=%s\n' "${_linker_sha256}"
+  } > "${report}/identity.txt"
+}
+
+package() {
+  local source_root="${srcdir}/dest"
+  local target_root="${pkgdir}${_target_root}"
+  local license_dir="${pkgdir}/usr/share/licenses/${pkgname}"
+  local path
+  local -a native busybox packaged
+
+  provides=("aarch64-pc-msys-coreutils=${pkgver}")
+  conflicts=('aarch64-pc-msys-coreutils')
+
+  mapfile -t native < <(
+    python - "${srcdir}/path-manifest.json" <<'PY'
+import json
+import sys
+for path in json.load(open(sys.argv[1], encoding="utf-8"))["native_coreutils"]["paths"]:
+    print(path)
+PY
+  )
+  mapfile -t busybox < <(
+    python - "${srcdir}/path-manifest.json" <<'PY'
+import json
+import sys
+for path in json.load(open(sys.argv[1], encoding="utf-8"))["busybox"]["paths"]:
+    print(path)
+PY
+  )
+  test "${#native[@]}" -eq 30
+  for path in "${native[@]}"; do
+    test -f "${source_root}/${path}"
+    install -Dm755 "${source_root}/${path}" "${target_root}/${path}"
+  done
+  install -Dm644 "${srcdir}/path-manifest.json" \
+    "${pkgdir}/usr/share/${pkgname}/path-manifest.json"
+  install -Dm644 "${srcdir}/dependency-lock.json" \
+    "${pkgdir}/usr/share/${pkgname}/dependency-lock.json"
+  install -Dm644 "${srcdir}/coreutils-${pkgver}/COPYING" \
+    "${license_dir}/COPYING"
+
+  mapfile -t packaged < <(
+    find "${target_root}" -type f \( -name '*.exe' -o -name '*.dll' \) |
+      sed "s|^${target_root}/||" | LC_ALL=C sort
+  )
+  test "${#packaged[@]}" -eq 30
+  diff -u <(printf '%s\n' "${native[@]}" | LC_ALL=C sort) \
+    <(printf '%s\n' "${packaged[@]}")
+  ! comm -12 \
+    <(printf '%s\n' "${busybox[@]}" | LC_ALL=C sort) \
+    <(printf '%s\n' "${packaged[@]}" | LC_ALL=C sort) |
+    grep .
+}

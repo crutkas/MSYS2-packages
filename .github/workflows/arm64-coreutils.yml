@@ -1,0 +1,486 @@
+name: fork native ARM64 coreutils
+
+on:
+  push:
+    branches:
+      - crutkas-port-native-arm64-coreutils
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: arm64-coreutils-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+env:
+  PACKAGE_DIR: mingw-w64-cross-msysarm64-coreutils
+
+jobs:
+  contract:
+    if: github.repository == 'crutkas/MSYS2-packages'
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Validate path, source, dependency, and negative contracts
+        shell: pwsh
+        run: |
+          python -m unittest -v "$env:PACKAGE_DIR/test_validate_contract.py"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'coreutils contract tests failed'
+          }
+          & "$env:PACKAGE_DIR/test-native-smoke-contract.ps1"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'native smoke static contract failed'
+          }
+
+      - name: Check shell syntax
+        shell: pwsh
+        run: |
+          $bash = 'C:\msys64\usr\bin\bash.exe'
+          & $bash -n "$env:PACKAGE_DIR/PKGBUILD"
+          if ($LASTEXITCODE -ne 0) { throw 'PKGBUILD syntax check failed' }
+          & $bash -n "$env:PACKAGE_DIR/validate-package-lifecycle.sh"
+          if ($LASTEXITCODE -ne 0) { throw 'lifecycle syntax check failed' }
+
+  admission:
+    if: github.repository == 'crutkas/MSYS2-packages'
+    runs-on: windows-2025
+    outputs:
+      admitted: ${{ steps.gate.outputs.admitted }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Enforce dependency admission
+        id: gate
+        shell: pwsh
+        run: |
+          python "$env:PACKAGE_DIR/validate_contract.py"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'dependency contract validation failed before admission'
+          }
+          $lock = Get-Content "$env:PACKAGE_DIR/dependency-lock.json" -Raw |
+            ConvertFrom-Json
+          $missing = @(
+            @($lock.toolchain_assets) +
+            @($lock.target_dependency_assets) +
+            @($lock.execution_inputs) |
+              Where-Object {
+                -not $_.admitted -or
+                $_.diagnostic_only -or
+                $_.immutable -ne $true
+              } |
+              ForEach-Object {
+                if ($_.package) { $_.package } else { $_.name }
+              }
+          )
+          if (-not $lock.final_build_admitted -or $missing.Count -ne 0) {
+            'admitted=false' >> $env:GITHUB_OUTPUT
+            @(
+              '## Native coreutils build blocked'
+              ''
+              'No provisional/worktree package bytes were substituted.'
+              ''
+              ($missing | ForEach-Object { "- unresolved: ``$_``" })
+            ) >> $env:GITHUB_STEP_SUMMARY
+            throw "final package/native CI is fail-closed: $($missing -join ', ')"
+          }
+          'admitted=true' >> $env:GITHUB_OUTPUT
+
+  build-private-root:
+    if: >-
+      ${{
+        always() &&
+        needs.contract.result == 'success' &&
+        needs.admission.result == 'success' &&
+        needs.admission.outputs.admitted == 'true'
+      }}
+    needs: [contract, admission]
+    runs-on: windows-2025
+    timeout-minutes: 120
+    env:
+      CI_PACKAGE_PREFIXES: mingw-w64-cross-msysarm64-coreutils
+      CI_RUN_CHECK: '1'
+      CI_CANONICALIZE_PACKAGES: '1'
+      SOURCE_DATE_EPOCH: 1787820988
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Validate exact fixed-linker scanner fixtures
+        shell: pwsh
+        run: |
+          $scanner = Join-Path $env:RUNNER_TEMP 'check-aarch64-pseudo-relocs.ps1'
+          Invoke-WebRequest `
+            -Uri 'https://raw.githubusercontent.com/crutkas/MSYS2-packages/3356eec1411983cc252b04afac32bca5f3b8d824/.ci/check-aarch64-pseudo-relocs.ps1' `
+            -OutFile $scanner
+          & pwsh -NoProfile -File "$env:PACKAGE_DIR/test-pseudo-reloc-scanner.ps1" `
+            -Scanner $scanner
+          if ($LASTEXITCODE -ne 0) {
+            throw 'pseudo-reloc scanner fixtures failed'
+          }
+
+      - name: Materialize immutable private build root
+        shell: pwsh
+        run: |
+          $lock = Get-Content "$env:PACKAGE_DIR/dependency-lock.json" -Raw |
+            ConvertFrom-Json
+          $host = $lock.execution_inputs |
+            Where-Object { $_.name -eq 'immutable-host-root' }
+          if (-not $host.admitted -or -not $host.url) {
+            throw 'immutable host root is not admitted'
+          }
+          $archive = Join-Path $env:RUNNER_TEMP 'immutable-host-root.tar.zst'
+          Invoke-WebRequest -Uri $host.url -OutFile $archive
+          if ((Get-Item $archive).Length -ne $host.size) {
+            throw 'immutable host root size mismatch'
+          }
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $host.sha256) {
+            throw "immutable host root hash mismatch: $hash"
+          }
+          $root = Join-Path $env:RUNNER_TEMP 'coreutils-build-root'
+          New-Item -ItemType Directory -Path $root | Out-Null
+          tar.exe -xf $archive -C $root
+          if ($LASTEXITCODE -ne 0) { throw 'host root extraction failed' }
+          "PRIVATE_ROOT=$root" >> $env:GITHUB_ENV
+
+      - name: Seal shared package state
+        shell: pwsh
+        run: |
+          function Get-TreeHash([string]$Path) {
+            $lines = Get-ChildItem -LiteralPath $Path -Recurse -File |
+              Sort-Object FullName |
+              ForEach-Object {
+                $hash = (Get-FileHash $_.FullName -Algorithm SHA256).
+                  Hash.ToLowerInvariant()
+                "$hash $($_.FullName.Substring($Path.Length))"
+              }
+            $bytes = [Text.Encoding]::UTF8.GetBytes(($lines -join "`n") + "`n")
+            [Convert]::ToHexString(
+              [Security.Cryptography.SHA256]::HashData($bytes)
+            ).ToLowerInvariant()
+          }
+          Get-TreeHash 'C:\msys64\var\lib\pacman\local' |
+            Set-Content (Join-Path $env:RUNNER_TEMP 'shared-before-db.sha256')
+          (Get-Item 'C:\msys64\var\log\pacman.log').Length |
+            Set-Content (Join-Path $env:RUNNER_TEMP 'shared-before-log.bytes')
+          (Get-FileHash 'C:\msys64\var\log\pacman.log' -Algorithm SHA256).
+            Hash.ToLowerInvariant() |
+            Set-Content (Join-Path $env:RUNNER_TEMP 'shared-before-log.sha256')
+
+      - name: Download exact admitted package assets
+        shell: pwsh
+        run: |
+          $lock = Get-Content "$env:PACKAGE_DIR/dependency-lock.json" -Raw |
+            ConvertFrom-Json
+          $destination = Join-Path $env:RUNNER_TEMP 'locked-packages'
+          New-Item -ItemType Directory -Path $destination | Out-Null
+          $assets = @($lock.toolchain_assets) + @($lock.target_dependency_assets)
+          foreach ($asset in $assets) {
+            if (-not $asset.admitted -or $asset.diagnostic_only) {
+              $identity = if ($asset.package) { $asset.package } else { $asset.name }
+              throw "build input is not admitted: $identity"
+            }
+            $name = if ($asset.name) { $asset.name } else { $asset.asset_name }
+            $url = if ($asset.url) {
+              $asset.url
+            } else {
+              "https://github.com/crutkas/MSYS2-packages/releases/download/$($asset.tag ?? $asset.release_tag)/$name"
+            }
+            $path = Join-Path $destination $name
+            Invoke-WebRequest -Uri $url -OutFile $path
+            if ((Get-Item $path).Length -ne $asset.size) {
+              throw "size mismatch: $name"
+            }
+            $hash = (Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant()
+            if ($hash -ne $asset.sha256) {
+              throw "SHA-256 mismatch for $name`: $hash"
+            }
+          }
+          "LOCKED_PACKAGES=$destination" >> $env:GITHUB_ENV
+
+      - name: Install target closure into private root
+        shell: pwsh
+        run: |
+          $pacman = Join-Path $env:PRIVATE_ROOT 'usr\bin\pacman.exe'
+          $db = Join-Path $env:PRIVATE_ROOT 'var\lib\pacman'
+          $cache = Join-Path $env:PRIVATE_ROOT 'var\cache\pacman\pkg'
+          $log = Join-Path $env:PRIVATE_ROOT 'var\log\pacman.log'
+          $config = Join-Path $env:PRIVATE_ROOT 'etc\pacman.conf'
+          $hooks = Join-Path $env:PRIVATE_ROOT 'etc\pacman.d\hooks'
+          New-Item -ItemType Directory -Force -Path $db, $cache, $hooks | Out-Null
+          $packages = Get-ChildItem $env:LOCKED_PACKAGES -Filter '*.pkg.tar.zst' |
+            Sort-Object Name |
+            Select-Object -ExpandProperty FullName
+          $env:MSYS = 'winsymlinks:sys'
+          & $pacman `
+            --root $env:PRIVATE_ROOT `
+            --dbpath $db `
+            --cachedir $cache `
+            --logfile $log `
+            --config $config `
+            --hookdir $hooks `
+            --noconfirm -U @packages
+          if ($LASTEXITCODE -ne 0) {
+            throw 'private-root dependency transaction failed'
+          }
+
+      - name: Build and audit coreutils
+        shell: pwsh
+        run: |
+          $bash = Join-Path $env:PRIVATE_ROOT 'usr\bin\bash.exe'
+          $repo = & (Join-Path $env:PRIVATE_ROOT 'usr\bin\cygpath.exe') `
+            -u $env:GITHUB_WORKSPACE
+          $wrapper = Join-Path $env:PRIVATE_ROOT 'opt\private-bin'
+          New-Item -ItemType Directory -Force -Path $wrapper | Out-Null
+          $wrapperContent = @'
+          #!/usr/bin/bash
+          exec /usr/bin/pacman \
+            --root / \
+            --dbpath /var/lib/pacman \
+            --cachedir /var/cache/pacman/pkg \
+            --logfile /var/log/pacman.log \
+            --config /etc/pacman.conf \
+            --hookdir /etc/pacman.d/hooks \
+            "$@"
+          '@
+          [IO.File]::WriteAllText(
+            (Join-Path $wrapper 'pacman'),
+            $wrapperContent.Replace("`r`n", "`n").TrimStart(),
+            [Text.UTF8Encoding]::new($false)
+          )
+          $env:MSYS = 'winsymlinks:sys'
+          $env:MSYS2_PATH_TYPE = 'inherit'
+          $script = @'
+          set -euo pipefail
+          chmod +x /opt/private-bin/pacman
+          export PATH=/opt/private-bin:/usr/bin:/opt/bin
+          export PACMAN=/opt/private-bin/pacman
+          export HOME=/home/coreutils-build
+          export PKGDEST='REPO/artifacts'
+          export SRCDEST='REPO/PACKAGE/src-cache'
+          mkdir -p "$HOME" "$PKGDEST" "$SRCDEST"
+          cd 'REPO/PACKAGE'
+          makepkg --cleanbuild --noconfirm --check
+          test -f src/coreutils-report/identity.txt
+          grep -Fx 'staged-pe-count=108' src/coreutils-report/identity.txt
+          grep -Fx 'package-pe-count=30' src/coreutils-report/identity.txt
+          grep -Fx 'busybox-semantic-proof-count=24' src/coreutils-report/identity.txt
+          grep -Fx 'dependency-removal-count=0' src/coreutils-report/identity.txt
+          grep -Fx 'libstdbuf-export-count=2' src/coreutils-report/identity.txt
+          grep -Fx 'linked-consumer-count=4' src/coreutils-report/identity.txt
+          grep -Fx 'remaining-coreutils-x64-gap=0' src/coreutils-report/identity.txt
+          '@.Replace('REPO', $repo).Replace('PACKAGE', $env:PACKAGE_DIR)
+          & $bash --login -lc $script
+          if ($LASTEXITCODE -ne 0) { throw 'private-root package build failed' }
+
+      - name: Audit isolated install/remove/reinstall
+        shell: pwsh
+        run: |
+          $bash = Join-Path $env:PRIVATE_ROOT 'usr\bin\bash.exe'
+          $cygpath = Join-Path $env:PRIVATE_ROOT 'usr\bin\cygpath.exe'
+          $repo = & $cygpath -u $env:GITHUB_WORKSPACE
+          $inputs = & $cygpath -u $env:LOCKED_PACKAGES
+          $candidates = @(
+            Get-ChildItem (Join-Path $env:GITHUB_WORKSPACE 'artifacts') `
+              -Filter 'mingw-w64-cross-msysarm64-coreutils-*.pkg.tar.zst'
+          )
+          if ($candidates.Count -ne 1) {
+            throw "expected one candidate package, got $($candidates.Count)"
+          }
+          $candidate = & $cygpath -u $candidates[0].FullName
+          $root = & $cygpath -u (Join-Path $env:RUNNER_TEMP 'lifecycle-root')
+          $evidence = & $cygpath -u (Join-Path $env:RUNNER_TEMP 'lifecycle-evidence')
+          $env:SHARED_DB = '/c/msys64/var/lib/pacman/local'
+          $env:SHARED_LOG = '/c/msys64/var/log/pacman.log'
+          & $bash --login "$repo/$env:PACKAGE_DIR/validate-package-lifecycle.sh" `
+            $root $inputs $candidate $evidence
+          if ($LASTEXITCODE -ne 0) { throw 'package lifecycle audit failed' }
+
+      - name: Prove shared package state unchanged
+        if: always()
+        shell: pwsh
+        run: |
+          function Get-TreeHash([string]$Path) {
+            $lines = Get-ChildItem -LiteralPath $Path -Recurse -File |
+              Sort-Object FullName |
+              ForEach-Object {
+                $hash = (Get-FileHash $_.FullName -Algorithm SHA256).
+                  Hash.ToLowerInvariant()
+                "$hash $($_.FullName.Substring($Path.Length))"
+              }
+            $bytes = [Text.Encoding]::UTF8.GetBytes(($lines -join "`n") + "`n")
+            [Convert]::ToHexString(
+              [Security.Cryptography.SHA256]::HashData($bytes)
+            ).ToLowerInvariant()
+          }
+          $beforeDb = Get-Content (
+            Join-Path $env:RUNNER_TEMP 'shared-before-db.sha256')
+          $beforeBytes = Get-Content (
+            Join-Path $env:RUNNER_TEMP 'shared-before-log.bytes')
+          $beforeLog = Get-Content (
+            Join-Path $env:RUNNER_TEMP 'shared-before-log.sha256')
+          $afterDb = Get-TreeHash 'C:\msys64\var\lib\pacman\local'
+          $afterBytes = (Get-Item 'C:\msys64\var\log\pacman.log').Length
+          $afterLog = (Get-FileHash 'C:\msys64\var\log\pacman.log' `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($beforeDb -ne $afterDb -or
+              [int64]$beforeBytes -ne $afterBytes -or
+              $beforeLog -ne $afterLog) {
+            throw 'shared C:\msys64 package database or log changed'
+          }
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: MSYS-arm64-coreutils-package
+          path: artifacts/mingw-w64-cross-msysarm64-coreutils-*.pkg.tar.zst
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: MSYS-arm64-coreutils-smoke
+          path: |
+            mingw-w64-cross-msysarm64-coreutils/src/coreutils-audit-work/abi-probe.exe
+            mingw-w64-cross-msysarm64-coreutils/src/coreutils-audit-work/gmp-dynamic-probe.exe
+            mingw-w64-cross-msysarm64-coreutils/src/coreutils-audit-work/gmp-static-probe.exe
+            mingw-w64-cross-msysarm64-coreutils/src/coreutils-audit-work/stdbuf-behavior-probe.exe
+          if-no-files-found: error
+
+  native-windows-arm:
+    if: >-
+      ${{
+        always() &&
+        needs.build-private-root.result == 'success'
+      }}
+    needs: build-private-root
+    runs-on: windows-11-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: MSYS-arm64-coreutils-package
+          path: packages
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: MSYS-arm64-coreutils-smoke
+          path: smoke
+
+      - name: Materialize admitted native root
+        shell: pwsh
+        run: |
+          $lock = Get-Content "$env:PACKAGE_DIR/dependency-lock.json" -Raw |
+            ConvertFrom-Json
+          $gitInput = $lock.execution_inputs |
+            Where-Object { $_.name -eq 'arm64-git-payload' }
+          $busyboxInput = $lock.execution_inputs |
+            Where-Object { $_.name -eq 'clean-busybox-payload' }
+          $semanticInput = $lock.execution_inputs |
+            Where-Object { $_.name -eq 'clean-busybox-semantic-proof-payload' }
+          if (-not $gitInput.admitted -or -not $gitInput.url) {
+            throw 'ARM64 Git payload is not admitted'
+          }
+          if (-not $busyboxInput.admitted -or -not $busyboxInput.url) {
+            throw 'BusyBox payload is not admitted'
+          }
+          if (-not $semanticInput.admitted -or -not $semanticInput.url) {
+            throw 'BusyBox semantic proof payload is not admitted'
+          }
+          $root = Join-Path $env:RUNNER_TEMP 'native-root'
+          $gitRoot = Join-Path $env:RUNNER_TEMP 'arm64-git'
+          $busyboxRoot = Join-Path $env:RUNNER_TEMP 'arm64-busybox'
+          $semanticRoot = Join-Path $env:RUNNER_TEMP 'arm64-busybox-semantic'
+          New-Item -ItemType Directory -Path `
+            $root, $gitRoot, $busyboxRoot, $semanticRoot |
+            Out-Null
+          $assets = @($lock.toolchain_assets) + @($lock.target_dependency_assets)
+          if ($assets | Where-Object { -not $_.admitted -or $_.diagnostic_only }) {
+            throw 'native dependency closure contains diagnostic/unadmitted inputs'
+          }
+          $assets = $assets | Where-Object {
+            $_.name -match 'msysarm64-(runtime|gcc-libs)' -or
+            $_.asset_name -match 'msysarm64-(gmp|libiconv|libintl)'
+          }
+          foreach ($asset in $assets) {
+            $name = if ($asset.name) { $asset.name } else { $asset.asset_name }
+            $tag = if ($asset.tag) { $asset.tag } else { $asset.release_tag }
+            $path = Join-Path 'packages' $name
+            Invoke-WebRequest `
+              -Uri "https://github.com/crutkas/MSYS2-packages/releases/download/$tag/$name" `
+              -OutFile $path
+            if ((Get-Item $path).Length -ne $asset.size -or
+                (Get-FileHash $path -Algorithm SHA256).Hash.ToLowerInvariant() -ne
+                  $asset.sha256) {
+              throw "native dependency identity mismatch: $name"
+            }
+          }
+          foreach ($archive in Get-ChildItem packages -Filter '*.pkg.tar.zst') {
+            tar.exe -xf $archive.FullName -C $root
+            if ($LASTEXITCODE -ne 0) { throw "failed to extract $($archive.Name)" }
+          }
+          $gitArchive = Join-Path $env:RUNNER_TEMP 'arm64-git.zip'
+          Invoke-WebRequest -Uri $gitInput.url -OutFile $gitArchive
+          if ((Get-Item $gitArchive).Length -ne $gitInput.size -or
+              (Get-FileHash $gitArchive -Algorithm SHA256).
+                Hash.ToLowerInvariant() -ne $gitInput.sha256) {
+            throw 'ARM64 Git payload identity mismatch'
+          }
+          Expand-Archive $gitArchive -DestinationPath $gitRoot
+          $busyboxArchive = Join-Path $env:RUNNER_TEMP 'arm64-busybox.zip'
+          Invoke-WebRequest -Uri $busyboxInput.url -OutFile $busyboxArchive
+          if ((Get-Item $busyboxArchive).Length -ne $busyboxInput.size -or
+              (Get-FileHash $busyboxArchive -Algorithm SHA256).
+                Hash.ToLowerInvariant() -ne $busyboxInput.sha256) {
+            throw 'BusyBox payload identity mismatch'
+          }
+          Expand-Archive $busyboxArchive -DestinationPath $busyboxRoot
+          $semanticArchive = Join-Path $env:RUNNER_TEMP 'arm64-busybox-semantic.zip'
+          Invoke-WebRequest -Uri $semanticInput.url -OutFile $semanticArchive
+          if ((Get-Item $semanticArchive).Length -ne $semanticInput.size -or
+              (Get-FileHash $semanticArchive -Algorithm SHA256).
+                Hash.ToLowerInvariant() -ne $semanticInput.sha256) {
+            throw 'BusyBox semantic proof payload identity mismatch'
+          }
+          Expand-Archive $semanticArchive -DestinationPath $semanticRoot
+          "NATIVE_ROOT=$root" >> $env:GITHUB_ENV
+          "ARM64_GIT_ROOT=$gitRoot" >> $env:GITHUB_ENV
+          "BUSYBOX_ROOT=$busyboxRoot" >> $env:GITHUB_ENV
+          "SEMANTIC_PROOF_ROOT=$semanticRoot" >> $env:GITHUB_ENV
+          "SMOKE_ROOT=$((Resolve-Path smoke).Path)" >> $env:GITHUB_ENV
+
+      - name: Run native semantic and architecture matrix
+        shell: pwsh
+        run: |
+          & "$env:PACKAGE_DIR/native-smoke.ps1" `
+            -Root $env:NATIVE_ROOT `
+            -Arm64GitRoot $env:ARM64_GIT_ROOT `
+            -BusyBoxRoot $env:BUSYBOX_ROOT `
+            -SemanticProofRoot $env:SEMANTIC_PROOF_ROOT `
+            -SmokeRoot $env:SMOKE_ROOT `
+            -EvidencePath native-evidence.json
+          if ($LASTEXITCODE -ne 0) { throw 'native semantic matrix failed' }
+          $evidence = Get-Content native-evidence.json -Raw | ConvertFrom-Json
+          if ($evidence.x64_process_or_module_count -ne 0) {
+            throw 'native evidence contains x64 execution'
+          }
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: MSYS-arm64-coreutils-native-evidence
+          path: native-evidence.json
+          if-no-files-found: error
