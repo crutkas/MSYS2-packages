@@ -1,0 +1,240 @@
+{
+  "schema_version": 1,
+  "target": "aarch64-pc-msys",
+  "personality": "MSYS",
+  "abi": {
+    "data_model": "LP64",
+    "calling_convention": "AAPCS64",
+    "exception_model": "SEH"
+  },
+  "toolchain": {
+    "binutils_commit": "3356eec1411983cc252b04afac32bca5f3b8d824",
+    "linker_sha256": "075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f",
+    "pseudo_reloc_scanner_sha256": "888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9"
+  },
+  "sources": [
+    {
+      "name": "coreutils-8.32.tar.xz",
+      "url": "https://ftp.gnu.org/gnu/coreutils/coreutils-8.32.tar.xz",
+      "size": 5547836,
+      "sha256": "4458d8de7849df44ccab15e16b1548b285224dbba5f08fac070c1c0e0bcc4cfa",
+      "signature": "coreutils-8.32.tar.xz.sig",
+      "signature_size": 833,
+      "signature_sha256": "71b944375b322ba77c9c56b687b48df885c676d4fd7c465b3706713a9b62ce0a",
+      "signing_key": "6C37DC12121A5006BC1DB804DF6FD971306037D9"
+    },
+    {
+      "name": "check-aarch64-pseudo-relocs.ps1",
+      "url": "https://raw.githubusercontent.com/crutkas/MSYS2-packages/3356eec1411983cc252b04afac32bca5f3b8d824/.ci/check-aarch64-pseudo-relocs.ps1",
+      "size": 10569,
+      "sha256": "888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9"
+    },
+    {
+      "name": "001-coreutils-8.30.patch",
+      "url": "https://raw.githubusercontent.com/crutkas/MSYS2-packages/73248abe/coreutils/001-coreutils-8.30.patch",
+      "size": 37853,
+      "sha256": "467bde24da0ccea48260f58d3c94a84de4e027ab598a926003642f791da47ca2"
+    },
+    {
+      "name": "002-coreutils-8.32-enable-stdbuf.patch",
+      "url": "https://raw.githubusercontent.com/crutkas/MSYS2-packages/73248abe/coreutils/002-coreutils-8.32-enable-stdbuf.patch",
+      "size": 1018,
+      "sha256": "e3be62b9aceb3231f09f05bc3bd8b18f6aaa495f5063781cdd261d560a7e80d0"
+    },
+    {
+      "name": "003-coreutils-8.32-fix-test-cases.patch",
+      "url": "https://raw.githubusercontent.com/crutkas/MSYS2-packages/73248abe/coreutils/003-coreutils-8.32-fix-test-cases.patch",
+      "size": 329,
+      "sha256": "ad9e0582373500c0668e38483401169f48d6a2f8ad8d28ef8e7b06e4a3e08a74"
+    },
+    {
+      "name": "004-msystem-osname-cygwin.patch",
+      "url": "https://raw.githubusercontent.com/crutkas/MSYS2-packages/73248abe/coreutils/004-msystem-osname-cygwin.patch",
+      "size": 525,
+      "sha256": "3922afd54b2323772f5cbd0638d0887ef858199bbaf4076a1db318173021c3dc"
+    }
+  ],
+  "toolchain_assets": [
+    {
+      "tag": "cygwinarm64-binutils-pr21-3356eec-20260827",
+      "name": "mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst",
+      "size": 6545114,
+      "sha256": "3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b",
+      "admitted": true,
+      "diagnostic_only": false
+    },
+    {
+      "tag": "msysarm64-runtime-pr10-a527-20260824",
+      "name": "mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "size": 9319013,
+      "sha256": "263f8f7e3614ac41337ce3a223f2bb26b6459aef6f34670525cdd4c03ec3ae21",
+      "admitted": false,
+      "diagnostic_only": true
+    },
+    {
+      "tag": "msysarm64-runtime-pr10-a527-20260824",
+      "name": "mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "size": 4743,
+      "sha256": "33861708e7f981b4eef5b93ef135ab3a43d2757533f64df6f61a146d823c355f",
+      "admitted": false,
+      "diagnostic_only": true
+    },
+    {
+      "tag": "msysarm64-runtime-pr10-a527-20260824",
+      "name": "mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "size": 86822,
+      "sha256": "e30609e09eab2fa07aba2e6196b05f34e5e9107abc4ab8832966684758c743ca",
+      "admitted": false,
+      "diagnostic_only": true
+    },
+    {
+      "tag": "msysarm64-runtime-pr10-a527-20260824",
+      "name": "mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "size": 9893043,
+      "sha256": "158c505f45025a466950faa7c85c9fd85e9d32384dd27b53586ffc75d71ca78e",
+      "admitted": false,
+      "diagnostic_only": true
+    },
+    {
+      "tag": "msysarm64-runtime-pr10-a527-20260824",
+      "name": "mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "size": 4426157,
+      "sha256": "c18b51e483991770b8e06cc2d8f7002d06784d3071ac213a8fee24bb831267d1",
+      "admitted": false,
+      "diagnostic_only": true
+    },
+    {
+      "tag": "msysarm64-gcc-pr13-20260826",
+      "name": "mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst",
+      "size": 83876291,
+      "sha256": "a74887c76a933ec424933bf662729d94975b83138af783bd93f2e7acd95c3a22",
+      "admitted": false,
+      "diagnostic_only": true
+    },
+    {
+      "tag": "msysarm64-gcc-pr13-20260826",
+      "name": "mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst",
+      "size": 4963824,
+      "sha256": "990f163cacf9ffce1b58445be91fedc57f135cc26a88d7dba109806446b41438",
+      "admitted": false,
+      "diagnostic_only": true
+    },
+    {
+      "tag": "msysarm64-gcc-pr13-support-20260826",
+      "name": "mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst",
+      "size": 1520166,
+      "sha256": "9715aab6894379bf5ab936a3a559f286fb4aedbb64f0774d7457182e00648e08",
+      "admitted": false,
+      "diagnostic_only": true
+    },
+    {
+      "tag": "msysarm64-gcc-pr13-support-20260826",
+      "name": "mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst",
+      "size": 2349635,
+      "sha256": "7727936f4212e5af04e9739eca60f157c0875796c1e82fcfb79fd4398b111e24",
+      "admitted": false,
+      "diagnostic_only": true
+    }
+  ],
+  "target_dependency_assets": [
+    {
+      "package": "mingw-w64-cross-msysarm64-gmp",
+      "required_version": "6.3.0-2",
+      "release_tag": null,
+      "asset_name": null,
+      "size": null,
+      "sha256": null,
+      "admitted": false
+    },
+    {
+      "package": "mingw-w64-cross-msysarm64-gmp-devel",
+      "required_version": "6.3.0-2",
+      "release_tag": null,
+      "asset_name": null,
+      "size": null,
+      "sha256": null,
+      "admitted": false
+    },
+    {
+      "package": "mingw-w64-cross-msysarm64-libiconv",
+      "required_version": "1.18-1",
+      "release_tag": null,
+      "asset_name": null,
+      "size": null,
+      "sha256": null,
+      "admitted": false
+    },
+    {
+      "package": "mingw-w64-cross-msysarm64-libiconv-devel",
+      "required_version": "1.18-1",
+      "release_tag": null,
+      "asset_name": null,
+      "size": null,
+      "sha256": null,
+      "admitted": false
+    },
+    {
+      "package": "mingw-w64-cross-msysarm64-libintl",
+      "required_version": "0.22.5-1",
+      "release_tag": null,
+      "asset_name": null,
+      "size": null,
+      "sha256": null,
+      "admitted": false
+    },
+    {
+      "package": "mingw-w64-cross-msysarm64-libintl-devel",
+      "required_version": "0.22.5-1",
+      "release_tag": null,
+      "asset_name": null,
+      "size": null,
+      "sha256": null,
+      "admitted": false
+    }
+  ],
+  "execution_inputs": [
+    {
+      "name": "immutable-host-root",
+      "purpose": "fresh x64 MSYS build root with the complete host build closure",
+      "url": null,
+      "size": null,
+      "sha256": null,
+      "admitted": false
+    },
+    {
+      "name": "arm64-git-payload",
+      "purpose": "native Git hook and build-script compatibility probe",
+      "url": null,
+      "size": null,
+      "sha256": null,
+      "admitted": false
+    },
+    {
+      "name": "clean-busybox-payload",
+      "purpose": "59-path native delegated utility contract from a fresh independently admitted clean BusyBox layer",
+      "repository": null,
+      "commit": null,
+      "workflow_run": null,
+      "release_tag": null,
+      "asset_name": null,
+      "url": null,
+      "size": null,
+      "sha256": null,
+      "admitted": false
+    },
+    {
+      "name": "clean-busybox-semantic-proof-payload",
+      "purpose": "24-path semantic A/B proof contract from a fresh independently admitted clean BusyBox layer",
+      "repository": null,
+      "commit": null,
+      "workflow_run": null,
+      "release_tag": null,
+      "asset_name": null,
+      "url": null,
+      "size": null,
+      "sha256": null,
+      "admitted": false
+    }
+  ],
+  "final_build_admitted": false
+}
