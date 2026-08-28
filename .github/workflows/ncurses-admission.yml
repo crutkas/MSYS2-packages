@@ -1,38 +1,34 @@
-name: main
+name: Native ARM64 ncurses admission
 
 concurrency:
-  group: ${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 on:
   push:
+    branches:
+      - crutkas-native-arm64-ncurses
   pull_request:
+    branches:
+      - crutkas-native-arm64-ncurses
+  workflow_dispatch:
 
 jobs:
   build:
-    if: >-
-      ${{
-        (github.event_name != 'push' || github.ref != 'refs/heads/master') &&
-        (github.repository != 'crutkas/MSYS2-packages' ||
-         github.event_name != 'push' ||
-         (github.ref_type != 'tag' &&
-          github.ref_name != 'crutkas-package-aarch64-static-libgcc'))
-      }}
-    env:
-      CI_BASE_REPOSITORY: https://github.com/${{ github.repository }}.git
-      CI_BASE_REF: ${{ github.event.pull_request.base.ref || (github.ref_name == 'crutkas-congenial-system' && 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-native-arm64-ncurses' && 'crutkas-congenial-system' || 'master') }}
-      CI_PACKAGE_PREFIXES: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-native-arm64-ncurses')) && 'mingw-w64-cross-cygwinarm64- mingw-w64-cross-msysarm64-' || '' }}
-      CI_RUN_CHECK: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-native-arm64-ncurses')) && '1' || '0' }}
-      CI_CANONICALIZE_PACKAGES: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-native-arm64-ncurses')) && '1' || '0' }}
-      SOURCE_DATE_EPOCH: 1786817435
+    if: ${{ github.repository == 'crutkas/MSYS2-packages' }}
     strategy:
       fail-fast: false
       matrix:
-        include: [
-          { msystem: MSYS, runner: windows-2025 },
-        ]
-    name: ${{ matrix.msystem }}
-    runs-on: ${{ matrix.runner }}
+        build: [1, 2]
+    name: admission-build-${{ matrix.build }}
+    runs-on: windows-2025
+    env:
+      CI_BASE_REPOSITORY: https://github.com/${{ github.repository }}.git
+      CI_BASE_REF: ${{ github.event.pull_request.base.ref || (github.ref_name == 'crutkas-native-arm64-ncurses' && 'crutkas-congenial-system' || 'master') }}
+      CI_PACKAGE_PREFIXES: ${{ (github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-native-arm64-ncurses')) && 'mingw-w64-cross-cygwinarm64- mingw-w64-cross-msysarm64-' || '' }}
+      CI_RUN_CHECK: '1'
+      CI_CANONICALIZE_PACKAGES: '1'
+      SOURCE_DATE_EPOCH: 1786817435
 
     steps:
       - name: Gather Facts
@@ -74,7 +70,7 @@ jobs:
           & 'C:\msys64\usr\bin\pacman.exe' --noconfirm --needed -S git python base-devel
 
       - name: Download fork-local AArch64 Cygwin inputs
-        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-native-arm64-ncurses') }}
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-native-arm64-ncurses') }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -123,7 +119,7 @@ jobs:
           }
 
       - name: Install fork-local AArch64 Cygwin inputs
-        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-native-arm64-ncurses') }}
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-native-arm64-ncurses') }}
         shell: pwsh
         run: |
           $input_dir = Join-Path $env:RUNNER_TEMP 'cygwinarm64-inputs'
@@ -138,7 +134,7 @@ jobs:
             "$input_dir\mingw-w64-cross-cygwinarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst"
 
       - name: Preflight fork-local AArch64 Cygwin inputs
-        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-native-arm64-ncurses') }}
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-native-arm64-ncurses') }}
         shell: pwsh
         run: |
           $packages = @(
@@ -163,8 +159,9 @@ jobs:
           done
           '@
           & $bash --login -lc $script
+
       - name: Download fork-local AArch64 MSYS runtime inputs
-        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-native-arm64-ncurses') }}
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-native-arm64-ncurses') }}
         shell: pwsh
         run: |
           $destination = Join-Path $env:RUNNER_TEMP 'msysarm64-runtime-inputs'
@@ -198,7 +195,7 @@ jobs:
           }
 
       - name: Install fork-local AArch64 MSYS runtime inputs
-        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-native-arm64-ncurses') }}
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-native-arm64-ncurses') }}
         shell: pwsh
         run: |
           $input_dir = Join-Path $env:RUNNER_TEMP 'msysarm64-runtime-inputs'
@@ -210,7 +207,7 @@ jobs:
             "$input_dir\mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst"
 
       - name: Download fork-local AArch64 MSYS compiler inputs
-        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-native-arm64-ncurses') }}
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-native-arm64-ncurses') }}
         shell: pwsh
         run: |
           $destination = Join-Path $env:RUNNER_TEMP 'msysarm64-gcc-inputs'
@@ -232,7 +229,7 @@ jobs:
           }
 
       - name: Install fork-local AArch64 MSYS compiler inputs
-        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-native-arm64-ncurses') }}
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-native-arm64-ncurses') }}
         shell: pwsh
         run: |
           $env:MSYS = 'winsymlinks:sys'
@@ -242,16 +239,27 @@ jobs:
             "$input_dir\mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst"
 
       - name: Add MSYS tool aliases
-        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-native-arm64-ncurses') }}
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-native-arm64-ncurses') }}
         shell: pwsh
         run: |
           $binDir = 'C:\msys64\opt\bin'
-          $tools = @('as', 'ld', 'ar', 'nm', 'objcopy', 'objdump', 'ranlib', 'strip', 'windres', 'dlltool', 'readelf', 'size', 'addr2line', 'strings')
+          $tools = @('as', 'ld', 'ar', 'nm', 'objcopy', 'objdump', 'ranlib', 'strip', 'windres', 'dlltool', 'readelf', 'size', 'addr2line', 'strings', 'gcc', 'g++', 'cpp', 'cc', 'c++', 'gcc-ar', 'gcc-nm', 'gcc-ranlib')
           foreach ($tool in $tools) {
             $source = Join-Path $binDir "aarch64-pc-cygwin-$tool.exe"
             $dest = Join-Path $binDir "aarch64-pc-msys-$tool.exe"
             if ((Test-Path $source) -and -not (Test-Path $dest)) {
               Copy-Item $source $dest
+            }
+          }
+
+      - name: Assert MSYS compiler aliases
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-native-arm64-ncurses') }}
+        shell: pwsh
+        run: |
+          foreach ($tool in @('gcc', 'g++')) {
+            $path = "C:\msys64\opt\bin\aarch64-pc-msys-$tool.exe"
+            if (-not (Test-Path $path)) {
+              throw "Missing MSYS compiler alias: $path"
             }
           }
 
@@ -261,31 +269,27 @@ jobs:
           If (Test-Path "$path") { rm -r -fo "$path" }
           Move-Item -Path ".\temp" -Destination "$path"
 
-      - name: Normalize ncurses patch line endings
-        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-native-arm64-ncurses') }}
+      - name: Assert ncurses patch byte hashes
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-native-arm64-ncurses') }}
         shell: pwsh
         run: |
-          $bash = 'C:\msys64\usr\bin\bash.exe'
           $buildRoot = '${{ steps.facts.outputs.drive }}\_'
-          $buildRoot = & 'C:\msys64\usr\bin\cygpath.exe' -u $buildRoot
-          $script = @'
-          set -euo pipefail
-          cd '__BUILDROOT__'
-          for patch in \
-            mingw-w64-cross-msysarm64-ncurses/ncurses-6.6-msys-winconpty.patch \
-            mingw-w64-cross-msysarm64-ncurses/ncurses-6.6-msys-sleep-windows.patch \
-            mingw-w64-cross-msysarm64-ncurses/ncurses-6.6-msys-mkdir-mode.patch \
-            mingw-w64-cross-msysarm64-ncurses/ncurses-6.6-msys-widechars.patch
-          do
-            perl -0pi -e 's/\r\n/\n/g' "$patch"
-            ! grep -q $'\r' "$patch"
-          done
-          '@
-          $script = $script.Replace('__BUILDROOT__', $buildRoot)
-          & $bash --login -lc $script
+          $expected = @{
+            'mingw-w64-cross-msysarm64-ncurses\ncurses-6.6-msys-winconpty.patch' = 'f23ae3fdeecb0fa493880431fbd7ff9fb16485d77d62fb67e615384f0f9e51c7'
+            'mingw-w64-cross-msysarm64-ncurses\ncurses-6.6-msys-sleep-windows.patch' = 'fa3d094a9aa581cb2b69c80c4e9c27fd0287b4d189ccc0be42a993c96a18eb0f'
+            'mingw-w64-cross-msysarm64-ncurses\ncurses-6.6-msys-mkdir-mode.patch' = 'cac4d8e52acc68c42c9a79966b8068bb11b0a39f13dbbff36137d93ddaec5da4'
+            'mingw-w64-cross-msysarm64-ncurses\ncurses-6.6-msys-widechars.patch' = '16d980abcc5ca08d2bcf75adfc097e4ed9fe797e3925940159f4044b75fe8c0a'
+          }
+          foreach ($entry in $expected.GetEnumerator()) {
+            $path = Join-Path $buildRoot $entry.Key
+            $actual = (Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant()
+            if ($actual -ne $entry.Value) {
+              throw "SHA-256 mismatch for $($entry.Key): expected $($entry.Value) got $actual"
+            }
+          }
 
       - name: Seed MSYS w32api runtime dependency
-        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-package-aarch64-static-libgcc' || github.ref_name == 'crutkas-congenial-system' || github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-package-aarch64-static-libgcc' || github.head_ref == 'crutkas-congenial-system' || github.head_ref == 'crutkas-native-arm64-ncurses') }}
+        if: ${{ github.repository == 'crutkas/MSYS2-packages' && (github.ref_name == 'crutkas-native-arm64-ncurses' || github.head_ref == 'crutkas-native-arm64-ncurses') }}
         shell: pwsh
         run: |
           $env:MSYS2_PATH_TYPE = 'inherit'
@@ -317,35 +321,172 @@ jobs:
           $script = "cd '$buildRoot' && ./.ci/ci-build.sh"
           & $bash --login -lc $script
 
+      - name: Capture package manifest
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $artifactRoot = "${{ steps.facts.outputs.drive }}\_\artifacts"
+          if (Test-Path $artifactRoot) {
+            Get-ChildItem $artifactRoot -File -Filter '*.pkg.tar.*' | Sort-Object Name | ForEach-Object {
+              $hash = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant()
+              "{0}  {1}" -f $hash, $_.Name
+            } | Set-Content (Join-Path $artifactRoot 'sha256.txt')
+          }
+
       - name: "Upload binaries"
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.msystem }}-packages
-          path: ${{ steps.facts.outputs.drive }}/_/artifacts/*.pkg.tar.*
+          name: admission-build-${{ matrix.build }}
+          path: ${{ steps.facts.outputs.drive }}/_/artifacts/*
 
-      - name: "Upload debug logs"
-        if: ${{ failure() && !cancelled() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.msystem }}-libstdcxx-debug
-          path: ${{ steps.facts.outputs.drive }}/_/mingw-w64-cross-msysarm64-libstdcxx-headers/src/libstdcxx-headers-report/*
-
-  package-grokker:
-    if: ${{ !(github.repository == 'crutkas/MSYS2-packages' && github.head_ref == 'crutkas-package-aarch64-static-libgcc') }}
-    runs-on: ubuntu-latest
+  compare:
     needs: build
+    runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/download-artifact@v4
-        id: artifacts
-        continue-on-error: true
+      - name: Download first build
+        uses: actions/download-artifact@v4
         with:
-          name: MSYS-packages
-          path: artifacts
-      - name: Grok packages
-        uses: jeremyd2019/package-grokker/grok-artifacts@main
-        if: steps.artifacts.outcome == 'success'
+          name: admission-build-1
+          path: build-1
+
+      - name: Download second build
+        uses: actions/download-artifact@v4
         with:
-          repo: msys
+          name: admission-build-2
+          path: build-2
+
+      - name: Compare bytes and manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd build-1
+          find . -maxdepth 1 -type f -name '*.pkg.tar.*' -printf '%f\n' | sort > ../files-1.txt
+          cd ../build-2
+          find . -maxdepth 1 -type f -name '*.pkg.tar.*' -printf '%f\n' | sort > ../files-2.txt
+          cd ..
+          diff -u files-1.txt files-2.txt
+          while IFS= read -r pkg; do
+            cmp -s "build-1/${pkg}" "build-2/${pkg}"
+          done < files-1.txt
+          diff -u build-1/sha256.txt build-2/sha256.txt
+
+  smoke:
+    needs: compare
+    runs-on: [self-hosted, Windows, ARM64]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download admission build
+        uses: actions/download-artifact@v4
+        with:
+          name: admission-build-1
           path: artifacts
+
+      - name: Install candidate into a private root and smoke it
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'ncurses-admission-root'
+          $db = Join-Path $root 'var\lib\pacman'
+          $cache = Join-Path $root 'var\cache\pacman'
+          New-Item -ItemType Directory -Force -Path $db, $cache | Out-Null
+
+          & 'C:\msys64\usr\bin\pacman.exe' --root $root --dbpath $db --cachedir $cache --noconfirm -U `
+            (Join-Path $PWD 'artifacts\mingw-w64-cross-msysarm64-ncurses-6.6.20260822-1-x86_64.pkg.tar.zst') `
+            (Join-Path $PWD 'artifacts\mingw-w64-cross-msysarm64-ncurses-devel-6.6.20260822-1-x86_64.pkg.tar.zst')
+
+          $binDir = Join-Path $root 'opt\aarch64-pc-msys\bin'
+          $termDir = Join-Path $root 'opt\aarch64-pc-msys\share\terminfo'
+          $all = Get-ChildItem $binDir -File | Where-Object { $_.Extension -in '.exe', '.dll' }
+          $symlinks = @($all | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint })
+          $pes = @($all | Where-Object { -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) })
+          if ($pes.Count -ne 13) { throw "Expected 13 PE files, found $($pes.Count)" }
+          if ($symlinks.Count -ne 3) { throw "Expected 3 symlinks, found $($symlinks.Count)" }
+          if (Test-Path (Join-Path $binDir 'msys-ncurses++w6.dll')) { throw 'Unexpected ncurses++ DLL in the candidate payload' }
+
+          $scanner = Join-Path $env:RUNNER_TEMP 'check-aarch64-pseudo-relocs.ps1'
+          Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/crutkas/MSYS2-packages/3356eec1411983cc252b04afac32bca5f3b8d824/.ci/check-aarch64-pseudo-relocs.ps1' -OutFile $scanner
+          if ((Get-FileHash -Algorithm SHA256 $scanner).Hash.ToLowerInvariant() -ne '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9') {
+            throw 'Scanner hash mismatch'
+          }
+
+          foreach ($pe in $pes) {
+            $objdumpOut = & 'C:\msys64\opt\bin\aarch64-pc-cygwin-objdump.exe' -p $pe.FullName
+            if ($objdumpOut -notmatch 'msys-2\.0\.dll') { throw "Missing msys-2.0.dll import: $($pe.Name)" }
+            if ($objdumpOut -match 'cygwin1\.dll') { throw "Unexpected cygwin1.dll import: $($pe.Name)" }
+            $json = Join-Path $env:RUNNER_TEMP ($pe.BaseName + '.json')
+            & powershell -NoProfile -ExecutionPolicy Bypass -File $scanner -PePath $pe.FullName -OutputPath $json -Objdump 'C:\msys64\opt\bin\aarch64-pc-cygwin-objdump.exe' -Nm 'C:\msys64\opt\bin\aarch64-pc-cygwin-nm.exe'
+          }
+
+          $smokeSource = Join-Path $env:RUNNER_TEMP 'smoke.c'
+          @'
+          #define _XOPEN_SOURCE_EXTENDED 1
+          #include <windows.h>
+          #include <locale.h>
+          #include <wchar.h>
+          #include <menu.h>
+          #include <panel.h>
+          #include <curses.h>
+
+          int main(void) {
+            ITEM *items[2];
+            MENU *menu;
+            PANEL *panel;
+            WINDOW *window;
+            wchar_t symbol = L'W';
+            cchar_t cch;
+
+            setlocale(LC_ALL, "");
+            window = initscr();
+            if (window == NULL)
+              return 1;
+            set_escdelay(25);
+            set_tabsize(8);
+            setcchar(&cch, &symbol, A_NORMAL, 0, NULL);
+            items[0] = new_item("one", "one");
+            items[1] = NULL;
+            menu = new_menu(items);
+            panel = new_panel(window);
+            Sleep(15000);
+            if (menu != NULL)
+              free_menu(menu);
+            if (items[0] != NULL)
+              free_item(items[0]);
+            if (panel != NULL)
+              del_panel(panel);
+            endwin();
+            return 0;
+          }
+          '@ | Set-Content $smokeSource -NoNewline
+
+          $env:PATH = "$binDir;C:\msys64\usr\bin;" + $env:PATH
+          $env:TERM = 'xterm-256color'
+          $env:TERMINFO_DIRS = $termDir
+          $smokeExe = Join-Path $env:RUNNER_TEMP 'smoke.exe'
+          $gccArgs = @(
+            '--sysroot=' + (Join-Path $root 'opt\aarch64-pc-msys')
+            '-I' + (Join-Path $root 'opt\aarch64-pc-msys\include')
+            '-I' + (Join-Path $root 'opt\aarch64-pc-msys\include\ncursesw')
+            $smokeSource
+            '-L' + (Join-Path $root 'opt\aarch64-pc-msys\lib')
+            '-lpanelw'
+            '-lmenuw'
+            '-lncursesw'
+            '-o'
+            $smokeExe
+          )
+          & 'C:\msys64\opt\bin\aarch64-pc-msys-gcc.exe' @gccArgs
+
+          $proc = Start-Process -FilePath $smokeExe -PassThru
+          Start-Sleep -Seconds 3
+          $modules = (Get-Process -Id $proc.Id).Modules | Select-Object -ExpandProperty ModuleName
+          if ($modules -notcontains 'msys-2.0.dll') { throw 'Smoke process did not load msys-2.0.dll' }
+          if ($modules -contains 'cygwin1.dll') { throw 'Smoke process loaded cygwin1.dll' }
+          $proc.WaitForExit()
+
+          & (Join-Path $binDir 'infocmp.exe') -x xterm-256color | Out-Null
+          & (Join-Path $binDir 'tput.exe') cols | Out-Null
+          & (Join-Path $binDir 'tset.exe') -Q | Out-Null
+          & (Join-Path $binDir 'reset.exe') | Out-Null
