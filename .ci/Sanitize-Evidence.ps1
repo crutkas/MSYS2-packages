@@ -43,6 +43,26 @@ foreach ($sensitive in $SensitivePath) {
     }
 }
 $ordered = @($replacements | Sort-Object { $_.value.Length } -Descending)
+$runnerRoots = @(
+    [ordered]@{
+        pattern = '[A-Za-z]:[\\/]a[\\/]'
+        token = '<runner-root>/'
+    },
+    [ordered]@{
+        pattern = '[A-Za-z]:[\\/]Users[\\/]runner[^\\/]*[\\/]'
+        token = '<runner-home>/'
+    },
+    [ordered]@{
+        pattern = '/home/runner/'
+        token = '<runner-home>/'
+    },
+    [ordered]@{
+        pattern = '/[cd]/a/'
+        token = '<runner-root>/'
+    }
+)
+$forbiddenRunnerPath =
+    '([A-Za-z]:[\\/]a[\\/]|[A-Za-z]:[\\/]Users[\\/]runner|/home/runner/|/[cd]/a/)'
 
 $binaryExtensions = @(
     '.a', '.dll', '.exe', '.gz', '.o', '.xz', '.zip', '.zst'
@@ -57,6 +77,13 @@ foreach ($file in Get-ChildItem -LiteralPath $root -Recurse -File) {
             $replacement.value,
             $replacement.token,
             [StringComparison]::OrdinalIgnoreCase)
+    }
+    foreach ($runnerRoot in $runnerRoots) {
+        $text = [regex]::Replace(
+            $text,
+            $runnerRoot.pattern,
+            $runnerRoot.token,
+            [Text.RegularExpressions.RegexOptions]::IgnoreCase)
     }
     [IO.File]::WriteAllText(
         $file.FullName,
@@ -75,5 +102,11 @@ foreach ($file in Get-ChildItem -LiteralPath $root -Recurse -File) {
                 [StringComparison]::OrdinalIgnoreCase)) {
             throw "unsanitized path in $($file.FullName)"
         }
+    }
+    if ([regex]::IsMatch(
+            $text,
+            $forbiddenRunnerPath,
+            [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+        throw "forbidden runner path in $($file.FullName)"
     }
 }

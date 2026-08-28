@@ -85,6 +85,12 @@ jobs:
             $manifest,
             [Text.UTF8Encoding]::new($false))
 
+      - name: Test complete-evidence path sanitization
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & '.\.ci\Test-Sanitize-Evidence.ps1'
+
       - name: Materialize immutable private MSYS root
         shell: pwsh
         run: |
