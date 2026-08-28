@@ -5,6 +5,9 @@ import tempfile
 from pathlib import Path
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
 OLD_LINE = '    if $cc -o try $flag $ccflags $ldflags try.c 2>/dev/null && ./try; then'
 NEW_LINE = '    if $cc -o try.exe $flag $ccflags $ldflags try.c 2>/dev/null; then'
 
@@ -68,7 +71,7 @@ def rewrite_configure(text: str) -> str:
 
 
 def assert_recipe_anchor() -> None:
-    recipe = Path("perl/PKGBUILD").read_text(encoding="utf-8")
+    recipe = (REPO_ROOT / "perl/PKGBUILD").read_text(encoding="utf-8")
     expected_fragments = [
         'my $old = q{    if $cc -o try $flag $ccflags $ldflags try.c 2>/dev/null && ./try; then};',
         'my $new = q{    if $cc -o try.exe $flag $ccflags $ldflags try.c 2>/dev/null; then};',
@@ -84,25 +87,36 @@ def assert_recipe_anchor() -> None:
 
 
 def assert_rewrite_behaviour() -> None:
-    fixture = f"before\n{OLD_BLOCK}\nafter\n"
-    expected = f"before\n{NEW_BLOCK}\nafter\n"
-    rewritten = rewrite_configure(fixture)
-    assert rewritten == expected, "Configure rewrite changed more than the probe line"
-    assert rewrite_configure(rewritten) == rewritten, "Configure rewrite is not idempotent"
+    cases = [
+        ("original fixture", f"before\n{OLD_BLOCK}\nafter\n", f"before\n{NEW_BLOCK}\nafter\n"),
+        ("expected fixture", f"before\n{NEW_BLOCK}\nafter\n", f"before\n{NEW_BLOCK}\nafter\n"),
+        ("already-applied fixture", f"prefix\n{NEW_BLOCK}\nsuffix\n", f"prefix\n{NEW_BLOCK}\nsuffix\n"),
+        ("unrelated text", "prefix\nno probe here\nsuffix\n", None),
+    ]
+    for name, fixture, expected in cases:
+        if expected is None:
+            try:
+                rewrite_configure(fixture)
+            except AssertionError:
+                pass
+            else:
+                raise AssertionError(f"{name} must fail closed when the probe text is absent")
+            continue
+        rewritten = rewrite_configure(fixture)
+        assert rewritten == expected, f"{name} changed more than the probe line"
+        assert rewrite_configure(rewritten) == rewritten, f"{name} is not idempotent"
 
-    try:
-        rewrite_configure("before\nmissing\nafter\n")
-    except AssertionError:
-        pass
-    else:
-        raise AssertionError("rewrite must fail closed when the expected source text is absent")
-
-    try:
-        rewrite_configure(f"{OLD_LINE}\n{OLD_LINE}\n")
-    except AssertionError:
-        pass
-    else:
-        raise AssertionError("rewrite must fail closed when the source text count changes")
+    for name, fixture in [
+        ("missing fixture", "before\nmissing\nafter\n"),
+        ("duplicate original fixture", f"{OLD_LINE}\n{OLD_LINE}\n"),
+        ("duplicate expected fixture", f"{NEW_LINE}\n{NEW_LINE}\n"),
+    ]:
+        try:
+            rewrite_configure(fixture)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(f"rewrite must fail closed for {name}")
 
 
 def resolve_probe_aliases(output_name: str, directory: Path) -> tuple[bool, bool]:
