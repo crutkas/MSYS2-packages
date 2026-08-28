@@ -1,0 +1,68 @@
+name: private-pacman-contract
+
+on:
+  pull_request:
+    paths:
+      - .ci/PrivatePacman.md
+      - .ci/PrivatePacman.psm1
+      - .ci/Test-PrivatePacman.ps1
+      - .github/workflows/private-pacman-contract.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-contract:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: windows-2025
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out the exact source head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify the same-repository exact head
+        shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:EVENT_NAME -eq 'pull_request') {
+            if ($env:PR_HEAD_REPOSITORY -cne $env:GITHUB_REPOSITORY) {
+              throw "Refusing a non-local pull request head: $env:PR_HEAD_REPOSITORY"
+            }
+            $expected = $env:PR_HEAD_SHA
+          } else {
+            $expected = $env:GITHUB_SHA
+          }
+
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -cne $expected) {
+            throw "Checked-out HEAD $actual does not match event head $expected."
+          }
+
+      - name: Run the source-only contract
+        id: source-contract
+        shell: pwsh
+        run: |
+          pwsh -NoLogo -NoProfile -NonInteractive `
+            -File .ci\Test-PrivatePacman.ps1 `
+            -ReportPath '${{ runner.temp }}\private-pacman-contract.json'
+
+      - name: Upload contract evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: private-pacman-contract-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/private-pacman-contract.json
+          if-no-files-found: error
+          retention-days: 7
