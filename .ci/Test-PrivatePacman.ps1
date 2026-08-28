@@ -303,10 +303,12 @@ function New-PrivatePacmanFixture {
     $seed = Join-Path $base 'seed'
     $packageRoot = Join-Path $base 'packages'
     $protectedRoot = Join-Path $base 'shared-state'
+    $ownershipRoot = Join-Path $base 'ownership'
     foreach ($directory in @(
         $workspace,
         (Join-Path $seed 'usr\bin'),
         $packageRoot,
+        $ownershipRoot,
         (Join-Path $protectedRoot 'var\lib\pacman\local'),
         (Join-Path $protectedRoot 'var\log')
     )) {
@@ -327,6 +329,35 @@ function New-PrivatePacmanFixture {
 
     $sessionId = "test-$([guid]::NewGuid().ToString('N').Substring(0, 12))"
     $layout = New-PrivatePacmanLayout -WorkspaceRoot $workspace -SessionId $sessionId
+    $owner = "arm64-contract:$safeName"
+    $manifestPath = Join-Path $ownershipRoot 'packages.ownership.json'
+    $signaturePath = Join-Path $ownershipRoot 'packages.ownership.sig'
+    $publicKeyPath = Join-Path $ownershipRoot 'packages.ownership.pem'
+    $manifest = New-PrivatePacmanOwnershipManifest `
+        -PackageRoot $packageRoot `
+        -Owner $owner `
+        -SessionId $sessionId `
+        -OutputPath $manifestPath
+    $manifestBytes = [IO.File]::ReadAllBytes($manifestPath)
+    $signatureBytes = $script:signingKey.SignData(
+        $manifestBytes,
+        [Security.Cryptography.HashAlgorithmName]::SHA256,
+        [Security.Cryptography.DSASignatureFormat]::Rfc3279DerSequence
+    )
+    [IO.File]::WriteAllText(
+        $signaturePath,
+        [Convert]::ToBase64String($signatureBytes) + "`n",
+        [Text.UTF8Encoding]::new($false)
+    )
+    [IO.File]::WriteAllText(
+        $publicKeyPath,
+        $script:signingKey.ExportSubjectPublicKeyInfoPem(),
+        [Text.UTF8Encoding]::new($false)
+    )
+    $publicKeySha256 = [Convert]::ToHexString(
+        [Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($publicKeyPath))
+    ).ToLowerInvariant()
+
     return [pscustomobject][ordered]@{
         Base = $base
         Workspace = $workspace
@@ -334,6 +365,13 @@ function New-PrivatePacmanFixture {
         PackageRoot = $packageRoot
         PackageRelativePath = $packageRelativePath
         PackagePath = $packagePath
+        Owner = $owner
+        OwnershipManifestPath = $manifestPath
+        OwnershipSignaturePath = $signaturePath
+        OwnershipPublicKeyPath = $publicKeyPath
+        ExpectedManifestSha256 = $manifest.Sha256
+        ExpectedPublicKeySha256 = $publicKeySha256
+        PackageSetSha256 = $manifest.PackageSetSha256
         ProtectedRoot = $protectedRoot
         SharedFile = $sharedFile
         Layout = $layout
@@ -359,6 +397,36 @@ function Set-PrivatePacmanFixtureEnvironment {
     $env:PRIVATE_PACMAN_TEST_GO = $Fixture.GoPath
 }
 
+function Set-PrivatePacmanFixtureManifest {
+    param(
+        [Parameter(Mandatory)]
+        [psobject] $Fixture,
+
+        [Parameter(Mandatory)]
+        [string] $ManifestText
+    )
+
+    [IO.File]::WriteAllText(
+        $Fixture.OwnershipManifestPath,
+        $ManifestText,
+        [Text.UTF8Encoding]::new($false)
+    )
+    $manifestBytes = [IO.File]::ReadAllBytes($Fixture.OwnershipManifestPath)
+    $signatureBytes = $script:signingKey.SignData(
+        $manifestBytes,
+        [Security.Cryptography.HashAlgorithmName]::SHA256,
+        [Security.Cryptography.DSASignatureFormat]::Rfc3279DerSequence
+    )
+    [IO.File]::WriteAllText(
+        $Fixture.OwnershipSignaturePath,
+        [Convert]::ToBase64String($signatureBytes) + "`n",
+        [Text.UTF8Encoding]::new($false)
+    )
+    $Fixture.ExpectedManifestSha256 = [Convert]::ToHexString(
+        [Security.Cryptography.SHA256]::HashData($manifestBytes)
+    ).ToLowerInvariant()
+}
+
 function Invoke-PrivatePacmanFixture {
     param(
         [Parameter(Mandatory)]
@@ -371,7 +439,12 @@ function Invoke-PrivatePacmanFixture {
         -Layout $Fixture.Layout `
         -SeedRoot $Fixture.Seed `
         -PackageRoot $Fixture.PackageRoot `
-        -PackagePath @($Fixture.PackageRelativePath) `
+        -OwnershipManifestPath $Fixture.OwnershipManifestPath `
+        -OwnershipSignaturePath $Fixture.OwnershipSignaturePath `
+        -OwnershipPublicKeyPath $Fixture.OwnershipPublicKeyPath `
+        -ExpectedManifestSha256 $Fixture.ExpectedManifestSha256 `
+        -ExpectedPublicKeySha256 $Fixture.ExpectedPublicKeySha256 `
+        -ExpectedOwner $Fixture.Owner `
         -ProtectedRoot @($Fixture.ProtectedRoot) `
         -TimeoutSeconds $TimeoutSeconds
 }
@@ -392,7 +465,12 @@ function Start-PrivatePacmanFixtureJob {
             $Fixture.Layout,
             $Fixture.Seed,
             $Fixture.PackageRoot,
-            $Fixture.PackageRelativePath,
+            $Fixture.OwnershipManifestPath,
+            $Fixture.OwnershipSignaturePath,
+            $Fixture.OwnershipPublicKeyPath,
+            $Fixture.ExpectedManifestSha256,
+            $Fixture.ExpectedPublicKeySha256,
+            $Fixture.Owner,
             $Fixture.ProtectedRoot,
             $Fixture.ArgvPath,
             $Fixture.ConfigCapturePath,
@@ -406,7 +484,12 @@ function Start-PrivatePacmanFixtureJob {
                 $Layout,
                 $Seed,
                 $PackageRoot,
-                $PackageRelativePath,
+                $OwnershipManifestPath,
+                $OwnershipSignaturePath,
+                $OwnershipPublicKeyPath,
+                $ExpectedManifestSha256,
+                $ExpectedPublicKeySha256,
+                $ExpectedOwner,
                 $ProtectedRoot,
                 $ArgvPath,
                 $ConfigCapturePath,
@@ -426,7 +509,12 @@ function Start-PrivatePacmanFixtureJob {
                 -Layout $Layout `
                 -SeedRoot $Seed `
                 -PackageRoot $PackageRoot `
-                -PackagePath @($PackageRelativePath) `
+                -OwnershipManifestPath $OwnershipManifestPath `
+                -OwnershipSignaturePath $OwnershipSignaturePath `
+                -OwnershipPublicKeyPath $OwnershipPublicKeyPath `
+                -ExpectedManifestSha256 $ExpectedManifestSha256 `
+                -ExpectedPublicKeySha256 $ExpectedPublicKeySha256 `
+                -ExpectedOwner $ExpectedOwner `
                 -ProtectedRoot @($ProtectedRoot) `
                 -TimeoutSeconds 30
         }
@@ -464,6 +552,9 @@ $suiteRoot = Join-Path ([IO.Path]::GetTempPath()) "private-pacman-v2-$([guid]::N
 $sharedBefore = Get-PrivatePacmanTreeSnapshot -Path 'C:\msys64' -AllowMissing
 $sharedAfter = $null
 $recorderPath = $null
+$script:signingKey = [Security.Cryptography.ECDsa]::Create(
+    [Security.Cryptography.ECCurve+NamedCurves]::nistP256
+)
 
 try {
     $recorderPath = New-PrivatePacmanRecorder -Directory (Join-Path $suiteRoot 'recorder')
@@ -496,6 +587,9 @@ try {
         Assert-PrivatePacmanTest `
             ($workflow -notmatch '(?i)\.pkg\.tar|gh\s+release|setup-msys2|download-artifact') `
             'Contract workflow consumes, installs, downloads, or publishes package material.'
+        $repositoryRoot = Split-Path $PSScriptRoot -Parent
+        $trackedCandidateBytes = @(& git -C $repositoryRoot ls-files '*.pkg.tar.*')
+        Assert-PrivatePacmanEqual 0 $trackedCandidateBytes.Count 'Tracked package candidate bytes are present.'
     }
 
     Invoke-PrivatePacmanTestCase -Name 'repository-free argv is completely isolated' -Test {
@@ -508,6 +602,12 @@ try {
 
             Assert-PrivatePacmanTest $result.Success 'Successful recorder transaction was not reported as successful.'
             Assert-PrivatePacmanEqual $before.Digest $after.Digest 'Protected test state changed.'
+            Assert-PrivatePacmanEqual $fixture.Owner $result.Ownership.Owner 'Ownership evidence lost the expected owner.'
+            Assert-PrivatePacmanEqual $fixture.Layout.SessionId $result.Ownership.SessionId 'Ownership evidence lost the session binding.'
+            Assert-PrivatePacmanEqual $fixture.ExpectedManifestSha256 $result.Ownership.ManifestSha256 'Ownership manifest hash changed.'
+            Assert-PrivatePacmanEqual $fixture.ExpectedPublicKeySha256 $result.Ownership.PublicKeySha256 'Ownership public-key hash changed.'
+            Assert-PrivatePacmanEqual $fixture.PackageSetSha256 $result.Ownership.PackageSetSha256 'Deterministic package-set hash changed.'
+            Assert-PrivatePacmanEqual ([int64]1) ([int64]$result.Ownership.PackageCount) 'Ownership evidence has the wrong package count.'
             Assert-PrivatePacmanTest (-not (Test-Path -LiteralPath $fixture.Layout.Root)) 'Private root survived successful cleanup.'
             Assert-PrivatePacmanTest (Test-Path -LiteralPath $fixture.Layout.OwnerPath) 'External owner sentinel was not preserved.'
             Assert-PrivatePacmanTest (Test-Path -LiteralPath (Join-Path $fixture.Layout.EvidenceDirectory 'result.json')) 'Result evidence was not preserved.'
@@ -554,19 +654,125 @@ try {
         }
     }
 
+    Invoke-PrivatePacmanTestCase -Name 'ownership manifests are canonical complete and deterministic' -Test {
+        $fixture = New-PrivatePacmanFixture -Name 'manifest-determinism' -SuiteRoot $suiteRoot -RecorderPath $recorderPath
+        foreach ($name in @(
+            'Zlib-tool.pkg.tar.zst',
+            'perl-Algorithm-Diff.pkg.tar.zst',
+            'perl-authen-sasl.pkg.tar.zst'
+        )) {
+            [IO.File]::WriteAllText((Join-Path $fixture.PackageRoot $name), "synthetic-$name")
+        }
+        $ownershipRoot = Split-Path $fixture.OwnershipManifestPath -Parent
+        $firstPath = Join-Path $ownershipRoot 'packages-ordered.ownership.json'
+        $secondPath = Join-Path $ownershipRoot 'packages-repeat.ownership.json'
+        $first = New-PrivatePacmanOwnershipManifest `
+            -PackageRoot $fixture.PackageRoot `
+            -Owner $fixture.Owner `
+            -SessionId $fixture.Layout.SessionId `
+            -OutputPath $firstPath
+        $second = New-PrivatePacmanOwnershipManifest `
+            -PackageRoot $fixture.PackageRoot `
+            -Owner $fixture.Owner `
+            -SessionId $fixture.Layout.SessionId `
+            -OutputPath $secondPath
+        Assert-PrivatePacmanEqual `
+            ([IO.File]::ReadAllText($firstPath)) `
+            ([IO.File]::ReadAllText($secondPath)) `
+            'Repeated ownership manifests are not byte deterministic.'
+        Assert-PrivatePacmanEqual $first.Sha256 $second.Sha256 'Repeated manifest hash changed.'
+        Assert-PrivatePacmanEqual $first.PackageSetSha256 $second.PackageSetSha256 'Repeated package-set hash changed.'
+
+        $parsed = Get-Content -Raw -LiteralPath $secondPath | ConvertFrom-Json
+        Assert-PrivatePacmanEqual 'private-pacman-package-ownership/v2' $parsed.Schema 'Ownership schema changed.'
+        Assert-PrivatePacmanEqual 'ecdsa-p256-sha256' $parsed.SignatureAlgorithm 'Ownership signature algorithm changed.'
+        Assert-PrivatePacmanSequence @(
+            'Zlib-tool.pkg.tar.zst'
+            'perl-Algorithm-Diff.pkg.tar.zst'
+            'perl-authen-sasl.pkg.tar.zst'
+            $fixture.PackageRelativePath
+        ) @($parsed.Packages | ForEach-Object Path) 'Ownership manifest does not use ordinal package ordering.'
+    }
+
+    Invoke-PrivatePacmanTestCase -Name 'ownership hash signature key owner completeness and traversal are enforced' -Test {
+        $hashFixture = New-PrivatePacmanFixture -Name 'manifest-hash' -SuiteRoot $suiteRoot -RecorderPath $recorderPath
+        [IO.File]::AppendAllText($hashFixture.OwnershipManifestPath, " ")
+        $null = Assert-PrivatePacmanThrows {
+            Invoke-PrivatePacmanFixture -Fixture $hashFixture
+        } 'ExpectedManifestSha256'
+        Assert-PrivatePacmanTest (-not (Test-Path -LiteralPath $hashFixture.Layout.StateDirectory)) 'Manifest-hash rejection created session state.'
+
+        $signatureFixture = New-PrivatePacmanFixture -Name 'manifest-signature' -SuiteRoot $suiteRoot -RecorderPath $recorderPath
+        $wrongSignature = $script:signingKey.SignData(
+            [Text.Encoding]::UTF8.GetBytes('wrong manifest bytes'),
+            [Security.Cryptography.HashAlgorithmName]::SHA256,
+            [Security.Cryptography.DSASignatureFormat]::Rfc3279DerSequence
+        )
+        [IO.File]::WriteAllText(
+            $signatureFixture.OwnershipSignaturePath,
+            [Convert]::ToBase64String($wrongSignature) + "`n",
+            [Text.UTF8Encoding]::new($false)
+        )
+        $null = Assert-PrivatePacmanThrows {
+            Invoke-PrivatePacmanFixture -Fixture $signatureFixture
+        } 'signature is invalid'
+        Assert-PrivatePacmanTest (-not (Test-Path -LiteralPath $signatureFixture.Layout.StateDirectory)) 'Signature rejection created session state.'
+
+        $keyFixture = New-PrivatePacmanFixture -Name 'manifest-key' -SuiteRoot $suiteRoot -RecorderPath $recorderPath
+        $keyFixture.ExpectedPublicKeySha256 = '0' * 64
+        $null = Assert-PrivatePacmanThrows {
+            Invoke-PrivatePacmanFixture -Fixture $keyFixture
+        } 'ExpectedPublicKeySha256'
+        Assert-PrivatePacmanTest (-not (Test-Path -LiteralPath $keyFixture.Layout.StateDirectory)) 'Public-key rejection created session state.'
+
+        $uppercaseHashFixture = New-PrivatePacmanFixture -Name 'manifest-uppercase-hash' -SuiteRoot $suiteRoot -RecorderPath $recorderPath
+        $uppercaseHashFixture.ExpectedManifestSha256 = $uppercaseHashFixture.ExpectedManifestSha256.ToUpperInvariant()
+        $null = Assert-PrivatePacmanThrows {
+            Invoke-PrivatePacmanFixture -Fixture $uppercaseHashFixture
+        } 'lowercase SHA-256'
+        Assert-PrivatePacmanTest (-not (Test-Path -LiteralPath $uppercaseHashFixture.Layout.StateDirectory)) 'Uppercase-hash rejection created session state.'
+
+        $ownerFixture = New-PrivatePacmanFixture -Name 'manifest-owner' -SuiteRoot $suiteRoot -RecorderPath $recorderPath
+        $ownerFixture.Owner = 'other-owner'
+        $null = Assert-PrivatePacmanThrows {
+            Invoke-PrivatePacmanFixture -Fixture $ownerFixture
+        } 'owner or session binding'
+        Assert-PrivatePacmanTest (-not (Test-Path -LiteralPath $ownerFixture.Layout.StateDirectory)) 'Owner rejection created session state.'
+
+        $completeFixture = New-PrivatePacmanFixture -Name 'manifest-complete' -SuiteRoot $suiteRoot -RecorderPath $recorderPath
+        [IO.File]::WriteAllText(
+            (Join-Path $completeFixture.PackageRoot 'unlisted.pkg.tar.zst'),
+            'unlisted synthetic bytes'
+        )
+        $null = Assert-PrivatePacmanThrows {
+            Invoke-PrivatePacmanFixture -Fixture $completeFixture
+        } 'complete PackageRoot inventory'
+        Assert-PrivatePacmanTest (-not (Test-Path -LiteralPath $completeFixture.Layout.StateDirectory)) 'Completeness rejection created session state.'
+
+        $traversalFixture = New-PrivatePacmanFixture -Name 'manifest-traversal' -SuiteRoot $suiteRoot -RecorderPath $recorderPath
+        $traversalManifest = Get-Content -Raw -LiteralPath $traversalFixture.OwnershipManifestPath | ConvertFrom-Json
+        $traversalManifest.Packages[0].Path = '..\escape.pkg.tar.zst'
+        Set-PrivatePacmanFixtureManifest `
+            -Fixture $traversalFixture `
+            -ManifestText (($traversalManifest | ConvertTo-Json -Depth 8 -Compress) + "`n")
+        $null = Assert-PrivatePacmanThrows {
+            Invoke-PrivatePacmanFixture -Fixture $traversalFixture
+        } 'noncanonical|segment'
+        Assert-PrivatePacmanTest (-not (Test-Path -LiteralPath $traversalFixture.Layout.StateDirectory)) 'Signed traversal rejection created session state.'
+    }
+
     Invoke-PrivatePacmanTestCase -Name 'traversal is rejected before state creation' -Test {
         $fixture = New-PrivatePacmanFixture -Name 'traversal' -SuiteRoot $suiteRoot -RecorderPath $recorderPath
         $null = Assert-PrivatePacmanThrows {
             New-PrivatePacmanLayout -WorkspaceRoot $fixture.Workspace -SessionId '..\escape'
         } 'SessionId|traversal'
         $null = Assert-PrivatePacmanThrows {
-            Invoke-PrivatePacmanUpgrade `
-                -Layout $fixture.Layout `
-                -SeedRoot $fixture.Seed `
-                -PackageRoot $fixture.PackageRoot `
-                -PackagePath @('..\escape.pkg.tar.zst') `
-                -ProtectedRoot @($fixture.ProtectedRoot)
-        } 'noncanonical|PackagePath'
+            & $module {
+                ConvertTo-PrivatePacmanRelativePath `
+                    -Path '..\escape.pkg.tar.zst' `
+                    -Name 'PackagePath'
+            }
+        } 'noncanonical|PackagePath|segment'
         Assert-PrivatePacmanTest (-not (Test-Path -LiteralPath $fixture.Layout.StateDirectory)) 'Traversal rejection created external state.'
         Assert-PrivatePacmanTest (-not (Test-Path -LiteralPath $fixture.Layout.Root)) 'Traversal rejection created a private root.'
     }
@@ -612,7 +818,12 @@ try {
                     -Layout $fixture.Layout `
                     -SeedRoot $fixture.Seed `
                     -PackageRoot $fixture.PackageRoot `
-                    -PackagePath @($fixture.PackageRelativePath) `
+                    -OwnershipManifestPath $fixture.OwnershipManifestPath `
+                    -OwnershipSignaturePath $fixture.OwnershipSignaturePath `
+                    -OwnershipPublicKeyPath $fixture.OwnershipPublicKeyPath `
+                    -ExpectedManifestSha256 $fixture.ExpectedManifestSha256 `
+                    -ExpectedPublicKeySha256 $fixture.ExpectedPublicKeySha256 `
+                    -ExpectedOwner $fixture.Owner `
                     -ProtectedRoot @($fixture.ProtectedRoot)
             } 'seed.*reparse|reparse point'
             Assert-PrivatePacmanEqual 'do-not-touch' ([IO.File]::ReadAllText((Join-Path $outside 'canary'))) 'Seed escape target was modified.'
@@ -637,7 +848,12 @@ try {
                     -Layout $fixture.Layout `
                     -SeedRoot $fixture.Seed `
                     -PackageRoot $fixture.PackageRoot `
-                    -PackagePath @($fixture.PackageRelativePath) `
+                    -OwnershipManifestPath $fixture.OwnershipManifestPath `
+                    -OwnershipSignaturePath $fixture.OwnershipSignaturePath `
+                    -OwnershipPublicKeyPath $fixture.OwnershipPublicKeyPath `
+                    -ExpectedManifestSha256 $fixture.ExpectedManifestSha256 `
+                    -ExpectedPublicKeySha256 $fixture.ExpectedPublicKeySha256 `
+                    -ExpectedOwner $fixture.Owner `
                     -ProtectedRoot @($fixture.ProtectedRoot)
             } 'reparse|symbolic|alias'
             Assert-PrivatePacmanTest (-not (Test-Path -LiteralPath $fixture.Layout.StateDirectory)) 'Symlink rejection created external state.'
@@ -660,7 +876,12 @@ try {
                 -Layout $forged `
                 -SeedRoot $fixture.Seed `
                 -PackageRoot $fixture.PackageRoot `
-                -PackagePath @($fixture.PackageRelativePath) `
+                -OwnershipManifestPath $fixture.OwnershipManifestPath `
+                -OwnershipSignaturePath $fixture.OwnershipSignaturePath `
+                -OwnershipPublicKeyPath $fixture.OwnershipPublicKeyPath `
+                -ExpectedManifestSha256 $fixture.ExpectedManifestSha256 `
+                -ExpectedPublicKeySha256 $fixture.ExpectedPublicKeySha256 `
+                -ExpectedOwner $fixture.Owner `
                 -ProtectedRoot @($fixture.ProtectedRoot)
         } 'Layout property Root|canonical'
 
@@ -889,7 +1110,12 @@ param(
     [string] $SessionId,
     [string] $Seed,
     [string] $PackageRoot,
-    [string] $PackageRelativePath,
+    [string] $OwnershipManifestPath,
+    [string] $OwnershipSignaturePath,
+    [string] $OwnershipPublicKeyPath,
+    [string] $ExpectedManifestSha256,
+    [string] $ExpectedPublicKeySha256,
+    [string] $ExpectedOwner,
     [string] $ProtectedRoot
 )
 $ErrorActionPreference = 'Stop'
@@ -899,7 +1125,12 @@ Invoke-PrivatePacmanUpgrade `
     -Layout $layout `
     -SeedRoot $Seed `
     -PackageRoot $PackageRoot `
-    -PackagePath @($PackageRelativePath) `
+    -OwnershipManifestPath $OwnershipManifestPath `
+    -OwnershipSignaturePath $OwnershipSignaturePath `
+    -OwnershipPublicKeyPath $OwnershipPublicKeyPath `
+    -ExpectedManifestSha256 $ExpectedManifestSha256 `
+    -ExpectedPublicKeySha256 $ExpectedPublicKeySha256 `
+    -ExpectedOwner $ExpectedOwner `
     -ProtectedRoot @($ProtectedRoot) `
     -TimeoutSeconds 120
 '@
@@ -918,7 +1149,12 @@ Invoke-PrivatePacmanUpgrade `
             '-SessionId', $fixture.Layout.SessionId,
             '-Seed', $fixture.Seed,
             '-PackageRoot', $fixture.PackageRoot,
-            '-PackageRelativePath', $fixture.PackageRelativePath,
+            '-OwnershipManifestPath', $fixture.OwnershipManifestPath,
+            '-OwnershipSignaturePath', $fixture.OwnershipSignaturePath,
+            '-OwnershipPublicKeyPath', $fixture.OwnershipPublicKeyPath,
+            '-ExpectedManifestSha256', $fixture.ExpectedManifestSha256,
+            '-ExpectedPublicKeySha256', $fixture.ExpectedPublicKeySha256,
+            '-ExpectedOwner', $fixture.Owner,
             '-ProtectedRoot', $fixture.ProtectedRoot
         )) {
             [void]$startInfo.ArgumentList.Add($argument)
@@ -1002,6 +1238,7 @@ finally {
         }
         $process.Dispose()
     }
+    $script:signingKey.Dispose()
 
     if ([IO.Directory]::Exists($suiteRoot)) {
         Remove-Item -LiteralPath $suiteRoot -Recurse -Force -ErrorAction SilentlyContinue

@@ -7,7 +7,8 @@ that must not mutate an existing MSYS2 installation, especially
 
 This helper is not package or native admission. It does not download,
 install, build, publish, or approve packages by itself. A caller must provide
-an independently prepared private seed and local package paths.
+an independently prepared private seed, a complete local package root, and
+separately pinned signed ownership evidence.
 
 ## Safety boundary
 
@@ -23,6 +24,13 @@ The helper:
   directory to the final root;
 - creates an external, exclusively locked owner sentinel before publishing
   the private root;
+- requires a canonical manifest that binds one owner and session to every
+  package path, length, SHA-256, and deterministic package-set SHA-256;
+- requires the raw manifest SHA-256 and ECDSA P-256 public-key SHA-256 to be
+  supplied independently, and verifies a detached DER signature over the
+  exact UTF-8 manifest bytes;
+- rejects missing, extra, non-package, aliased, or reparse entries anywhere
+  in the package root before creating session state;
 - constructs the complete native argument list internally and accepts no
   caller-provided pacman options;
 - permits only local `-U`, with package files locked against writes, renames,
@@ -82,7 +90,22 @@ records and records the outcome as failed, never successful.
 
 All private inputs must be on the same fixed drive. `SeedRoot` must contain
 the private executable at `usr\bin\pacman.exe` and must not overlap a
-protected root.
+protected root. Ownership manifest, signature, and public-key files must be
+distinct, canonical, outside the package root, and locked for the transaction.
+
+The canonical ownership manifest schema is
+`private-pacman-package-ownership/v2`. Its ordered fields are `Schema`,
+`Owner`, `SessionId`, `SignatureAlgorithm`, `PackageSetSha256`, and
+`Packages`. Package entries are sorted by path and contain only `Path`,
+`Length`, and `Sha256`. The detached signature file contains one base64 DER
+ECDSA P-256 signature over the exact UTF-8 manifest bytes. The public key is
+PEM subject-public-key-info. The caller must obtain expected manifest and
+public-key hashes from a trusted control plane rather than from adjacent
+files.
+
+`New-PrivatePacmanOwnershipManifest` can create the unsigned canonical
+manifest from an isolated package root. Signature creation and trusted hash
+distribution intentionally remain outside this module.
 
 ```powershell
 Import-Module "$repository\.ci\PrivatePacman.psm1" -Force
@@ -96,7 +119,12 @@ try {
         -Layout $layout `
         -SeedRoot 'D:\private-msys2-seed' `
         -PackageRoot 'D:\local-packages' `
-        -PackagePath @('example.pkg.tar.zst') `
+        -OwnershipManifestPath 'D:\ownership\packages.ownership.json' `
+        -OwnershipSignaturePath 'D:\ownership\packages.ownership.sig' `
+        -OwnershipPublicKeyPath 'D:\ownership\packages.ownership.pem' `
+        -ExpectedManifestSha256 $trustedManifestSha256 `
+        -ExpectedPublicKeySha256 $trustedPublicKeySha256 `
+        -ExpectedOwner 'arm64-campaign:run-123' `
         -ProtectedRoot @('D:\other-shared-package-state')
 }
 catch {
@@ -130,7 +158,8 @@ The external state directory contains:
 - `owner.json`: session ID, nonce, exact root paths, owning process,
   protected roots, phase, and final result digest;
 - `evidence/invocation.json`: executable, exact argv, locked package hashes,
-  seed-copy digest, managed-config digest, and controlled environment;
+  signed ownership identity, seed-copy digest, managed-config digest, and
+  controlled environment;
 - `evidence/protected-*-before.json` and
   `evidence/protected-*-after.json`: full byte manifests;
 - `evidence/result.json`: process output and exit status, before/after
@@ -164,10 +193,13 @@ pwsh -NoLogo -NoProfile -NonInteractive `
 
 The test script compiles a small argv recorder from checked-in C# source with
 the Windows inbox .NET Framework compiler. It never invokes pacman or consumes
-a package artifact. The suite covers argv completeness, repository absence,
-traversal, path aliases, drive mismatch, UNC/device/share paths, junctions,
-file symlinks, seed reparse points, atomic collisions, concurrent sentinel
-ownership, package/config/root locks, transient protected-state races, child
-crashes, timeouts, parent-process crash recovery, and reparse-safe cleanup.
-It snapshots canonical `C:\msys64` before and after the entire suite and
-requires identical existence and byte digests.
+a campaign candidate artifact; package-shaped test files contain only
+synthetic fixture text in a temporary directory. The suite covers canonical
+manifest determinism, raw hash and key pinning, signature tampering,
+owner/session binding, complete package enumeration, signed traversal,
+argv completeness, repository absence, path aliases, drive mismatch,
+UNC/device/share paths, junctions, file symlinks, seed reparse points, atomic
+collisions, concurrent sentinel ownership, package/config/root locks,
+transient protected-state races, child crashes, timeouts, parent-process crash
+recovery, and reparse-safe cleanup. It snapshots canonical `C:\msys64` before
+and after the entire suite and requires identical existence and byte digests.

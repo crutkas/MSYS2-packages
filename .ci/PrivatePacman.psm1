@@ -1,6 +1,8 @@
 Set-StrictMode -Version Latest
 
 $script:PrivatePacmanSchema = 'private-pacman-session/v2'
+$script:OwnershipManifestSchema = 'private-pacman-package-ownership/v2'
+$script:OwnershipSignatureAlgorithm = 'ecdsa-p256-sha256'
 $script:CanonicalSharedRoot = 'C:\msys64'
 $script:OwnerFileName = '.private-pacman-owner.json'
 $script:RequiredIsolationSwitches = @(
@@ -1128,46 +1130,439 @@ function Initialize-PrivatePacmanRoot {
     }
 }
 
-function Get-PrivatePacmanPackagePaths {
+function Get-PrivatePacmanPackageInventory {
     param(
         [Parameter(Mandatory)]
         [string] $PackageRoot,
 
         [Parameter(Mandatory)]
-        [string[]] $PackagePath,
-
-        [Parameter(Mandatory)]
         [string] $WorkspaceRoot
     )
-
-    if ($PackagePath.Count -eq 0) {
-        throw 'At least one repository-free local package path is required.'
-    }
 
     $root = Resolve-PrivatePacmanExistingPath -Path $PackageRoot -Kind Directory -Name 'PackageRoot'
     Assert-PrivatePacmanSameDrive -First $root -Second $WorkspaceRoot -Description 'PackageRoot'
 
-    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-    $paths = foreach ($relativeInput in $PackagePath) {
-        $relative = ConvertTo-PrivatePacmanRelativePath -Path $relativeInput -Name 'PackagePath'
-        if ($relative -notmatch '\.pkg\.tar\.[A-Za-z0-9]+$') {
-            throw "PackagePath must name a local pacman package archive: $relative"
+    $snapshot = Get-PrivatePacmanTreeSnapshotCore -Path $root
+    $packages = [Collections.Generic.List[object]]::new()
+    foreach ($entry in $snapshot.Entries) {
+        if ($entry.Kind -like '*-link') {
+            throw "PackageRoot contains a forbidden reparse point: $($entry.RelativePath)"
+        }
+        if ($entry.Kind -eq 'directory') {
+            continue
+        }
+        if ($entry.Kind -ne 'file' -or $entry.RelativePath -notmatch '\.pkg\.tar\.[A-Za-z0-9]+$') {
+            throw "PackageRoot contains an unowned non-package file: $($entry.RelativePath)"
         }
 
-        $candidate = [IO.Path]::Combine($root, $relative)
-        $canonical = Resolve-PrivatePacmanExistingPath -Path $candidate -Kind File -Name 'PackagePath'
-        if (-not (Test-PrivatePacmanPathWithin -Path $canonical -Root $root)) {
-            throw "PackagePath escapes PackageRoot: $relative"
-        }
-        if (-not $seen.Add($canonical)) {
-            throw "PackagePath aliases or duplicates another package: $relative"
-        }
-        $canonical
+        $relative = ConvertTo-PrivatePacmanRelativePath `
+            -Path $entry.RelativePath `
+            -Name 'Package manifest path'
+        $packages.Add([pscustomobject][ordered]@{
+            Path = $relative
+            Length = [int64]$entry.Length
+            Sha256 = [string]$entry.Sha256
+        })
     }
 
+    if ($packages.Count -eq 0) {
+        throw 'PackageRoot must contain at least one local pacman package archive.'
+    }
+
+    $sorted = [Collections.Generic.SortedDictionary[string, object]]::new(
+        [StringComparer]::Ordinal
+    )
+    foreach ($package in $packages) {
+        $sorted.Add([string]$package.Path, $package)
+    }
+    $ordered = @($sorted.Values)
     [pscustomobject][ordered]@{
         Root = $root
-        Paths = @($paths)
+        SnapshotDigest = $snapshot.Digest
+        Packages = $ordered
+    }
+}
+
+function Get-PrivatePacmanPackageSetSha256 {
+    param(
+        [Parameter(Mandatory)]
+        [object[]] $Package
+    )
+
+    $lines = foreach ($entry in $Package) {
+        $pathBytes = [Text.UTF8Encoding]::new($false).GetBytes([string]$entry.Path)
+        '{0}`t{1}`t{2}' -f @(
+            [Convert]::ToBase64String($pathBytes),
+            [int64]$entry.Length,
+            [string]$entry.Sha256
+        )
+    }
+    return Get-PrivatePacmanStringSha256 -Value ($lines -join "`n")
+}
+
+function ConvertTo-PrivatePacmanCanonicalOwnershipJson {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Owner,
+
+        [Parameter(Mandatory)]
+        [string] $SessionId,
+
+        [Parameter(Mandatory)]
+        [object[]] $Package
+    )
+
+    $packageSetSha256 = Get-PrivatePacmanPackageSetSha256 -Package $Package
+    $manifest = [pscustomobject][ordered]@{
+        Schema = $script:OwnershipManifestSchema
+        Owner = $Owner
+        SessionId = $SessionId
+        SignatureAlgorithm = $script:OwnershipSignatureAlgorithm
+        PackageSetSha256 = $packageSetSha256
+        Packages = @($Package | ForEach-Object {
+            [pscustomobject][ordered]@{
+                Path = [string]$_.Path
+                Length = [int64]$_.Length
+                Sha256 = [string]$_.Sha256
+            }
+        })
+    }
+    return ($manifest | ConvertTo-Json -Depth 8 -Compress) + "`n"
+}
+
+function Assert-PrivatePacmanOwnershipName {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Owner
+    )
+
+    if ($Owner -notmatch '^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$') {
+        throw 'Owner must contain 1-128 ASCII letters, digits, dots, underscores, colons, at signs, or hyphens.'
+    }
+}
+
+function Assert-PrivatePacmanSha256Text {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Value,
+
+        [Parameter(Mandatory)]
+        [string] $Name
+    )
+
+    if ($Value -cnotmatch '^[0-9a-f]{64}$') {
+        throw "$Name must be one lowercase SHA-256 value."
+    }
+}
+
+function Assert-PrivatePacmanSequence {
+    param(
+        [Parameter(Mandatory)]
+        [object[]] $Expected,
+
+        [Parameter(Mandatory)]
+        [object[]] $Actual,
+
+        [Parameter(Mandatory)]
+        [string] $Message
+    )
+
+    if ($Expected.Count -ne $Actual.Count) {
+        throw "$Message Expected $($Expected.Count) values; found $($Actual.Count)."
+    }
+    for ($index = 0; $index -lt $Expected.Count; $index++) {
+        if (-not [StringComparer]::Ordinal.Equals(
+            [string]$Expected[$index],
+            [string]$Actual[$index])) {
+            throw "$Message Value $index does not match."
+        }
+    }
+}
+
+function Write-PrivatePacmanTextAtomic {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Path,
+
+        [Parameter(Mandatory)]
+        [string] $Value
+    )
+
+    $temporaryPath = "$Path.$([guid]::NewGuid().ToString('N')).tmp"
+    try {
+        [IO.File]::WriteAllText($temporaryPath, $Value, [Text.UTF8Encoding]::new($false))
+        [IO.File]::Move($temporaryPath, $Path, $false)
+    }
+    finally {
+        if ([IO.File]::Exists($temporaryPath)) {
+            [IO.File]::Delete($temporaryPath)
+        }
+    }
+}
+
+function New-PrivatePacmanOwnershipManifest {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string] $PackageRoot,
+
+        [Parameter(Mandatory)]
+        [string] $Owner,
+
+        [Parameter(Mandatory)]
+        [string] $SessionId,
+
+        [Parameter(Mandatory)]
+        [string] $OutputPath
+    )
+
+    Assert-PrivatePacmanOwnershipName -Owner $Owner
+    if ($SessionId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$' -or
+        $SessionId -eq '.' -or
+        $SessionId -eq '..') {
+        throw 'SessionId is not canonical.'
+    }
+
+    $root = Resolve-PrivatePacmanExistingPath -Path $PackageRoot -Kind Directory -Name 'PackageRoot'
+    $output = Resolve-PrivatePacmanMissingPath -Path $OutputPath -Name 'Ownership manifest output'
+    Assert-PrivatePacmanSameDrive -First $root -Second $output -Description 'Ownership manifest output'
+    if ((Test-PrivatePacmanPathWithin -Path $output -Root $root -AllowEqual) -or
+        (Test-PrivatePacmanPathWithin -Path $root -Root $output -AllowEqual)) {
+        throw 'Ownership manifest output must be outside PackageRoot.'
+    }
+
+    $inventory = Get-PrivatePacmanPackageInventory `
+        -PackageRoot $root `
+        -WorkspaceRoot ([IO.Path]::GetDirectoryName($output))
+    $json = ConvertTo-PrivatePacmanCanonicalOwnershipJson `
+        -Owner $Owner `
+        -SessionId $SessionId `
+        -Package $inventory.Packages
+    Write-PrivatePacmanTextAtomic -Path $output -Value $json
+
+    [pscustomobject][ordered]@{
+        Schema = $script:OwnershipManifestSchema
+        Path = $output
+        Sha256 = Get-PrivatePacmanStringSha256 -Value $json
+        PackageSetSha256 = Get-PrivatePacmanPackageSetSha256 -Package $inventory.Packages
+        PackageCount = $inventory.Packages.Count
+    }
+}
+
+function Read-PrivatePacmanLockedBytes {
+    param(
+        [Parameter(Mandatory)]
+        [psobject] $Lock
+    )
+
+    $position = $Lock.Stream.Position
+    try {
+        $Lock.Stream.Position = 0
+        $memory = [IO.MemoryStream]::new()
+        try {
+            $Lock.Stream.CopyTo($memory)
+            return $memory.ToArray()
+        }
+        finally {
+            $memory.Dispose()
+        }
+    }
+    finally {
+        $Lock.Stream.Position = $position
+    }
+}
+
+function Open-PrivatePacmanOwnership {
+    param(
+        [Parameter(Mandatory)]
+        [psobject] $Layout,
+
+        [Parameter(Mandatory)]
+        [string] $PackageRoot,
+
+        [Parameter(Mandatory)]
+        [string] $ManifestPath,
+
+        [Parameter(Mandatory)]
+        [string] $SignaturePath,
+
+        [Parameter(Mandatory)]
+        [string] $PublicKeyPath,
+
+        [Parameter(Mandatory)]
+        [string] $ExpectedManifestSha256,
+
+        [Parameter(Mandatory)]
+        [string] $ExpectedPublicKeySha256,
+
+        [Parameter(Mandatory)]
+        [string] $ExpectedOwner
+    )
+
+    Assert-PrivatePacmanSha256Text -Value $ExpectedManifestSha256 -Name 'ExpectedManifestSha256'
+    Assert-PrivatePacmanSha256Text -Value $ExpectedPublicKeySha256 -Name 'ExpectedPublicKeySha256'
+    Assert-PrivatePacmanOwnershipName -Owner $ExpectedOwner
+
+    $inventory = Get-PrivatePacmanPackageInventory `
+        -PackageRoot $PackageRoot `
+        -WorkspaceRoot $Layout.WorkspaceRoot
+    $manifest = Resolve-PrivatePacmanExistingPath -Path $ManifestPath -Kind File -Name 'OwnershipManifestPath'
+    $signature = Resolve-PrivatePacmanExistingPath -Path $SignaturePath -Kind File -Name 'OwnershipSignaturePath'
+    $publicKey = Resolve-PrivatePacmanExistingPath -Path $PublicKeyPath -Kind File -Name 'OwnershipPublicKeyPath'
+    foreach ($path in @($manifest, $signature, $publicKey)) {
+        Assert-PrivatePacmanSameDrive `
+            -First $path `
+            -Second $Layout.WorkspaceRoot `
+            -Description 'Ownership evidence'
+        if (Test-PrivatePacmanPathWithin -Path $path -Root $inventory.Root -AllowEqual) {
+            throw "Ownership evidence must be outside PackageRoot: $path"
+        }
+    }
+    $ownershipPaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($path in @($manifest, $signature, $publicKey)) {
+        if (-not $ownershipPaths.Add($path)) {
+            throw 'Ownership manifest, signature, and public key must be distinct files.'
+        }
+    }
+
+    $ownershipLocks = [Collections.Generic.List[object]]::new()
+    $packageLocks = [Collections.Generic.List[object]]::new()
+    try {
+        $manifestLock = Open-PrivatePacmanReadLock -Path $manifest -Name 'Ownership manifest'
+        $ownershipLocks.Add($manifestLock)
+        $signatureLock = Open-PrivatePacmanReadLock -Path $signature -Name 'Ownership signature'
+        $ownershipLocks.Add($signatureLock)
+        $publicKeyLock = Open-PrivatePacmanReadLock -Path $publicKey -Name 'Ownership public key'
+        $ownershipLocks.Add($publicKeyLock)
+
+        if ($manifestLock.Sha256 -cne $ExpectedManifestSha256) {
+            throw 'Ownership manifest does not match ExpectedManifestSha256.'
+        }
+        if ($publicKeyLock.Sha256 -cne $ExpectedPublicKeySha256) {
+            throw 'Ownership public key does not match ExpectedPublicKeySha256.'
+        }
+
+        $manifestBytes = Read-PrivatePacmanLockedBytes -Lock $manifestLock
+        $manifestText = [Text.UTF8Encoding]::new($false, $true).GetString($manifestBytes)
+        $parsed = $manifestText | ConvertFrom-Json
+        $propertyNames = @($parsed.PSObject.Properties.Name)
+        Assert-PrivatePacmanSequence `
+            -Expected @(
+                'Schema', 'Owner', 'SessionId', 'SignatureAlgorithm',
+                'PackageSetSha256', 'Packages'
+            ) `
+            -Actual $propertyNames `
+            -Message 'Ownership manifest property set or order is not canonical.'
+        if ($parsed.Schema -cne $script:OwnershipManifestSchema -or
+            $parsed.SignatureAlgorithm -cne $script:OwnershipSignatureAlgorithm) {
+            throw 'Ownership manifest schema or signature algorithm is unsupported.'
+        }
+        if ($parsed.Owner -cne $ExpectedOwner -or $parsed.SessionId -cne $Layout.SessionId) {
+            throw 'Ownership manifest owner or session binding does not match this invocation.'
+        }
+
+        $manifestPackages = @($parsed.Packages)
+        if ($manifestPackages.Count -ne $inventory.Packages.Count) {
+            throw 'Ownership manifest is not a complete PackageRoot inventory.'
+        }
+        for ($index = 0; $index -lt $manifestPackages.Count; $index++) {
+            $listed = $manifestPackages[$index]
+            Assert-PrivatePacmanSequence `
+                -Expected @('Path', 'Length', 'Sha256') `
+                -Actual @($listed.PSObject.Properties.Name) `
+                -Message "Ownership package entry $index is not canonical."
+            $relative = ConvertTo-PrivatePacmanRelativePath `
+                -Path ([string]$listed.Path) `
+                -Name "Ownership package entry $index"
+            Assert-PrivatePacmanSha256Text `
+                -Value ([string]$listed.Sha256) `
+                -Name "Ownership package entry $index hash"
+            $actual = $inventory.Packages[$index]
+            if ($relative -cne $actual.Path -or
+                [int64]$listed.Length -ne $actual.Length -or
+                [string]$listed.Sha256 -cne $actual.Sha256) {
+                throw "Ownership package entry $index does not match PackageRoot bytes."
+            }
+        }
+
+        $canonicalJson = ConvertTo-PrivatePacmanCanonicalOwnershipJson `
+            -Owner ([string]$parsed.Owner) `
+            -SessionId ([string]$parsed.SessionId) `
+            -Package $manifestPackages
+        if ($manifestText -cne $canonicalJson) {
+            throw 'Ownership manifest JSON is not in canonical deterministic form.'
+        }
+        $packageSetSha256 = Get-PrivatePacmanPackageSetSha256 -Package $manifestPackages
+        if ([string]$parsed.PackageSetSha256 -cne $packageSetSha256) {
+            throw 'Ownership manifest PackageSetSha256 is invalid.'
+        }
+
+        $signatureText = [Text.UTF8Encoding]::new($false, $true).GetString(
+            (Read-PrivatePacmanLockedBytes -Lock $signatureLock)
+        )
+        if ($signatureText -notmatch '^[A-Za-z0-9+/]+={0,2}\r?\n?$') {
+            throw 'Ownership signature must contain one canonical base64 value.'
+        }
+        $signatureBytes = [Convert]::FromBase64String($signatureText.TrimEnd("`r", "`n"))
+        $publicKeyText = [Text.UTF8Encoding]::new($false, $true).GetString(
+            (Read-PrivatePacmanLockedBytes -Lock $publicKeyLock)
+        )
+        $ecdsa = [Security.Cryptography.ECDsa]::Create()
+        try {
+            $ecdsa.ImportFromPem($publicKeyText)
+            if ($ecdsa.KeySize -ne 256 -or
+                -not $ecdsa.VerifyData(
+                    $manifestBytes,
+                    $signatureBytes,
+                    [Security.Cryptography.HashAlgorithmName]::SHA256,
+                    [Security.Cryptography.DSASignatureFormat]::Rfc3279DerSequence
+                )) {
+                throw 'Ownership manifest ECDSA P-256 signature is invalid.'
+            }
+        }
+        finally {
+            $ecdsa.Dispose()
+        }
+
+        foreach ($entry in $inventory.Packages) {
+            $path = Resolve-PrivatePacmanExistingPath `
+                -Path ([IO.Path]::Combine($inventory.Root, $entry.Path)) `
+                -Kind File `
+                -Name 'Owned package'
+            $lock = Open-PrivatePacmanReadLock -Path $path -Name 'Owned package'
+            if ($lock.Sha256 -cne $entry.Sha256) {
+                $lock.Stream.Dispose()
+                throw "Owned package changed before its lock was acquired: $($entry.Path)"
+            }
+            $packageLocks.Add($lock)
+        }
+
+        return [pscustomobject][ordered]@{
+            Root = $inventory.Root
+            Paths = @($packageLocks | ForEach-Object Path)
+            OwnershipLocks = $ownershipLocks
+            PackageLocks = $packageLocks
+            Evidence = [pscustomobject][ordered]@{
+                Schema = $script:OwnershipManifestSchema
+                Owner = $ExpectedOwner
+                SessionId = $Layout.SessionId
+                SignatureAlgorithm = $script:OwnershipSignatureAlgorithm
+                ManifestPath = $manifest
+                ManifestSha256 = $manifestLock.Sha256
+                SignaturePath = $signature
+                SignatureSha256 = $signatureLock.Sha256
+                PublicKeyPath = $publicKey
+                PublicKeySha256 = $publicKeyLock.Sha256
+                PackageSetSha256 = $packageSetSha256
+                PackageCount = $inventory.Packages.Count
+                PackageRootSnapshotSha256 = $inventory.SnapshotDigest
+            }
+        }
+    }
+    catch {
+        Close-PrivatePacmanLocks -Locks $packageLocks
+        Close-PrivatePacmanLocks -Locks $ownershipLocks
+        throw
     }
 }
 
@@ -1573,7 +1968,22 @@ function Invoke-PrivatePacmanUpgrade {
         [string] $PackageRoot,
 
         [Parameter(Mandatory)]
-        [string[]] $PackagePath,
+        [string] $OwnershipManifestPath,
+
+        [Parameter(Mandatory)]
+        [string] $OwnershipSignaturePath,
+
+        [Parameter(Mandatory)]
+        [string] $OwnershipPublicKeyPath,
+
+        [Parameter(Mandatory)]
+        [string] $ExpectedManifestSha256,
+
+        [Parameter(Mandatory)]
+        [string] $ExpectedPublicKeySha256,
+
+        [Parameter(Mandatory)]
+        [string] $ExpectedOwner,
 
         [string[]] $ProtectedRoot = @(),
 
@@ -1596,34 +2006,44 @@ function Invoke-PrivatePacmanUpgrade {
         -First $seed `
         -Second $canonicalLayout.WorkspaceRoot `
         -Description 'SeedRoot'
-    $packages = Get-PrivatePacmanPackagePaths `
-        -PackageRoot $PackageRoot `
-        -PackagePath $PackagePath `
-        -WorkspaceRoot $canonicalLayout.WorkspaceRoot
-    if ((Test-PrivatePacmanPathWithin -Path $seed -Root $packages.Root -AllowEqual) -or
-        (Test-PrivatePacmanPathWithin -Path $packages.Root -Root $seed -AllowEqual)) {
-        throw 'SeedRoot and PackageRoot must be disjoint.'
-    }
-
-    $protected = @(Get-PrivatePacmanProtectedRoots -ProtectedRoot $ProtectedRoot)
-    Assert-PrivatePacmanNoProtectedOverlap `
-        -InputPath @(
-            $canonicalLayout.WorkspaceRoot,
-            $seed,
-            $packages.Root
-        ) `
-        -ProtectedRoot $protected
-
-    $packageLocks = [Collections.Generic.List[object]]::new()
+    $ownership = $null
     try {
-        foreach ($package in $packages.Paths) {
-            $packageLocks.Add((Open-PrivatePacmanReadLock -Path $package -Name 'PackagePath'))
+        $ownership = Open-PrivatePacmanOwnership `
+            -Layout $canonicalLayout `
+            -PackageRoot $PackageRoot `
+            -ManifestPath $OwnershipManifestPath `
+            -SignaturePath $OwnershipSignaturePath `
+            -PublicKeyPath $OwnershipPublicKeyPath `
+            -ExpectedManifestSha256 $ExpectedManifestSha256 `
+            -ExpectedPublicKeySha256 $ExpectedPublicKeySha256 `
+            -ExpectedOwner $ExpectedOwner
+        if ((Test-PrivatePacmanPathWithin -Path $seed -Root $ownership.Root -AllowEqual) -or
+            (Test-PrivatePacmanPathWithin -Path $ownership.Root -Root $seed -AllowEqual)) {
+            throw 'SeedRoot and PackageRoot must be disjoint.'
         }
+
+        $protected = @(Get-PrivatePacmanProtectedRoots -ProtectedRoot $ProtectedRoot)
+        Assert-PrivatePacmanNoProtectedOverlap `
+            -InputPath @(
+                $canonicalLayout.WorkspaceRoot,
+                $seed,
+                $ownership.Root,
+                $ownership.Evidence.ManifestPath,
+                $ownership.Evidence.SignaturePath,
+                $ownership.Evidence.PublicKeyPath
+            ) `
+            -ProtectedRoot $protected
     }
     catch {
-        Close-PrivatePacmanLocks -Locks $packageLocks
+        if ($null -ne $ownership) {
+            Close-PrivatePacmanLocks -Locks $ownership.PackageLocks
+            Close-PrivatePacmanLocks -Locks $ownership.OwnershipLocks
+        }
         throw
     }
+    $packages = $ownership
+    $packageLocks = $ownership.PackageLocks
+    $ownershipLocks = $ownership.OwnershipLocks
 
     $nonce = [guid]::NewGuid().ToString('N')
     $stagingRoot = [IO.Path]::Combine(
@@ -1740,6 +2160,7 @@ function Invoke-PrivatePacmanUpgrade {
             -Value ([pscustomobject][ordered]@{
                 Executable = $canonicalLayout.PacmanPath
                 Arguments = $arguments
+                Ownership = $ownership.Evidence
                 Packages = @($packageLocks | Select-Object Path, Identity, LinkCount, Sha256)
                 Root = $rootEvidence
                 Environment = [pscustomobject][ordered]@{
@@ -1768,7 +2189,7 @@ function Invoke-PrivatePacmanUpgrade {
             $failures.Add("Private pacman exited with code $($processEvidence.ExitCode).")
         }
 
-        foreach ($lock in @($packageLocks) + @($rootLocks)) {
+        foreach ($lock in @($ownershipLocks) + @($packageLocks) + @($rootLocks)) {
             if ($lock.Sha256 -cne (Get-PrivatePacmanFileHash -Path $lock.Path)) {
                 $failures.Add("Locked input bytes changed: $($lock.Path)")
             }
@@ -1819,6 +2240,13 @@ function Invoke-PrivatePacmanUpgrade {
         }
         catch {
             $failures.Add("Unable to release package locks: $($_.Exception.Message)")
+        }
+
+        try {
+            Close-PrivatePacmanLocks -Locks $ownershipLocks
+        }
+        catch {
+            $failures.Add("Unable to release ownership-evidence locks: $($_.Exception.Message)")
         }
 
         if ($watchers.Count -ne 0) {
@@ -1891,6 +2319,7 @@ function Invoke-PrivatePacmanUpgrade {
                 Failures = @($failures)
                 Layout = $canonicalLayout
                 Seed = $rootEvidence
+                Ownership = $ownership.Evidence
                 Packages = @($packageLocks | Select-Object Path, Identity, LinkCount, Sha256)
                 Invocation = [pscustomobject][ordered]@{
                     Executable = $canonicalLayout.PacmanPath
@@ -2048,6 +2477,7 @@ function Remove-PrivatePacmanSession {
 
 Export-ModuleMember -Function @(
     'New-PrivatePacmanLayout',
+    'New-PrivatePacmanOwnershipManifest',
     'Get-PrivatePacmanTreeSnapshot',
     'Invoke-PrivatePacmanUpgrade',
     'Remove-PrivatePacmanSession'
