@@ -34,6 +34,7 @@ $negativeCases = @(
   @{ Name = 'nodeps';            Text = 'run: pacman -U ' + '--nod' + 'eps pkg' },
   @{ Name = 'shared-pacman';     Text = 'run: & ' + $shared + '\usr\bin\pacman -Q' },
   @{ Name = 'shared-bash';       Text = 'run: & ' + $shared + '\usr\bin\bash -lc id' },
+  @{ Name = 'indented-here-end'; Text = "run: |`n            `"@" },
   @{ Name = 'shared-objdump';    Text = 'run: & ' + $shared + '\usr\bin\objdump -p a.exe' },
   @{ Name = 'release-create';    Text = 'run: ' + 'gh' + ' release ' + 'create v1' },
   @{ Name = 'gh-release-action'; Text = 'uses: ' + 'softprops/' + 'action-gh-release@' + $sha },

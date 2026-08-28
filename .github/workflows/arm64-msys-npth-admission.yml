@@ -241,7 +241,7 @@ jobs:
               /opt/bin/aarch64-pc-msys-objcopy \
               /opt/bin/aarch64-pc-msys-strings \
               no
-            "@
+          "@
             & $bash -c $leakScript
             if ($LASTEXITCODE -ne 0) { throw "Path-leak audit rejected $input" }
           }

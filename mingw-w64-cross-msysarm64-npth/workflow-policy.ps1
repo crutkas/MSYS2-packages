@@ -58,6 +58,14 @@ function Get-WorkflowPolicyViolation {
     }
   }
 
+  # PowerShell here-string terminators embedded in a YAML `run: |` block must
+  # land at script column zero (ten YAML indentation spaces in this workflow).
+  foreach ($line in ($Text -split "`n")) {
+    if ($line -match '^ {11,}[''"]@(?:\s|\||$)') {
+      $violations.Add("indented PowerShell here-string terminator: $($line.Trim())")
+    }
+  }
+
   # Every `uses:` reference must be pinned to a 40-character commit SHA. Floating
   # tags (@v4, @main, @master, @latest, @<branch>) fail closed.
   foreach ($line in ($Text -split "`n")) {
