@@ -165,17 +165,28 @@ build() {
   (
     cd "${target_build}"
     local probe_source="${target_build}/configure-probe.c"
-    local probe_exe="${target_build}/configure-probe.exe"
+    local probe_dll="${target_build}/configure-probe.dll"
 
-    printf 'int main(void){return 0;}\n' > "${probe_source}"
+    cat > "${probe_source}" <<'EOF'
+#include <stdio.h>
+#include <windows.h>
+
+int probe(void)
+{
+  puts("configure-probe");
+  return MessageBoxA(NULL, "configure-probe", "configure-probe", 0);
+}
+EOF
     ${target_cc} \
       --sysroot="${target_prefix}" \
       -specs="${target_specs}" \
+      -shared \
+      -Wl,--no-undefined \
       -Wl,-u,_pei386_runtime_relocator \
       -lmsys-2.0 -lc -lm -lutil -ladvapi32 -lshell32 -luser32 -lkernel32 \
       "${probe_source}" \
-      -o "${probe_exe}"
-    rm -f "${probe_source}" "${probe_exe}"
+      -o "${probe_dll}"
+    rm -f "${probe_source}" "${probe_dll}"
 
     CC="${target_cc}" \
     CXX="${target_cxx}" \
