@@ -137,6 +137,8 @@ build() {
   local sysroot_root="$(_normalize_msys_path "${ALTROOT:-}")"
   local target_prefix="${sysroot_root}/opt/${_target}"
   local target_specs="${target_prefix}/lib/cygwin-compile-only.specs"
+  local target_gcc="${sysroot_root}/opt/bin/${_target}-gcc.exe"
+  local target_gxx="${sysroot_root}/opt/bin/${_target}-g++.exe"
 
   export PATH="${sysroot_root}/opt/bin:${PATH}"
   export CPPFLAGS="${CPPFLAGS} -D__MINGW_NOTHROW="
@@ -164,7 +166,7 @@ build() {
     local probe_exe="${target_build}/configure-probe.exe"
 
     printf 'int main(void){return 0;}\n' > "${probe_source}"
-    "${_target}-gcc" \
+    "${target_gcc}" \
       --sysroot="${target_prefix}" \
       -specs="${target_specs}" \
       -Wl,-u,_pei386_runtime_relocator \
@@ -172,8 +174,8 @@ build() {
       -o "${probe_exe}"
     rm -f "${probe_source}" "${probe_exe}"
 
-    CC="${_target}-gcc" \
-    CXX="${_target}-g++" \
+    CC="${target_gcc}" \
+    CXX="${target_gxx}" \
     AR="${_target}-ar" \
     RANLIB="${_target}-ranlib" \
     STRIP="${_target}-strip" \
@@ -205,6 +207,7 @@ check() {
   local sysroot_root="$(_normalize_msys_path "${ALTROOT:-}")"
   local target_prefix="${sysroot_root}/opt/${_target}"
   local target_specs="${target_prefix}/lib/cygwin-compile-only.specs"
+  local target_gcc="${sysroot_root}/opt/bin/${_target}-gcc.exe"
   local install_prefix="${srcdir}/dest/opt/${_target}"
   local helper_build="${srcdir}/build-host"
   local target_build="${srcdir}/build-target"
@@ -220,11 +223,11 @@ check() {
   test -x "${helper_build}/progs/tic.exe"
   test -x "${target_build}/progs/tic.exe"
   test -x "${sysroot_root}/opt/bin/${_target}-gcc.exe"
-  test "$("${_target}-gcc" -dumpmachine)" = "${_target}"
+  test "$("${target_gcc}" -dumpmachine)" = "${_target}"
   verbose_argv="$(
     (
       set -x
-      "${_target}-gcc" \
+      "${target_gcc}" \
         --sysroot="${target_prefix}" \
         -specs="${target_specs}" \
         -### -E -x c /dev/null \
