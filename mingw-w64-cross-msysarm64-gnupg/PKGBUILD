@@ -24,12 +24,12 @@ makedepends=(
   'gcc'
   'gettext-devel'
   'pkgconf'
-  'mingw-w64-cross-cygwinarm64-binutils=2.44.50-2'
-  'mingw-w64-cross-msysarm64-gcc=15.0.1dev-1'
-  'mingw-w64-cross-msysarm64-gcc-libs=15.0.1dev-1'
+  'mingw-w64-cross-cygwinarm64-binutils=0.unresolved'
+  'mingw-w64-cross-msysarm64-gcc=0.unresolved'
+  'mingw-w64-cross-msysarm64-gcc-libs=0.unresolved'
   'mingw-w64-cross-msysarm64-runtime-devel=0.unresolved'
   'mingw-w64-cross-msysarm64-sysroot=0.unresolved'
-  'mingw-w64-cross-msysarm64-w32api-runtime=14.0.0.r0.g9b3dd0125-1'
+  'mingw-w64-cross-msysarm64-w32api-runtime=0.unresolved'
   'mingw-w64-cross-msysarm64-npth-devel=0.unresolved'
   'mingw-w64-cross-msysarm64-libgpg-error-devel=0.unresolved'
   'mingw-w64-cross-msysarm64-libgcrypt-devel=0.unresolved'
@@ -59,7 +59,7 @@ sha256sums=(
   '243c3a79295519b3931f9d846cf2af5caa064a78de812ee336dc786c1567b4d0'
   '6ade15b536c50a88efc2d9dc958433b0ccfaf2908025b7672753e6bfce51c3c6'
   'ef2267eecd9eb59bbbbdb97d55cbfe10236b4979a125c6683a840830bc202905'
-  '965d6bd2711a3ea758f743525d703d746c9ab2500d0dd5f54e2ae6d17f2b6e9d'
+  '2befdd85bb926912a084ca5ec9db5b088252540e7d224d1d5bafd8003733b758'
   '2ec9adc67172cf78837786071e0fc0e7b47a3e6fd3bf00213bb8d2be2a291c93'
 )
 validpgpkeys=(
@@ -201,7 +201,7 @@ package_mingw-w64-cross-msysarm64-gnupg() {
   pkgdesc="Native ARM64 MSYS GnuPG programs for aarch64-pc-msys"
   depends=(
     'mingw-w64-cross-msysarm64-runtime=0.unresolved'
-    'mingw-w64-cross-msysarm64-gcc-libs=15.0.1dev-1'
+    'mingw-w64-cross-msysarm64-gcc-libs=0.unresolved'
     'mingw-w64-cross-msysarm64-npth=0.unresolved'
     'mingw-w64-cross-msysarm64-libgpg-error=0.unresolved'
     'mingw-w64-cross-msysarm64-libgcrypt=0.unresolved'

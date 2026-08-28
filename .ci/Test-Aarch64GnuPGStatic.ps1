@@ -17,6 +17,9 @@ $rootTest = Join-Path $PSScriptRoot 'Initialize-Aarch64GnuPGPrivateRoot.ps1'
 $splitTest = Join-Path $PSScriptRoot 'Test-Aarch64GnuPGSplitPackages.ps1'
 $pathScanner = Join-Path $PSScriptRoot 'Test-Aarch64GnuPGForbiddenPaths.ps1'
 $buildComparer = Join-Path $PSScriptRoot 'Compare-Aarch64GnuPGBuilds.ps1'
+$releaseValidator = Join-Path $PSScriptRoot 'Test-Aarch64GnuPGReleaseAdmission.ps1'
+$staticEvidenceGenerator = Join-Path $PSScriptRoot 'New-Aarch64GnuPGStaticEvidence.ps1'
+$staticEvidenceValidator = Join-Path $PSScriptRoot 'Test-Aarch64GnuPGStaticEvidence.ps1'
 $workflowPath = Join-Path $repo '.github\workflows\aarch64-msys-gnupg.yml'
 $temp = Join-Path ([IO.Path]::GetTempPath()) "gnupg-static-$([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Force -Path $temp | Out-Null
@@ -46,7 +49,10 @@ try {
     & $lockValidator -LockPath $lockPath -AllowUnresolved | Out-Null
     Assert-Fails $lockValidator @('-LockPath', $lockPath)
     $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
-    foreach ($runtimeId in @('runtime-headers', 'runtime', 'runtime-devel', 'runtime-sysroot', 'default-manifest')) {
+    foreach ($runtimeId in @(
+        'runtime-headers', 'runtime', 'runtime-devel', 'runtime-sysroot', 'default-manifest',
+        'gcc', 'gcc-libs', 'libstdcxx-headers', 'w32api-runtime', 'binutils'
+    )) {
         $runtime = @($lock.dependencies | Where-Object id -eq $runtimeId)
         if ($runtime.Count -ne 1 -or $runtime[0].status -ne 'unresolved' -or $null -ne $runtime[0].package) {
             throw "Revoked runtime component is not fail-closed: $runtimeId"
@@ -66,8 +72,8 @@ try {
     $mutations = @(
         @{ name = 'size'; old = '"asset_bytes": 83876291'; new = '"asset_bytes": 83876292' },
         @{ name = 'hash'; old = 'a74887c76a933ec424933bf662729d94975b83138af783bd93f2e7acd95c3a22'; new = ('0' * 64) },
-        @{ name = 'package'; old = '"version": "15.0.1dev-1"'; new = '"version": "15.0.1dev-9"' },
-        @{ name = 'url'; old = 'https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-gcc-pr13-20260826/'; new = 'https://example.invalid/provisional/' }
+        @{ name = 'release'; old = '"release_id": 377482427'; new = '"release_id": 377482428' },
+        @{ name = 'tag'; old = 'msysarm64-gcc-pr13-20260826'; new = 'msysarm64-gcc-pr13-drift' }
     )
     $lockRaw = Get-Content -LiteralPath $lockPath -Raw
     foreach ($mutation in $mutations) {
@@ -79,18 +85,21 @@ try {
         Set-Content -LiteralPath $path -Value $changed -Encoding utf8NoBOM
         Assert-Fails $lockValidator @('-LockPath', $path, '-AllowUnresolved')
     }
-    $ownedMutation = $lockRaw | ConvertFrom-Json
-    $ownedMutation.dependencies |
+    $provisionalMutation = $lockRaw | ConvertFrom-Json
+    $provisionalMutation.dependencies |
         Where-Object id -eq 'gcc' |
-        ForEach-Object { $_.package.owned_files = @() }
-    $ownedMutationPath = Join-Path $temp 'owned.json'
-    $ownedMutation | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $ownedMutationPath -Encoding utf8NoBOM
-    Assert-Fails $lockValidator @('-LockPath', $ownedMutationPath, '-AllowUnresolved')
+        ForEach-Object { $_.release_tag = 'provisional-release' }
+    $provisionalMutationPath = Join-Path $temp 'provisional.json'
+    $provisionalMutation | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $provisionalMutationPath -Encoding utf8NoBOM
+    Assert-Fails $lockValidator @('-LockPath', $provisionalMutationPath, '-AllowUnresolved')
     $revokedMutation = $lockRaw | ConvertFrom-Json
     $revokedMutation.revoked_releases += [pscustomobject]@{
         release_tag = 'msysarm64-gcc-pr13-20260826'
         reason = 'adversarial static fixture'
     }
+    $revokedMutation.dependencies |
+        Where-Object id -eq 'gcc' |
+        ForEach-Object { $_.release_tag = 'msysarm64-gcc-pr13-20260826' }
     $revokedMutationPath = Join-Path $temp 'revoked-reference.json'
     $revokedMutation | ConvertTo-Json -Depth 20 |
         Set-Content -LiteralPath $revokedMutationPath -Encoding utf8NoBOM
@@ -107,6 +116,77 @@ try {
         Set-Content -LiteralPath $quarantineMutationPath -Encoding utf8NoBOM
     Assert-Fails $lockValidator @('-LockPath', $quarantineMutationPath, '-AllowUnresolved')
 
+    $releaseFixtureRoot = Join-Path $temp 'release-fixtures'
+    New-Item -ItemType Directory -Path $releaseFixtureRoot | Out-Null
+    $releaseLock = [ordered]@{
+        dependencies = @(
+            [ordered]@{
+                id = 'fixture'
+                required = $true
+                status = 'admitted'
+                release_id = 900001
+                release_tag = 'fixture-tag'
+                release_immutable = $true
+                asset_id = 900002
+                asset_url = 'https://github.com/crutkas/MSYS2-packages/releases/download/fixture-tag/fixture.pkg.tar.zst'
+                asset_name = 'fixture.pkg.tar.zst'
+                asset_bytes = 123
+                asset_sha256 = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+            },
+            [ordered]@{
+                id = 'not-applicable-fixture'
+                required = $false
+                status = 'not-applicable'
+            }
+        )
+    }
+    $releaseLockPath = Join-Path $releaseFixtureRoot 'lock.json'
+    $releaseLock | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $releaseLockPath -Encoding utf8NoBOM
+    $releaseResponse = [ordered]@{
+        id = 900001
+        tag_name = 'fixture-tag'
+        immutable = $true
+        assets = @([ordered]@{
+            id = 900002
+            name = 'fixture.pkg.tar.zst'
+            size = 123
+            digest = 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+            browser_download_url = 'https://github.com/crutkas/MSYS2-packages/releases/download/fixture-tag/fixture.pkg.tar.zst'
+        })
+    }
+    $releaseResponsePath = Join-Path $releaseFixtureRoot '900001.json'
+    $releaseResponse | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $releaseResponsePath -Encoding utf8NoBOM
+    Invoke-ExpectedExit 0 $releaseValidator @(
+        '-LockPath', $releaseLockPath,
+        '-ResponseDirectory', $releaseFixtureRoot
+    )
+    foreach ($mutation in @(
+        @{ name = 'immutable-false'; apply = { param($value) $value.immutable = $false } },
+        @{ name = 'missing-immutable'; apply = { param($value) $value.PSObject.Properties.Remove('immutable') } },
+        @{ name = 'release-drift'; apply = { param($value) $value.id = 900003 } },
+        @{ name = 'tag-drift'; apply = { param($value) $value.tag_name = 'wrong-tag' } },
+        @{ name = 'asset-drift'; apply = { param($value) $value.assets[0].id = 900004 } }
+    )) {
+        $value = $releaseResponse | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+        & $mutation.apply $value
+        $value | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $releaseResponsePath -Encoding utf8NoBOM
+        Assert-Fails $releaseValidator @(
+            '-LockPath', $releaseLockPath,
+            '-ResponseDirectory', $releaseFixtureRoot
+        )
+    }
+    $releaseResponse | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $releaseResponsePath -Encoding utf8NoBOM
+    $knownQuarantineLock = $releaseLock | ConvertTo-Json -Depth 8 | ConvertFrom-Json
+    $knownQuarantineLock.dependencies[0].release_id = 377908415
+    $knownQuarantineLockPath = Join-Path $releaseFixtureRoot 'known-quarantine-lock.json'
+    $knownQuarantineLock | ConvertTo-Json -Depth 8 |
+        Set-Content -LiteralPath $knownQuarantineLockPath -Encoding utf8NoBOM
+    Copy-Item -LiteralPath $releaseResponsePath -Destination (Join-Path $releaseFixtureRoot '377908415.json')
+    Assert-Fails $releaseValidator @(
+        '-LockPath', $knownQuarantineLockPath,
+        '-ResponseDirectory', $releaseFixtureRoot
+    )
+
     $pkgbuild = Get-Content -LiteralPath $pkgbuildPath -Raw
     foreach ($required in @(
         '_target=aarch64-pc-msys',
@@ -116,6 +196,10 @@ try {
         '--disable-ldap',
         '--disable-nls',
         'mingw-w64-cross-msysarm64-runtime-devel=0.unresolved',
+        'mingw-w64-cross-cygwinarm64-binutils=0.unresolved',
+        'mingw-w64-cross-msysarm64-gcc=0.unresolved',
+        'mingw-w64-cross-msysarm64-gcc-libs=0.unresolved',
+        'mingw-w64-cross-msysarm64-w32api-runtime=0.unresolved',
         'mingw-w64-cross-msysarm64-sysroot=0.unresolved',
         'mingw-w64-cross-msysarm64-runtime=0.unresolved',
         'mingw-w64-cross-msysarm64-npth-devel=0.unresolved',
@@ -507,6 +591,39 @@ if "%1"=="-h" (
     if ($symbolicActions.Count -ne 0) {
         throw 'Every action in the GnuPG workflow must be pinned to a full commit SHA'
     }
+    foreach ($required in @(
+        'New-Aarch64GnuPGStaticEvidence.ps1',
+        'Test-Aarch64GnuPGStaticEvidence.ps1',
+        'gnupg-static-evidence.json',
+        'Test-Aarch64GnuPGReleaseAdmission.ps1',
+        'ref: ${{ github.event.pull_request.head.sha || github.sha }}'
+    )) {
+        if (-not $workflowText.Contains($required)) {
+            throw "Workflow is missing static admission evidence: $required"
+        }
+    }
+    $lockGate = $workflowText.IndexOf('Require a complete admitted dependency lock', [StringComparison]::Ordinal)
+    $liveGate = $workflowText.IndexOf('Require live immutable release identities', [StringComparison]::Ordinal)
+    $setup = $workflowText.IndexOf('uses: msys2/setup-msys2@', [StringComparison]::Ordinal)
+    if ($lockGate -lt 0 -or $liveGate -lt $lockGate -or $setup -lt $liveGate) {
+        throw 'Lock and live release gates must precede setup-msys2'
+    }
+    foreach ($scriptPath in @($staticEvidenceGenerator, $staticEvidenceValidator)) {
+        $scriptText = Get-Content -LiteralPath $scriptPath -Raw
+        foreach ($required in @(
+            'repository', 'base_commit', 'head_commit', 'tree', 'lock_sha256',
+            'inventory_sha256', 'scanner_sha256', 'action_pins',
+            'unresolved_dependencies', 'setup_msys2', 'dependency_download',
+            'package_install', 'package_build', 'native_execution'
+        )) {
+            if (-not $scriptText.Contains($required)) {
+                throw "Static evidence contract omits $required in $scriptPath"
+            }
+        }
+        if (-not $scriptText.Contains('Get-NormalizedSha256 $ScannerPath')) {
+            throw "Static evidence must normalize the scanner hash in $scriptPath"
+        }
+    }
     if ($workflowText.IndexOf('Preflight every package byte and archive path', [StringComparison]::Ordinal) -gt
         $workflowText.IndexOf('& C:\msys64\usr\bin\bsdtar.exe -xf', [StringComparison]::Ordinal)) {
         throw 'Package archive preflight must run before direct extraction'
@@ -518,7 +635,7 @@ if "%1"=="-h" (
         }
     }
     foreach ($seal in @(
-        '965d6bd2711a3ea758f743525d703d746c9ab2500d0dd5f54e2ae6d17f2b6e9d',
+        '2befdd85bb926912a084ca5ec9db5b088252540e7d224d1d5bafd8003733b758',
         '2ec9adc67172cf78837786071e0fc0e7b47a3e6fd3bf00213bb8d2be2a291c93'
     )) {
         if (-not $pkgbuild.Contains($seal)) {

@@ -32,14 +32,6 @@ foreach ($field in $expectedSource.Keys) {
     }
 }
 
-$expectedFoundations = @{
-    'gcc' = @('msysarm64-gcc-pr13-20260826', 83876291, 'a74887c76a933ec424933bf662729d94975b83138af783bd93f2e7acd95c3a22', 'mingw-w64-cross-msysarm64-gcc', '15.0.1dev-1', 'c17cf6f65ebbf88cdc7cfa0cbf6f038eba955a67')
-    'gcc-libs' = @('msysarm64-gcc-pr13-20260826', 4963824, '990f163cacf9ffce1b58445be91fedc57f135cc26a88d7dba109806446b41438', 'mingw-w64-cross-msysarm64-gcc-libs', '15.0.1dev-1', 'c17cf6f65ebbf88cdc7cfa0cbf6f038eba955a67')
-    'libstdcxx-headers' = @('msysarm64-gcc-pr13-support-20260826', 1520166, '9715aab6894379bf5ab936a3a559f286fb4aedbb64f0774d7457182e00648e08', 'mingw-w64-cross-msysarm64-libstdc++-headers', '15.0.1dev-1', '42f1fb808363203a83c7f6f935ab7e4bdffbe127')
-    'w32api-runtime' = @('msysarm64-gcc-pr13-support-20260826', 2349635, '7727936f4212e5af04e9739eca60f157c0875796c1e82fcfb79fd4398b111e24', 'mingw-w64-cross-msysarm64-w32api-runtime', '14.0.0.r0.g9b3dd0125-1', '42f1fb808363203a83c7f6f935ab7e4bdffbe127')
-    'binutils' = @('cygwinarm64-binutils-pr21-3356eec-20260827', 6545114, '3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b', 'mingw-w64-cross-cygwinarm64-binutils', '2.44.50-2', '3356eec1411983cc252b04afac32bca5f3b8d824')
-}
-
 $revokedReleases = @($lock.revoked_releases)
 $revokedTags = @(
     $revokedReleases |
@@ -66,8 +58,8 @@ $quarantinedTags = @(
         ForEach-Object {
             if ([string]::IsNullOrWhiteSpace($_.release_tag) -or
                 [string]::IsNullOrWhiteSpace($_.reason) -or
-                $_.immutable -or -not $_.diagnostic_only) {
-                throw 'Every quarantined release must be explicitly nonimmutable and diagnostic-only'
+                $_.admission -or -not $_.diagnostic_only -or $_.immutable -eq $true) {
+                throw 'Every quarantined release must be nonadmitted and diagnostic-only'
             }
             $_.release_tag
         }
@@ -80,36 +72,68 @@ foreach ($dependency in $lock.dependencies) {
         throw "Dependency $($dependency.id) references quarantined release $($dependency.release_tag)"
     }
 }
-$libgpgQuarantine = @(
-    $quarantinedReleases |
-        Where-Object release_tag -eq 'msysarm64-libgpg-error-pr16-06ae2f9-20260827'
-)
-if ($libgpgQuarantine.Count -ne 1 -or
-    $libgpgQuarantine[0].release_id -ne 378064013 -or
-    $libgpgQuarantine[0].producer_commit -ne '06ae2f9c2ad5d69e736e4d056772a7be1546a076') {
-    throw 'The nonimmutable libgpg-error release requires one authoritative quarantine record'
-}
-$expectedLibgpgDiagnostics = @{
-    'mingw-w64-cross-msysarm64-libgpg-error-1.56-1-x86_64.pkg.tar.zst' = @(
-        125720,
-        'ca9c377b91896f3286071fd456389006ade6e297e7dd21efb06ab572ccb55d34'
+$expectedQuarantines = @{
+    377482427 = @(
+        'msysarm64-gcc-pr13-20260826',
+        'c17cf6f65ebbf88cdc7cfa0cbf6f038eba955a67',
+        'unknown',
+        @{
+            'mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst' = @(83876291, 'a74887c76a933ec424933bf662729d94975b83138af783bd93f2e7acd95c3a22')
+            'mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst' = @(4963824, '990f163cacf9ffce1b58445be91fedc57f135cc26a88d7dba109806446b41438')
+        }
     )
-    'mingw-w64-cross-msysarm64-libgpg-error-devel-1.56-1-x86_64.pkg.tar.zst' = @(
-        123170,
-        '642880ad8fc5498fa7b755825b30008d466dbefa0dd07de80f5f5516b7968a2a'
+    377493699 = @(
+        'msysarm64-gcc-pr13-support-20260826',
+        '42f1fb808363203a83c7f6f935ab7e4bdffbe127',
+        'unknown',
+        @{
+            'mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst' = @(1520166, '9715aab6894379bf5ab936a3a559f286fb4aedbb64f0774d7457182e00648e08')
+            'mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst' = @(2349635, '7727936f4212e5af04e9739eca60f157c0875796c1e82fcfb79fd4398b111e24')
+        }
+    )
+    377908415 = @(
+        'cygwinarm64-binutils-pr21-3356eec-20260827',
+        '3356eec1411983cc252b04afac32bca5f3b8d824',
+        'false',
+        @{
+            'mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst' = @(6545114, '3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b')
+        }
+    )
+    378064013 = @(
+        'msysarm64-libgpg-error-pr16-06ae2f9-20260827',
+        '06ae2f9c2ad5d69e736e4d056772a7be1546a076',
+        'false',
+        @{
+            'mingw-w64-cross-msysarm64-libgpg-error-1.56-1-x86_64.pkg.tar.zst' = @(125720, 'ca9c377b91896f3286071fd456389006ade6e297e7dd21efb06ab572ccb55d34')
+            'mingw-w64-cross-msysarm64-libgpg-error-devel-1.56-1-x86_64.pkg.tar.zst' = @(123170, '642880ad8fc5498fa7b755825b30008d466dbefa0dd07de80f5f5516b7968a2a')
+        }
     )
 }
-$diagnostics = @($libgpgQuarantine[0].package_diagnostics)
-if ($diagnostics.Count -ne $expectedLibgpgDiagnostics.Count) {
-    throw 'The libgpg-error quarantine diagnostic package set changed'
+if ($quarantinedReleases.Count -ne $expectedQuarantines.Count) {
+    throw 'The authoritative quarantine release set changed'
 }
-foreach ($assetName in $expectedLibgpgDiagnostics.Keys) {
-    $diagnostic = @($diagnostics | Where-Object asset_name -eq $assetName)
-    $expected = $expectedLibgpgDiagnostics[$assetName]
-    if ($diagnostic.Count -ne 1 -or
-        $diagnostic[0].asset_bytes -ne $expected[0] -or
-        $diagnostic[0].asset_sha256 -ne $expected[1]) {
-        throw "The libgpg-error quarantine diagnostic identity changed: $assetName"
+foreach ($releaseId in $expectedQuarantines.Keys) {
+    $record = @($quarantinedReleases | Where-Object release_id -eq $releaseId)
+    $expected = $expectedQuarantines[$releaseId]
+    if ($record.Count -ne 1) {
+        throw "Quarantine release identity changed: $releaseId"
+    }
+    $immutableState = if ($null -eq $record[0].immutable) { 'unknown' } else { $record[0].immutable.ToString().ToLowerInvariant() }
+    if ($record[0].release_tag -ne $expected[0] -or
+        $record[0].producer_commit -ne $expected[1] -or $immutableState -ne $expected[2]) {
+        throw "Quarantine release identity changed: $releaseId"
+    }
+    $diagnostics = @($record[0].package_diagnostics)
+    if ($diagnostics.Count -ne $expected[3].Count) {
+        throw "Quarantine package set changed: $releaseId"
+    }
+    foreach ($assetName in $expected[3].Keys) {
+        $diagnostic = @($diagnostics | Where-Object asset_name -eq $assetName)
+        $assetExpected = $expected[3][$assetName]
+        if ($diagnostic.Count -ne 1 -or $diagnostic[0].asset_bytes -ne $assetExpected[0] -or
+            $diagnostic[0].asset_sha256 -ne $assetExpected[1]) {
+            throw "Quarantine diagnostic identity changed: $assetName"
+        }
     }
 }
 
@@ -136,8 +160,9 @@ foreach ($dependency in $lock.dependencies) {
         if (-not $dependency.required) {
             throw "$($dependency.id) is unresolved but not required"
         }
-        foreach ($field in @('release_tag', 'asset_url', 'asset_name', 'asset_bytes', 'asset_sha256', 'producer_commit', 'package')) {
-            if ($null -ne $dependency.$field) {
+        foreach ($field in @('release_id', 'release_tag', 'release_immutable', 'asset_id', 'asset_url', 'asset_name', 'asset_bytes', 'asset_sha256', 'producer_commit', 'package')) {
+            $property = $dependency.PSObject.Properties[$field]
+            if ($null -ne $property -and $null -ne $property.Value) {
                 throw "Unresolved dependency $($dependency.id) has provisional $field"
             }
         }
@@ -147,7 +172,9 @@ foreach ($dependency in $lock.dependencies) {
     if ($dependency.status -ne 'admitted') {
         throw "Unknown dependency status for $($dependency.id): $($dependency.status)"
     }
-    if ($dependency.asset_bytes -le 0 -or $dependency.asset_sha256 -notmatch '^[0-9a-f]{64}$') {
+    if ($dependency.release_id -le 0 -or -not $dependency.release_immutable -or
+        $dependency.asset_id -le 0 -or $dependency.asset_bytes -le 0 -or
+        $dependency.asset_sha256 -notmatch '^[0-9a-f]{64}$') {
         throw "Invalid asset size or SHA-256 for $($dependency.id)"
     }
     if ([string]::IsNullOrWhiteSpace($dependency.release_tag) -or
@@ -169,33 +196,16 @@ foreach ($dependency in $lock.dependencies) {
     }
 }
 
-foreach ($id in $expectedFoundations.Keys) {
-    $dependency = @($lock.dependencies | Where-Object id -eq $id)
-    if ($dependency.Count -ne 1 -or $dependency[0].status -ne 'admitted') {
-        throw "Missing admitted immutable foundation: $id"
-    }
-    $expected = $expectedFoundations[$id]
-    $actual = $dependency[0]
-    if ($actual.release_tag -ne $expected[0] -or
-        $actual.asset_bytes -ne $expected[1] -or
-        $actual.asset_sha256 -ne $expected[2] -or
-        $actual.package.name -ne $expected[3] -or
-        $actual.package.version -ne $expected[4] -or
-        $actual.producer_commit -ne $expected[5]) {
-        throw "Immutable foundation mismatch: $id"
-    }
-}
-if (Compare-Object @($expectedFoundations.Keys | Sort-Object) @(
-    $lock.dependencies |
-        Where-Object status -eq 'admitted' |
-        ForEach-Object id |
-        Sort-Object
-)) {
-    throw 'The lock admits an unexpected dependency; no crypto leaf is currently admitted'
+if (@($lock.dependencies | Where-Object status -eq 'admitted').Count -ne 0) {
+    throw 'No dependency is admitted while release immutability and provenance audits remain open'
 }
 
 $scanner = $lock.fixed_binutils_evidence.scanner
-if ($scanner.commit -ne '3356eec1411983cc252b04afac32bca5f3b8d824' -or
+if ($lock.fixed_binutils_evidence.release_id -ne 377908415 -or
+    $lock.fixed_binutils_evidence.immutable -or
+    $lock.fixed_binutils_evidence.admission -or
+    -not $lock.fixed_binutils_evidence.diagnostic_only -or
+    $scanner.commit -ne '3356eec1411983cc252b04afac32bca5f3b8d824' -or
     $scanner.path -ne '.ci/check-aarch64-pseudo-relocs.ps1' -or
     $scanner.sha256 -ne '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9' -or
     $scanner.package_contained) {

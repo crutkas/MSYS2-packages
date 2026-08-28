@@ -45,9 +45,31 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Run source and negative tests
         shell: pwsh
         run: .\.ci\Test-Aarch64GnuPGStatic.ps1
+      - name: Create closed-schema static evidence
+        shell: pwsh
+        run: |
+          $base = (& git merge-base origin/master HEAD).Trim()
+          $head = (& git rev-parse HEAD).Trim()
+          $evidence = Join-Path $env:RUNNER_TEMP "gnupg-static-evidence.json"
+          .\.ci\New-Aarch64GnuPGStaticEvidence.ps1 `
+            -Repository "${{ github.repository }}" `
+            -BaseCommit $base `
+            -HeadCommit $head `
+            -OutputPath $evidence
+          .\.ci\Test-Aarch64GnuPGStaticEvidence.ps1 `
+            -EvidencePath $evidence `
+            -Repository "${{ github.repository }}" `
+            -BaseCommit $base `
+            -HeadCommit $head | Out-Null
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: aarch64-pc-msys-gnupg-static-evidence
+          path: ${{ runner.temp }}/gnupg-static-evidence.json
+          if-no-files-found: error
 
   build:
     if: github.event_name == 'workflow_dispatch' && inputs.build_candidate
@@ -62,6 +84,12 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - name: Require a complete admitted dependency lock
+        shell: pwsh
+        run: .\.ci\Test-Aarch64GnuPGDependencyLock.ps1 -LockPath .\mingw-w64-cross-msysarm64-gnupg\dependencies.lock.json
+      - name: Require live immutable release identities
+        shell: pwsh
+        run: .\.ci\Test-Aarch64GnuPGReleaseAdmission.ps1 -LockPath .\mingw-w64-cross-msysarm64-gnupg\dependencies.lock.json
       - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
         with:
           msystem: MSYS
@@ -72,9 +100,6 @@ jobs:
             jq
             pkgconf
           update: true
-      - name: Require a complete admitted dependency lock
-        shell: pwsh
-        run: .\.ci\Test-Aarch64GnuPGDependencyLock.ps1 -LockPath .\mingw-w64-cross-msysarm64-gnupg\dependencies.lock.json
       - name: Install immutable inputs in a fresh private root
         id: root
         shell: pwsh
