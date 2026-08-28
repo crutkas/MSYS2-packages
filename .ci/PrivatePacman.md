@@ -89,14 +89,20 @@ upgrades and removals can replace them. Root-local pacman log additions are
 checked for file/transaction failures even when the process exits zero. Both
 the configured hook directory and pacman's root-relative
 `usr\share\libalpm\hooks` directory must be empty for mutations.
+Transaction print mode is parsed with pacman's option arity. `--noscriptlet` is
+omitted only when `-p`, `--print`, or a complete `--print-format` option is
+unambiguously active; unknown, malformed, or consumed print-like tokens retain
+scriptlet protection.
 
 The canonical `C:\msys64` root is always observed regardless of caller
 configuration, alongside any additional configured protected root. The
 transaction evidence records a deterministic hash of recursive change events.
-Watcher shutdown waits for queued callbacks to drain. Post-transaction
-observation errors are recorded in the evidence before the helper fails closed.
-Direct tree manifests record directory and file reparse link type, raw target,
-and resolved target so retargeting cannot compare equal.
+Watcher shutdown uses filesystem create/delete barriers while events remain
+enabled, captures a bounded full recursive metadata fingerprint, then performs
+a final barrier before disabling and disposing the watcher. Watcher or
+fingerprint failures are recorded in the evidence before the helper fails
+closed. Direct tree manifests record directory and file reparse link type, raw
+target, and resolved target so retargeting cannot compare equal.
 
 Run the compiled argv-recorder safety tests without invoking pacman (`dotnet`
 with the .NET 8 targeting pack is required):

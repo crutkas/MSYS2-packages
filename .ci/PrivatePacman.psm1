@@ -3,28 +3,44 @@ Set-StrictMode -Version Latest
 if (-not ('PrivatePacman.NativePath' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Generic;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using Microsoft.Win32.SafeHandles;
 
 namespace PrivatePacman
 {
+    public sealed class MetadataFingerprint
+    {
+        public int EntryCount { get; internal set; }
+        public string ManifestHash { get; internal set; }
+    }
+
     public sealed class TreeChangeMonitor : IDisposable
     {
+        private readonly string root;
         private readonly FileSystemWatcher watcher;
         private readonly ConcurrentQueue<string> changes = new ConcurrentQueue<string>();
         private readonly object callbackLock = new object();
+        private readonly object operationLock = new object();
+        private readonly AutoResetEvent barrierSignal = new AutoResetEvent(false);
         private int activeCallbacks;
-        private DateTime lastCallbackUtc = DateTime.MinValue;
+        private string barrierPath;
+        private int barrierStage;
+        private bool stopped;
+        private bool disposed;
 
         public bool Overflowed { get; private set; }
 
         public TreeChangeMonitor(string root)
         {
+            this.root = Path.GetFullPath(root);
             watcher = new FileSystemWatcher(root);
             watcher.IncludeSubdirectories = true;
             watcher.NotifyFilter =
@@ -43,31 +59,65 @@ namespace PrivatePacman
             watcher.EnableRaisingEvents = true;
         }
 
+        public void Quiesce()
+        {
+            lock(operationLock)
+            {
+                ThrowIfStopped();
+                RunBarrier();
+            }
+        }
+
         public string[] Stop()
         {
-            watcher.EnableRaisingEvents = false;
-            DateTime deadline = DateTime.UtcNow.AddSeconds(5);
-            lock (callbackLock)
+            lock(operationLock)
             {
-                lastCallbackUtc = DateTime.UtcNow;
-                while (activeCallbacks != 0 ||
-                    DateTime.UtcNow - lastCallbackUtc < TimeSpan.FromMilliseconds(250))
+                if(stopped)
                 {
-                    TimeSpan remaining = deadline - DateTime.UtcNow;
-                    if (remaining <= TimeSpan.Zero)
-                    {
-                        Overflowed = true;
-                        changes.Enqueue("WatcherDrainTimeout");
-                        break;
-                    }
-                    Monitor.Wait(
-                        callbackLock,
-                        remaining < TimeSpan.FromMilliseconds(50)
-                            ? remaining
-                            : TimeSpan.FromMilliseconds(50));
+                    return changes.ToArray();
                 }
+
+                RunBarrier();
+                return StopAfterBarrierCore();
             }
-            return changes.ToArray();
+        }
+
+        public string[] StopAfterBarrier()
+        {
+            lock(operationLock)
+            {
+                if(stopped)
+                {
+                    return changes.ToArray();
+                }
+                return StopAfterBarrierCore();
+            }
+        }
+
+        private string[] StopAfterBarrierCore()
+        {
+                watcher.EnableRaisingEvents = false;
+                DateTime deadline = DateTime.UtcNow.AddSeconds(5);
+                lock(callbackLock)
+                {
+                    while(activeCallbacks != 0)
+                    {
+                        TimeSpan remaining = deadline - DateTime.UtcNow;
+                        if(remaining <= TimeSpan.Zero)
+                        {
+                            Overflowed = true;
+                            changes.Enqueue("WatcherDrainTimeout");
+                            break;
+                        }
+                        Monitor.Wait(
+                                callbackLock,
+                                remaining < TimeSpan.FromMilliseconds(50)
+                                ? remaining
+                                : TimeSpan.FromMilliseconds(50));
+                    }
+                }
+                stopped = true;
+                return changes.ToArray();
         }
 
         private void OnChanged(object sender, FileSystemEventArgs args)
@@ -75,6 +125,10 @@ namespace PrivatePacman
             EnterCallback();
             try
             {
+                if(IsExpectedBarrierEvent(args.FullPath, args.ChangeType))
+                {
+                    return;
+                }
                 changes.Enqueue(args.ChangeType + "\t" + args.FullPath);
             }
             finally
@@ -103,6 +157,7 @@ namespace PrivatePacman
             {
                 Overflowed = true;
                 changes.Enqueue("WatcherError\t" + args.GetException().GetType().FullName);
+                barrierSignal.Set();
             }
             finally
             {
@@ -122,15 +177,124 @@ namespace PrivatePacman
         {
             lock (callbackLock)
             {
-                lastCallbackUtc = DateTime.UtcNow;
                 activeCallbacks--;
                 Monitor.PulseAll(callbackLock);
             }
         }
 
+        private bool IsExpectedBarrierEvent(string path, WatcherChangeTypes changeType)
+        {
+            lock(callbackLock)
+            {
+                if(barrierPath == null ||
+                    !String.Equals(path, barrierPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+
+                bool expected =
+                    (barrierStage == 1 && changeType == WatcherChangeTypes.Created) ||
+                    (barrierStage == 2 && changeType == WatcherChangeTypes.Deleted);
+                if(expected)
+                {
+                    barrierSignal.Set();
+                }
+                return true;
+            }
+        }
+
+        private void RunBarrier()
+        {
+            string path = Path.Combine(
+                    root,
+                    ".private-pacman-watcher-barrier-" + Guid.NewGuid().ToString("N") + ".tmp");
+            lock(callbackLock)
+            {
+                barrierPath = path;
+                barrierStage = 1;
+            }
+
+            try
+            {
+                using(FileStream stream = new FileStream(
+                            path,
+                            FileMode.CreateNew,
+                            FileAccess.Write,
+                            FileShare.Read | FileShare.Delete))
+                {
+                    stream.WriteByte(0);
+                    stream.Flush(true);
+                }
+                WaitForBarrier("creation");
+
+                lock(callbackLock)
+                {
+                    barrierStage = 2;
+                }
+                File.Delete(path);
+                WaitForBarrier("deletion");
+            }
+            catch(Exception ex)
+            {
+                Overflowed = true;
+                changes.Enqueue("WatcherBarrierError\t" + ex.GetType().FullName);
+                throw;
+            }
+            finally
+            {
+                lock(callbackLock)
+                {
+                    barrierPath = null;
+                    barrierStage = 0;
+                }
+                try
+                {
+                    if(File.Exists(path))
+                    {
+                        File.Delete(path);
+                    }
+                }
+                catch
+                {
+                    Overflowed = true;
+                    changes.Enqueue("WatcherBarrierCleanupError");
+                }
+            }
+        }
+
+        private void WaitForBarrier(string stage)
+        {
+            if(!barrierSignal.WaitOne(TimeSpan.FromSeconds(5)))
+            {
+                throw new TimeoutException("Timed out waiting for watcher barrier " + stage + ".");
+            }
+            if(Overflowed)
+            {
+                throw new IOException("The protected-root watcher failed before its barrier completed.");
+            }
+        }
+
+        private void ThrowIfStopped()
+        {
+            if(stopped || disposed)
+            {
+                throw new ObjectDisposedException(nameof(TreeChangeMonitor));
+            }
+        }
+
         public void Dispose()
         {
-            watcher.Dispose();
+            lock(operationLock)
+            {
+                if(disposed)
+                {
+                    return;
+                }
+                watcher.EnableRaisingEvents = false;
+                watcher.Dispose();
+                barrierSignal.Dispose();
+                disposed = true;
+            }
         }
     }
 
@@ -273,6 +437,126 @@ namespace PrivatePacman
                     information.VolumeSerialNumber,
                     information.FileIndexHigh,
                     information.FileIndexLow);
+            }
+        }
+
+        public static MetadataFingerprint GetTreeMetadataFingerprint(
+                string root,
+                int maximumEntries,
+                int timeoutMilliseconds)
+        {
+            string canonicalRoot = Path.GetFullPath(root).TrimEnd(
+                    Path.DirectorySeparatorChar,
+                    Path.AltDirectorySeparatorChar);
+            Stopwatch stopwatch = Stopwatch.StartNew();
+            int entryCount = 0;
+            using(SHA256 sha256 = SHA256.Create())
+            {
+                AppendDirectoryMetadata(
+                        canonicalRoot,
+                        canonicalRoot,
+                        sha256,
+                        stopwatch,
+                        timeoutMilliseconds,
+                        maximumEntries,
+                        0,
+                        ref entryCount);
+                sha256.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+                return new MetadataFingerprint {
+                    EntryCount = entryCount,
+                    ManifestHash = BitConverter.ToString(sha256.Hash).Replace("-", "")
+                };
+            }
+        }
+
+        private static void AppendDirectoryMetadata(
+                string root,
+                string directory,
+                HashAlgorithm hash,
+                Stopwatch stopwatch,
+                int timeoutMilliseconds,
+                int maximumEntries,
+                int depth,
+                ref int entryCount)
+        {
+            if(depth > 512)
+            {
+                throw new IOException("Tree manifest exceeded the 512-directory depth limit.");
+            }
+
+            List<FileSystemInfo> entries = new List<FileSystemInfo>();
+            foreach(FileSystemInfo entry in new DirectoryInfo(directory).EnumerateFileSystemInfos())
+            {
+                if(entryCount + entries.Count + 1 > maximumEntries)
+                {
+                    throw new IOException(
+                            "Tree manifest exceeded the " + maximumEntries + "-entry safety limit.");
+                }
+                if((entries.Count & 1023) == 0 &&
+                    stopwatch.ElapsedMilliseconds > timeoutMilliseconds)
+                {
+                    throw new TimeoutException(
+                            "Tree manifest exceeded the " + timeoutMilliseconds + "ms time limit.");
+                }
+                entries.Add(entry);
+            }
+            entries.Sort(
+                    delegate(FileSystemInfo left, FileSystemInfo right) {
+                        return StringComparer.Ordinal.Compare(left.FullName, right.FullName);
+                    });
+            foreach(FileSystemInfo entry in entries)
+            {
+                entryCount++;
+                if(entryCount > maximumEntries)
+                {
+                    throw new IOException(
+                            "Tree manifest exceeded the " + maximumEntries + "-entry safety limit.");
+                }
+                if((entryCount & 1023) == 0 && stopwatch.ElapsedMilliseconds > timeoutMilliseconds)
+                {
+                    throw new TimeoutException(
+                            "Tree manifest exceeded the " + timeoutMilliseconds + "ms time limit.");
+                }
+
+                string relative = entry.FullName.Substring(root.Length).TrimStart(
+                        Path.DirectorySeparatorChar,
+                        Path.AltDirectorySeparatorChar);
+                FileAttributes attributes = entry.Attributes;
+                bool isDirectory = (attributes & FileAttributes.Directory) != 0;
+                bool isReparsePoint = (attributes & FileAttributes.ReparsePoint) != 0;
+                string line;
+                if(isReparsePoint)
+                {
+                    string target = entry.LinkTarget ?? String.Empty;
+                    FileSystemInfo finalTarget = entry.ResolveLinkTarget(true);
+                    string finalPath = finalTarget == null ? String.Empty : finalTarget.FullName;
+                    line = "L\t" + relative + "\t" + target + "\t" + finalPath;
+                }
+                else if(isDirectory)
+                {
+                    line = "D\t" + relative;
+                }
+                else
+                {
+                    FileInfo file = (FileInfo)entry;
+                    line = "F\t" + relative + "\t" + file.Length + "\t" +
+                        file.LastWriteTimeUtc.Ticks + "\t" + (int)attributes;
+                }
+                byte[] bytes = Encoding.UTF8.GetBytes(line + "\n");
+                hash.TransformBlock(bytes, 0, bytes.Length, bytes, 0);
+
+                if(isDirectory && !isReparsePoint)
+                {
+                    AppendDirectoryMetadata(
+                            root,
+                            entry.FullName,
+                            hash,
+                            stopwatch,
+                            timeoutMilliseconds,
+                            maximumEntries,
+                            depth + 1,
+                            ref entryCount);
+                }
             }
         }
 
@@ -1007,7 +1291,9 @@ function Get-TreeManifest {
 
         [switch] $OmitManifest,
 
-        [switch] $MetadataOnly
+        [switch] $MetadataOnly,
+
+        [switch] $NativeMetadataFingerprint
     )
 
     if (-not (Test-Path -LiteralPath $Path)) {
@@ -1020,8 +1306,32 @@ function Get-TreeManifest {
     }
 
     $canonicalPath = Resolve-CanonicalPath -Path $Path
-    $lines = foreach ($item in @(Get-ChildItem -LiteralPath $canonicalPath -Force -Recurse -ErrorAction Stop |
-            Sort-Object -Property FullName)) {
+    if ($NativeMetadataFingerprint) {
+        if (-not $MetadataOnly) {
+            throw 'NativeMetadataFingerprint requires MetadataOnly.'
+        }
+        $fingerprint = [PrivatePacman.NativePath]::GetTreeMetadataFingerprint(
+            $canonicalPath,
+            2000000,
+            60000
+        )
+        return [ordered]@{
+            exists = $true
+            entryCount = $fingerprint.EntryCount
+            manifest = ''
+            manifestHash = $fingerprint.ManifestHash
+        }
+    }
+
+    $maximumEntries = 500000
+    $items = @(
+        Get-ChildItem -LiteralPath $canonicalPath -Force -Recurse -ErrorAction Stop |
+            Select-Object -First ($maximumEntries + 1)
+    )
+    if ($items.Count -gt $maximumEntries) {
+        throw "Tree manifest exceeded the $maximumEntries-entry safety limit: '$canonicalPath'."
+    }
+    $lines = foreach ($item in @($items | Sort-Object -Property FullName)) {
         $relative = $item.FullName.Substring($canonicalPath.Length).TrimStart(
             [char[]]@('\', '/')
         )
@@ -1124,7 +1434,8 @@ function Get-SharedPacmanState {
         $protectedRoot = Get-TreeManifest `
             -Path $canonicalSharedRoot `
             -OmitManifest `
-            -MetadataOnly
+            -MetadataOnly `
+            -NativeMetadataFingerprint
     }
 
     return [ordered]@{
@@ -1140,11 +1451,20 @@ function Get-SharedPacmanState {
 function Get-ProtectedPacmanState {
     param(
         [Parameter(Mandatory)]
-        [PrivatePacmanContext] $Context
+        [PrivatePacmanContext] $Context,
+
+        [System.Collections.IDictionary] $ProtectedRootSnapshots
     )
 
     $systemRoot = Resolve-CanonicalPath -Path 'C:\msys64'
-    $systemState = Get-SharedPacmanState -SharedRoot $systemRoot -SkipProtectedRootScan
+    $hasSystemSnapshot = $null -ne $ProtectedRootSnapshots -and
+        $ProtectedRootSnapshots.Contains($systemRoot)
+    $systemState = Get-SharedPacmanState `
+        -SharedRoot $systemRoot `
+        -SkipProtectedRootScan:$hasSystemSnapshot
+    if ($hasSystemSnapshot) {
+        $systemState.protectedRoot = $ProtectedRootSnapshots[$systemRoot]
+    }
     $configuredRoot = Resolve-CanonicalPath -Path $Context.SharedRoot
     $configuredState = $null
     if (Test-SamePath -Left $configuredRoot -Right $systemRoot) {
@@ -1152,14 +1472,22 @@ function Get-ProtectedPacmanState {
             $systemState = Get-SharedPacmanState `
                 -SharedRoot $systemRoot `
                 -ToolTreePaths $Context.SharedToolTreePaths `
-                -SkipProtectedRootScan
+                -SkipProtectedRootScan:$hasSystemSnapshot
+            if ($hasSystemSnapshot) {
+                $systemState.protectedRoot = $ProtectedRootSnapshots[$systemRoot]
+            }
         }
     }
     else {
+        $hasConfiguredSnapshot = $null -ne $ProtectedRootSnapshots -and
+            $ProtectedRootSnapshots.Contains($configuredRoot)
         $configuredState = Get-SharedPacmanState `
             -SharedRoot $configuredRoot `
             -ToolTreePaths $Context.SharedToolTreePaths `
-            -SkipProtectedRootScan
+            -SkipProtectedRootScan:$hasConfiguredSnapshot
+        if ($hasConfiguredSnapshot) {
+            $configuredState.protectedRoot = $ProtectedRootSnapshots[$configuredRoot]
+        }
     }
 
     return [ordered]@{
@@ -1171,7 +1499,10 @@ function Get-ProtectedPacmanState {
 function Start-ProtectedRootMonitors {
     param(
         [Parameter(Mandatory)]
-        [PrivatePacmanContext] $Context
+        [PrivatePacmanContext] $Context,
+
+        [Parameter(Mandatory)]
+        [object] $BaselineState
     )
 
     $roots = [System.Collections.Generic.HashSet[string]]::new(
@@ -1179,6 +1510,13 @@ function Start-ProtectedRootMonitors {
     )
     [void]$roots.Add((Resolve-CanonicalPath -Path 'C:\msys64'))
     [void]$roots.Add((Resolve-CanonicalPath -Path $Context.SharedRoot))
+    $baselineByRoot = [ordered]@{}
+    $baselineByRoot[$BaselineState.systemRoot.sharedRoot] =
+        $BaselineState.systemRoot.protectedRoot
+    if ($null -ne $BaselineState.configuredRoot) {
+        $baselineByRoot[$BaselineState.configuredRoot.sharedRoot] =
+            $BaselineState.configuredRoot.protectedRoot
+    }
 
     $monitors = [System.Collections.Generic.List[object]]::new()
     try {
@@ -1186,6 +1524,7 @@ function Start-ProtectedRootMonitors {
             $monitors.Add([pscustomobject]@{
                     Root = $root
                     Monitor = [PrivatePacman.TreeChangeMonitor]::new($root)
+                    BaselineProtectedRoot = $baselineByRoot[$root]
                 })
         }
         return $monitors.ToArray()
@@ -1205,29 +1544,69 @@ function Stop-ProtectedRootMonitors {
     )
 
     $result = [ordered]@{}
-    foreach ($entry in $Monitor) {
-        $events = @()
-        $captureError = $null
+    $captures = @(
+        foreach ($entry in $Monitor) {
+            [pscustomobject]@{
+                Entry = $entry
+                Events = @()
+                ProtectedRoot = $null
+                CaptureErrors = [System.Collections.Generic.List[string]]::new()
+            }
+        }
+    )
+
+    foreach ($capture in $captures) {
         try {
-            $events = @($entry.Monitor.Stop() | Sort-Object)
+            $capture.Entry.Monitor.Quiesce()
         }
         catch {
-            $captureError = $_.Exception.ToString()
+            $capture.CaptureErrors.Add("Initial watcher barrier failed: $($_.Exception)")
+        }
+    }
+
+    foreach ($capture in $captures) {
+        try {
+            $capture.ProtectedRoot = Get-TreeManifest `
+                -Path $capture.Entry.Root `
+                -OmitManifest `
+                -MetadataOnly `
+                -NativeMetadataFingerprint
+        }
+        catch {
+            $capture.CaptureErrors.Add("Protected-root fingerprint failed: $($_.Exception)")
+        }
+    }
+
+    foreach ($capture in $captures) {
+        try {
+            $capture.Entry.Monitor.Quiesce()
+        }
+        catch {
+            $capture.CaptureErrors.Add("Final watcher barrier failed: $($_.Exception)")
+        }
+    }
+
+    foreach ($capture in $captures) {
+        try {
+            $capture.Events = @($capture.Entry.Monitor.StopAfterBarrier() | Sort-Object)
+        }
+        catch {
+            $capture.CaptureErrors.Add("Watcher stop failed: $($_.Exception)")
         }
         finally {
             try {
-                $entry.Monitor.Dispose()
+                $capture.Entry.Monitor.Dispose()
             }
             catch {
-                if ($null -eq $captureError) {
-                    $captureError = $_.Exception.ToString()
-                }
-                else {
-                    $captureError += "`nDispose failure: $($_.Exception)"
-                }
+                $capture.CaptureErrors.Add("Dispose failure: $($_.Exception)")
             }
         }
+    }
 
+    foreach ($capture in $captures) {
+        $entry = $capture.Entry
+        $events = $capture.Events
+        $protectedRoot = $capture.ProtectedRoot
         try {
             $eventText = $events -join "`n"
             $sha256 = [System.Security.Cryptography.SHA256]::Create()
@@ -1239,12 +1618,23 @@ function Stop-ProtectedRootMonitors {
             finally {
                 $sha256.Dispose()
             }
+            $fingerprintChanged = $null -ne $protectedRoot -and
+                $entry.BaselineProtectedRoot.manifestHash -cne $protectedRoot.manifestHash
             $result[$entry.Root] = [ordered]@{
                 overflowed = $entry.Monitor.Overflowed
                 changeCount = $events.Count
                 changeHash = $hash
                 changes = $events
-                captureError = $captureError
+                baselineProtectedRoot = $entry.BaselineProtectedRoot
+                protectedRoot = $protectedRoot
+                fingerprintChanged = $fingerprintChanged
+                changeDetected = $fingerprintChanged -or $events.Count -ne 0
+                captureError = if ($capture.CaptureErrors.Count -eq 0) {
+                    $null
+                }
+                else {
+                    $capture.CaptureErrors -join "`n"
+                }
             }
         }
         catch {
@@ -1253,6 +1643,10 @@ function Stop-ProtectedRootMonitors {
                 changeCount = $events.Count
                 changeHash = $null
                 changes = $events
+                baselineProtectedRoot = $entry.BaselineProtectedRoot
+                protectedRoot = $protectedRoot
+                fingerprintChanged = $null
+                changeDetected = $true
                 captureError = $_.Exception.ToString()
             }
         }
@@ -1272,6 +1666,10 @@ function Get-ProtectedRootChangeSummary {
     }
     if (-not [string]::IsNullOrWhiteSpace($RootChanges.captureError)) {
         return "WatcherCaptureError: $($RootChanges.captureError)"
+    }
+    if ($null -ne $RootChanges.PSObject.Properties['fingerprintChanged'] -and
+        $RootChanges.fingerprintChanged) {
+        return 'ProtectedRootFingerprintChanged'
     }
     return 'WatcherOverflow'
 }
@@ -1488,26 +1886,254 @@ function Test-IsUpgradeOperation {
     return $false
 }
 
-function Test-SupportsNoScriptlet {
+function Get-PacmanArgumentModel {
     param(
         [Parameter(Mandatory)]
         [string[]] $ArgumentList
     )
 
     if ($ArgumentList.Count -eq 0) {
-        return $false
-    }
-    foreach ($argument in $ArgumentList) {
-        if ($argument -ceq '--print' -or $argument -cmatch '^-[^-]*p') {
-            return $false
+        return [pscustomobject]@{
+            Operation = $null
+            IsUnambiguous = $false
+            IsPrintOnly = $false
         }
     }
 
-    $selector = $ArgumentList[0]
-    if ($selector -cin @('--sync', '--remove', '--upgrade')) {
-        return $true
+    $longOperations = @{
+        '--database' = 'D'
+        '--files' = 'F'
+        '--query' = 'Q'
+        '--remove' = 'R'
+        '--sync' = 'S'
+        '--deptest' = 'T'
+        '--upgrade' = 'U'
+        '--version' = 'V'
+        '--help' = 'h'
     }
-    return $selector -cmatch '^-[^-]*[SRU]'
+    $selector = $ArgumentList[0]
+    $operation = $null
+    $selectorOptions = ''
+    if ($longOperations.ContainsKey($selector)) {
+        $operation = $longOperations[$selector]
+    }
+    elseif ($selector -cmatch '^-[^-]+$') {
+        foreach ($character in $selector.Substring(1).ToCharArray()) {
+            if ('DFQRSTUVh'.IndexOf($character) -ge 0) {
+                if ($null -ne $operation) {
+                    return [pscustomobject]@{
+                        Operation = $null
+                        IsUnambiguous = $false
+                        IsPrintOnly = $false
+                    }
+                }
+                $operation = [string]$character
+            }
+            else {
+                $selectorOptions += $character
+            }
+        }
+    }
+    if ($null -eq $operation) {
+        return [pscustomobject]@{
+            Operation = $null
+            IsUnambiguous = $false
+            IsPrintOnly = $false
+        }
+    }
+
+    $transactionOperation = $operation -cin @('S', 'R', 'U')
+    $allowedShortOptions = @{
+        D = 'kqv'
+        F = 'lqxyv'
+        Q = 'cdegiklmnopqstuv'
+        R = 'cnpsudv'
+        S = 'cgilqsu ywdpv'.Replace(' ', '')
+        T = 'v'
+        U = 'wdpv'
+        V = ''
+        h = ''
+    }
+    $requiredLongOptions = @(
+        '--arch',
+        '--cachedir',
+        '--color',
+        '--config',
+        '--dbpath',
+        '--gpgdir',
+        '--hookdir',
+        '--logfile',
+        '--root',
+        '--sysroot',
+        '--assume-installed',
+        '--print-format',
+        '--ignore',
+        '--ignoregroup',
+        '--overwrite'
+    )
+    $globalNoArgumentOptions = @(
+        '--confirm',
+        '--disable-download-timeout',
+        '--disable-sandbox',
+        '--disable-sandbox-filesystem',
+        '--disable-sandbox-syscalls',
+        '--noconfirm',
+        '--verbose'
+    )
+    $operationNoArgumentOptions = @{
+        D = @('--asdeps', '--asexplicit', '--check', '--quiet')
+        F = @('--list', '--machinereadable', '--quiet', '--refresh', '--regex')
+        Q = @(
+            '--changelog', '--check', '--deps', '--explicit', '--file', '--foreign',
+            '--groups', '--info', '--list', '--native', '--owns', '--quiet',
+            '--search', '--unrequired', '--upgrades'
+        )
+        R = @(
+            '--assume-installed', '--cascade', '--dbonly', '--nodeps', '--noprogressbar',
+            '--nosave', '--noscriptlet', '--print', '--recursive', '--unneeded'
+        )
+        S = @(
+            '--asdeps', '--asexplicit', '--assume-installed', '--clean', '--dbonly',
+            '--downloadonly', '--groups', '--info', '--list', '--needed', '--nodeps',
+            '--noprogressbar', '--noscriptlet', '--print', '--quiet', '--refresh',
+            '--search', '--sysupgrade'
+        )
+        T = @()
+        U = @(
+            '--asdeps', '--asexplicit', '--assume-installed', '--dbonly',
+            '--downloadonly', '--needed', '--nodeps', '--noprogressbar',
+            '--noscriptlet', '--print'
+        )
+        V = @()
+        h = @()
+    }
+
+    $printOnly = $false
+    $pendingArguments = [System.Collections.Generic.List[string]]::new()
+    $pendingArguments.Add("-$selectorOptions")
+    foreach ($argument in @($ArgumentList | Select-Object -Skip 1)) {
+        $pendingArguments.Add($argument)
+    }
+
+    for ($index = 0; $index -lt $pendingArguments.Count; $index++) {
+        $argument = $pendingArguments[$index]
+        if ($argument -ceq '-') {
+            continue
+        }
+        if ($argument -ceq '--') {
+            return [pscustomobject]@{
+                Operation = $operation
+                IsUnambiguous = $false
+                IsPrintOnly = $false
+            }
+        }
+        if ($argument -cmatch '^--') {
+            $parts = @($argument.Split('=', 2))
+            $optionName = $parts[0]
+            $hasAttachedValue = $parts.Count -eq 2
+            if ($optionName -cin $requiredLongOptions) {
+                if (-not $hasAttachedValue) {
+                    if ($index + 1 -ge $pendingArguments.Count) {
+                        return [pscustomobject]@{
+                            Operation = $operation
+                            IsUnambiguous = $false
+                            IsPrintOnly = $false
+                        }
+                    }
+                    $index++
+                }
+                if ($optionName -ceq '--print-format' -and $transactionOperation) {
+                    $printOnly = $true
+                }
+                continue
+            }
+            if ($optionName -ceq '--debug') {
+                if ($hasAttachedValue -and $parts[1] -cnotin @('1', '2')) {
+                    return [pscustomobject]@{
+                        Operation = $operation
+                        IsUnambiguous = $false
+                        IsPrintOnly = $false
+                    }
+                }
+                continue
+            }
+            if ($optionName -ceq '--ask') {
+                [uint32] $askLevel = 0
+                if (-not $hasAttachedValue -or
+                    -not [uint32]::TryParse($parts[1], [ref]$askLevel)) {
+                    return [pscustomobject]@{
+                        Operation = $operation
+                        IsUnambiguous = $false
+                        IsPrintOnly = $false
+                    }
+                }
+                continue
+            }
+            if ($hasAttachedValue -or
+                ($optionName -cnotin $globalNoArgumentOptions -and
+                    $optionName -cnotin $operationNoArgumentOptions[$operation])) {
+                return [pscustomobject]@{
+                    Operation = $operation
+                    IsUnambiguous = $false
+                    IsPrintOnly = $false
+                }
+            }
+            if ($optionName -ceq '--print' -and $transactionOperation) {
+                $printOnly = $true
+            }
+            continue
+        }
+        if ($argument -cmatch '^-') {
+            $characters = $argument.Substring(1).ToCharArray()
+            for ($shortIndex = 0; $shortIndex -lt $characters.Count; $shortIndex++) {
+                $character = [string]$characters[$shortIndex]
+                if ($character -cin @('b', 'r')) {
+                    if ($shortIndex + 1 -lt $characters.Count) {
+                        $shortIndex = $characters.Count
+                        break
+                    }
+                    if ($index + 1 -ge $pendingArguments.Count) {
+                        return [pscustomobject]@{
+                            Operation = $operation
+                            IsUnambiguous = $false
+                            IsPrintOnly = $false
+                        }
+                    }
+                    $index++
+                    break
+                }
+                if ($allowedShortOptions[$operation].IndexOf($character) -lt 0) {
+                    return [pscustomobject]@{
+                        Operation = $operation
+                        IsUnambiguous = $false
+                        IsPrintOnly = $false
+                    }
+                }
+                if ($character -ceq 'p' -and $transactionOperation) {
+                    $printOnly = $true
+                }
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        Operation = $operation
+        IsUnambiguous = $true
+        IsPrintOnly = $printOnly
+    }
+}
+
+function Test-SupportsNoScriptlet {
+    param(
+        [Parameter(Mandatory)]
+        [string[]] $ArgumentList
+    )
+
+    $model = Get-PacmanArgumentModel -ArgumentList $ArgumentList
+    if ($model.Operation -cnotin @('S', 'R', 'U')) {
+        return $false
+    }
+    return -not ($model.IsUnambiguous -and $model.IsPrintOnly)
 }
 
 function Assert-PacmanCommandShape {
@@ -1850,7 +2476,9 @@ function Invoke-PrivatePacman {
         try {
             $before = Get-ProtectedPacmanState -Context $Context
             $privateBefore = Get-PrivatePacmanState -Context $Context
-            $protectedMonitors = @(Start-ProtectedRootMonitors -Context $Context)
+            $protectedMonitors = @(
+                Start-ProtectedRootMonitors -Context $Context -BaselineState $before
+            )
         }
         catch {
             if ($protectedMonitors.Count -ne 0) {
@@ -1965,7 +2593,16 @@ function Invoke-PrivatePacman {
             $protectedMonitors = @()
         }
         try {
-            $after = Get-ProtectedPacmanState -Context $Context
+            $protectedRootSnapshots = [ordered]@{}
+            foreach ($protectedRoot in $protectedRootChanges.Keys) {
+                if ($null -ne $protectedRootChanges[$protectedRoot].protectedRoot) {
+                    $protectedRootSnapshots[$protectedRoot] =
+                        $protectedRootChanges[$protectedRoot].protectedRoot
+                }
+            }
+            $after = Get-ProtectedPacmanState `
+                -Context $Context `
+                -ProtectedRootSnapshots $protectedRootSnapshots
         }
         catch {
             $postCaptureErrors.Add("Protected pacman state capture failed: $($_.Exception)")
@@ -2002,16 +2639,16 @@ function Invoke-PrivatePacman {
         -not (Compare-SharedPacmanState -Before $before -After $after)) {
         throw "Shared MSYS2 state changed during private pacman transaction. Evidence: '$evidenceFile'. No rollback was attempted."
     }
+    if ($postCaptureErrors.Count -ne 0) {
+        throw "Post-transaction evidence capture failed. Evidence: '$evidenceFile'."
+    }
     if ($null -ne $protectedRootChanges) {
         foreach ($rootChanges in @($protectedRootChanges.Values)) {
-            if ($rootChanges.overflowed -or $rootChanges.changeCount -ne 0) {
+            if ($rootChanges.overflowed -or $rootChanges.changeDetected) {
                 $firstChange = Get-ProtectedRootChangeSummary -RootChanges $rootChanges
                 throw "Protected MSYS2 root changed during private pacman transaction ('$firstChange'). Evidence: '$evidenceFile'. No rollback was attempted."
             }
         }
-    }
-    if ($postCaptureErrors.Count -ne 0) {
-        throw "Post-transaction evidence capture failed. Evidence: '$evidenceFile'."
     }
     if ($null -ne $invocationError) {
         throw $invocationError
