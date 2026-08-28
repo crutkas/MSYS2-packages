@@ -1,0 +1,600 @@
+name: arm64-libiconv
+
+on:
+  push:
+    branches:
+      - crutkas-arm64-msys-libiconv
+  pull_request:
+    branches:
+      - crutkas-aarch64-gcc-layer
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: arm64-libiconv-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: >-
+      ${{
+        github.repository == 'crutkas/MSYS2-packages' &&
+        (github.ref_name == 'crutkas-arm64-msys-libiconv' ||
+         github.head_ref == 'crutkas-arm64-msys-libiconv')
+      }}
+    runs-on: windows-2025
+    timeout-minutes: 90
+    env:
+      CI_BASE_REPOSITORY: https://github.com/crutkas/MSYS2-packages.git
+      CI_BASE_REF: crutkas-aarch64-gcc-layer
+      CI_PACKAGE_PREFIXES: mingw-w64-cross-msysarm64-libiconv
+      CI_RUN_CHECK: '1'
+      CI_CANONICALIZE_PACKAGES: '1'
+      SOURCE_DATE_EPOCH: 1787790000
+
+    steps:
+      - name: Guard fork branch and host
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REPOSITORY -ne 'crutkas/MSYS2-packages') {
+            throw "This workflow is fork-only: $env:GITHUB_REPOSITORY"
+          }
+          if ('${{ github.event_name }}' -eq 'pull_request') {
+            if ('${{ github.head_ref }}' -ne 'crutkas-arm64-msys-libiconv') {
+              throw 'Unexpected pull request head'
+            }
+            if ('${{ github.base_ref }}' -ne 'crutkas-aarch64-gcc-layer') {
+              throw 'Unexpected pull request base'
+            }
+          } elseif ('${{ github.ref_name }}' -ne 'crutkas-arm64-msys-libiconv') {
+            throw 'Unexpected branch'
+          }
+          if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -ne 'X64') {
+            throw 'The cross-build host must be x64 Windows'
+          }
+
+      - name: Gather facts
+        id: facts
+        shell: pwsh
+        run: |
+          Get-CimInstance Win32_Processor | Select-Object Name
+          $buildDrive = Split-Path $env:GITHUB_WORKSPACE -Qualifier
+          "drive=$buildDrive" >> $env:GITHUB_OUTPUT
+
+      - name: Configure Git
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: temp
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify exact head and corrected runtime admission
+        shell: pwsh
+        run: |
+          $expectedHead = '${{ github.event.pull_request.head.sha || github.sha }}'
+          $actualHead = (git -C temp rev-parse HEAD).Trim()
+          if ($actualHead -ne $expectedHead) {
+            throw "Checkout mismatch: expected $expectedHead, got $actualHead"
+          }
+
+          $manifestPath = 'temp\mingw-w64-cross-msysarm64-libiconv\ownership-manifest.json'
+          $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+          if ($manifest.admission.admitted -ne $true) {
+            throw 'Corrected runtime admission is required; a527 evidence is diagnostic only'
+          }
+          $runtime = $manifest.admission.corrected_runtime
+          if ($null -eq $runtime -or
+              -not $runtime.release_tag -or
+              -not $runtime.source_commit -or
+              -not $runtime.source_archive_sha256 -or
+              @($runtime.assets).Count -ne 5) {
+            throw 'Corrected runtime admission is incomplete'
+          }
+          if ($runtime.version -eq '3.6.10.r0.ga527ace21-1') {
+            throw 'The immutable a527 runtime cannot be used for final admission'
+          }
+          foreach ($asset in $runtime.assets) {
+            if (-not $asset.name -or
+                [long]$asset.size -le 0 -or
+                $asset.sha256 -notmatch '^[0-9a-f]{64}$') {
+              throw 'Corrected runtime asset identity is incomplete'
+            }
+          }
+
+      - name: Add staging repository
+        shell: pwsh
+        run: |
+          $pacmanConf = 'C:\msys64\etc\pacman.conf'
+          $contents = Get-Content $pacmanConf -Raw
+          if ($contents -notmatch '(?m)^\[staging\]$') {
+            $contents = "[staging]`nServer = https://repo.msys2.org/staging/`nSigLevel = Never`n$contents"
+          }
+          Set-Content $pacmanConf -Value $contents -NoNewline
+
+      - name: Update build host
+        shell: pwsh
+        run: |
+          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -Suuy
+          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -Suu
+          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm --needed -S git python base-devel
+
+      - name: Download pinned Cygwin ARM64 bootstrap
+        shell: pwsh
+        run: |
+          $destination = Join-Path $env:RUNNER_TEMP 'cygwinarm64-inputs'
+          New-Item -ItemType Directory -Force -Path $destination | Out-Null
+          $assets = @(
+            @('cygwinarm64-binutils-pr21-3356eec-20260827', 'mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst', '3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b'),
+            @('cygwinarm64-sysroot-pr3-20260813', 'mingw-w64-cross-cygwinarm64-headers-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst', '5266346cc10b142f871704ce4277699b1a5daa3121dc869990b4bedce69c0611'),
+            @('cygwinarm64-sysroot-pr3-20260813', 'mingw-w64-cross-cygwinarm64-windows-default-manifest-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst', 'cc089511fede6042a25f83fcb5903fddeede89ddd9655360741513ee9015e3dc'),
+            @('cygwinarm64-sysroot-pr3-20260813', 'mingw-w64-cross-cygwinarm64-sysroot-3.6.10.r0.gee50e0223-1-x86_64.pkg.tar.zst', '4ed8a30f592317bf7e4def6f3c773139f2565b0f8afaedd820f7ee46d33cad20'),
+            @('cygwinarm64-w32api-20260813', 'mingw-w64-cross-cygwinarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst', '53478f9a60e2fdad7d3b4357fa4fb937a1afab16af16a55e5a25ae9fac308fa7'),
+            @('cygwinarm64-gcc-static-runtime-20260815', 'mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-2-x86_64.pkg.tar.zst', '063579211851ed69370a6362f2795e39d9be0235a2bfe2f58da1bbd73a1d108e'),
+            @('cygwinarm64-gcc-static-runtime-20260815', 'mingw-w64-cross-cygwinarm64-gcc-libs-stage1-15.0.1dev-2-x86_64.pkg.tar.zst', '17a8fbc22227c541ff3179179d307045302f6b18fbc6207cf9d863a9e4dad98c'),
+            @('cygwinarm64-libstdcxx-headers-pr7-20260815', 'mingw-w64-cross-cygwinarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst', '1e018d384e5e16b76524b69677819b660e6611480a85a7f7b8a412403bf15ea6')
+          )
+          foreach ($asset in $assets) {
+            $tag, $name, $expectedHash = $asset
+            $url = "https://github.com/crutkas/MSYS2-packages/releases/download/$tag/$name"
+            $path = Join-Path $destination $name
+            Invoke-WebRequest -Uri $url -OutFile $path
+            $actualHash = (Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant()
+            if ($actualHash -ne $expectedHash) {
+              throw "SHA-256 mismatch for $name`: $actualHash"
+            }
+          }
+
+      - name: Install pinned Cygwin ARM64 bootstrap
+        shell: pwsh
+        run: |
+          $env:MSYS = 'winsymlinks:sys'
+          $inputDir = Join-Path $env:RUNNER_TEMP 'cygwinarm64-inputs'
+          $packages = Get-ChildItem $inputDir -Filter '*.pkg.tar.zst' |
+            Sort-Object Name |
+            Select-Object -ExpandProperty FullName
+          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -U @packages
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Cygwin ARM64 bootstrap transaction failed'
+          }
+
+      - name: Download final ARM64 MSYS runtime and sysroot
+        shell: pwsh
+        run: |
+          $destination = Join-Path $env:RUNNER_TEMP 'msysarm64-runtime-inputs'
+          New-Item -ItemType Directory -Force -Path $destination | Out-Null
+          $tag = 'msysarm64-runtime-pr10-a527-20260824'
+          $assets = @(
+            @('mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst', '263f8f7e3614ac41337ce3a223f2bb26b6459aef6f34670525cdd4c03ec3ae21'),
+            @('mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst', '33861708e7f981b4eef5b93ef135ab3a43d2757533f64df6f61a146d823c355f'),
+            @('mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst', 'e30609e09eab2fa07aba2e6196b05f34e5e9107abc4ab8832966684758c743ca'),
+            @('mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst', '158c505f45025a466950faa7c85c9fd85e9d32384dd27b53586ffc75d71ca78e'),
+            @('mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst', 'c18b51e483991770b8e06cc2d8f7002d06784d3071ac213a8fee24bb831267d1')
+          )
+          foreach ($asset in $assets) {
+            $name, $expectedHash = $asset
+            $path = Join-Path $destination $name
+            Invoke-WebRequest `
+              -Uri "https://github.com/crutkas/MSYS2-packages/releases/download/$tag/$name" `
+              -OutFile $path
+            $actualHash = (Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant()
+            if ($actualHash -ne $expectedHash) {
+              throw "SHA-256 mismatch for $name`: $actualHash"
+            }
+          }
+
+      - name: Install final ARM64 MSYS runtime and sysroot
+        shell: pwsh
+        run: |
+          $env:MSYS = 'winsymlinks:sys'
+          $inputDir = Join-Path $env:RUNNER_TEMP 'msysarm64-runtime-inputs'
+          $packages = Get-ChildItem $inputDir -Filter '*.pkg.tar.zst' |
+            Sort-Object Name |
+            Select-Object -ExpandProperty FullName
+          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -U @packages
+          if ($LASTEXITCODE -ne 0) {
+            throw 'ARM64 MSYS runtime transaction failed'
+          }
+
+      - name: Download final ARM64 MSYS compiler closure
+        shell: pwsh
+        run: |
+          $destination = Join-Path $env:RUNNER_TEMP 'msysarm64-gcc-inputs'
+          New-Item -ItemType Directory -Force -Path $destination | Out-Null
+          $assets = @(
+            @('msysarm64-gcc-pr13-20260826', 'mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst', '990f163cacf9ffce1b58445be91fedc57f135cc26a88d7dba109806446b41438'),
+            @('msysarm64-gcc-pr13-20260826', 'mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst', 'a74887c76a933ec424933bf662729d94975b83138af783bd93f2e7acd95c3a22'),
+            @('msysarm64-gcc-pr13-support-20260826', 'mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst', '9715aab6894379bf5ab936a3a559f286fb4aedbb64f0774d7457182e00648e08'),
+            @('msysarm64-gcc-pr13-support-20260826', 'mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst', '7727936f4212e5af04e9739eca60f157c0875796c1e82fcfb79fd4398b111e24')
+          )
+          foreach ($asset in $assets) {
+            $tag, $name, $expectedHash = $asset
+            $path = Join-Path $destination $name
+            Invoke-WebRequest `
+              -Uri "https://github.com/crutkas/MSYS2-packages/releases/download/$tag/$name" `
+              -OutFile $path
+            $actualHash = (Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant()
+            if ($actualHash -ne $expectedHash) {
+              throw "SHA-256 mismatch for $name`: $actualHash"
+            }
+          }
+
+      - name: Install final ARM64 MSYS compiler atomically
+        shell: pwsh
+        run: |
+          $env:MSYS = 'winsymlinks:sys'
+          $inputDir = Join-Path $env:RUNNER_TEMP 'msysarm64-gcc-inputs'
+          $packages = Get-ChildItem $inputDir -Filter '*.pkg.tar.zst' |
+            Sort-Object Name |
+            Select-Object -ExpandProperty FullName
+          & 'C:\msys64\usr\bin\pacman.exe' --noconfirm -U @packages
+          if ($LASTEXITCODE -ne 0) {
+            throw 'ARM64 MSYS compiler transaction failed'
+          }
+
+      - name: Preflight final ARM64 MSYS toolchain
+        shell: pwsh
+        run: |
+          $bash = 'C:\msys64\usr\bin\bash.exe'
+          $script = @'
+          set -euo pipefail
+          export PATH="/opt/bin:$PATH"
+          test "$(pacman -Q mingw-w64-cross-msysarm64-gcc)" = \
+            "mingw-w64-cross-msysarm64-gcc 15.0.1dev-1"
+          test "$(pacman -Q mingw-w64-cross-msysarm64-gcc-libs)" = \
+            "mingw-w64-cross-msysarm64-gcc-libs 15.0.1dev-1"
+          test "$(pacman -Q mingw-w64-cross-msysarm64-libstdc++-headers)" = \
+            "mingw-w64-cross-msysarm64-libstdc++-headers 15.0.1dev-1"
+          test "$(pacman -Q mingw-w64-cross-cygwinarm64-binutils)" = \
+            "mingw-w64-cross-cygwinarm64-binutils 2.44.50-2"
+          test "$(pacman -Q mingw-w64-cross-msysarm64-runtime)" = \
+            "mingw-w64-cross-msysarm64-runtime 3.6.10.r0.ga527ace21-1"
+          test "$(pacman -Q mingw-w64-cross-msysarm64-runtime-devel)" = \
+            "mingw-w64-cross-msysarm64-runtime-devel 3.6.10.r0.ga527ace21-1"
+          test "$(pacman -Q mingw-w64-cross-msysarm64-sysroot)" = \
+            "mingw-w64-cross-msysarm64-sysroot 3.6.10.r0.ga527ace21-1"
+          test "$(pacman -Q mingw-w64-cross-msysarm64-w32api-runtime)" = \
+            "mingw-w64-cross-msysarm64-w32api-runtime 14.0.0.r0.g9b3dd0125-1"
+          test "$(aarch64-pc-msys-gcc -dumpmachine)" = "aarch64-pc-msys"
+          test "$(aarch64-pc-msys-gcc -dumpfullversion)" = "15.0.1"
+          test "$(aarch64-pc-msys-gcc -print-sysroot)" = "/opt/aarch64-pc-msys"
+          test "$(pacman -Qoq /opt/bin/aarch64-pc-msys-gcc.exe)" = \
+            "mingw-w64-cross-msysarm64-gcc"
+          test "$(sha256sum /opt/bin/aarch64-pc-cygwin-ld.exe | cut -d ' ' -f 1)" = \
+            "075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f"
+          for tool in \
+            addr2line ar as c++filt dlltool dllwrap elfedit gprof ld ld.bfd \
+            nm objcopy objdump ranlib readelf size strings strip windmc windres
+          do
+            alias="/opt/bin/aarch64-pc-msys-${tool}.exe"
+            test -L "${alias}"
+            test "$(readlink "${alias}")" = "aarch64-pc-cygwin-${tool}.exe"
+            test "$(pacman -Qoq "${alias}")" = \
+              "mingw-w64-cross-cygwinarm64-binutils"
+          done
+          test -L /opt/aarch64-pc-msys/bin/ar.exe
+          test "$(readlink /opt/aarch64-pc-msys/bin/ar.exe)" = \
+            "../../aarch64-pc-cygwin/bin/ar.exe"
+          runtime=/opt/aarch64-pc-msys/bin/msys-2.0.dll
+          test -f "$runtime"
+          aarch64-pc-cygwin-objdump -f "$runtime" |
+            grep -F "file format pei-aarch64-little"
+          ! aarch64-pc-cygwin-objdump -p "$runtime" |
+            grep -Eiq "cygwin1\\.dll|x86_64|i[3-6]86"
+          '@
+          & $bash --login -lc $script
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Final ARM64 MSYS toolchain preflight failed'
+          }
+
+      - name: Move checkout
+        shell: pwsh
+        run: |
+          $path = "${{ steps.facts.outputs.drive }}\_"
+          if (Test-Path $path) {
+            Remove-Item -Recurse -Force $path
+          }
+          Move-Item -Path '.\temp' -Destination $path
+
+      - name: Build and audit packages
+        shell: pwsh
+        run: |
+          $env:MSYS = 'winsymlinks:sys'
+          $env:MSYS2_PATH_TYPE = 'inherit'
+          $env:PATH = 'C:\msys64\usr\bin;C:\msys64\mingw64\bin;' + $env:PATH
+          $env:GIT_EXEC_PATH = 'C:\msys64\usr\lib\git-core'
+          $bash = 'C:\msys64\usr\bin\bash.exe'
+          $buildRoot = '${{ steps.facts.outputs.drive }}\_'
+          $buildRoot = & 'C:\msys64\usr\bin\cygpath.exe' -u $buildRoot
+          & $bash --login -lc "cd '$buildRoot' && ./.ci/ci-build.sh"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'libiconv package build failed'
+          }
+
+      - name: Reject ambiguous ARM64 pseudo-relocations
+        shell: pwsh
+        run: |
+          $buildRoot = '${{ steps.facts.outputs.drive }}\_'
+          $packageRoot = Join-Path $buildRoot 'mingw-w64-cross-msysarm64-libiconv'
+          $scanner = Join-Path $packageRoot 'check-aarch64-pseudo-relocs.ps1'
+          $expectedScannerHash = '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9'
+          $actualScannerHash = (Get-FileHash -Algorithm SHA256 $scanner).Hash.ToLowerInvariant()
+          if ($actualScannerHash -ne $expectedScannerHash) {
+            throw "Pseudo-reloc scanner hash mismatch: $actualScannerHash"
+          }
+
+          $toolRoot = 'C:\msys64\opt\bin'
+          $nm = Join-Path $toolRoot 'aarch64-pc-cygwin-nm.exe'
+          $objdump = Join-Path $toolRoot 'aarch64-pc-cygwin-objdump.exe'
+          $targetRoot = Join-Path $packageRoot 'src\dest\usr'
+          $images = @(
+            Get-ChildItem `
+              $targetRoot, (Join-Path $packageRoot 'src\libiconv-check') `
+              -Recurse -File |
+              Where-Object { $_.Extension -in @('.dll', '.exe') } |
+              Sort-Object FullName
+          )
+          if ($images.Count -ne 5) {
+            throw "Expected 5 unstripped target PE files, got $($images.Count)"
+          }
+
+          $reportRoot = Join-Path $packageRoot 'src\libiconv-report'
+          $report = Join-Path $reportRoot 'pseudo-reloc-audit.txt'
+          "scanner_sha256=$actualScannerHash" | Set-Content $report
+          foreach ($image in $images) {
+            $json = Join-Path $reportRoot "$($image.Name).pseudo-reloc.json"
+            "image=$($image.FullName)" | Add-Content $report
+            & $scanner `
+                -PePath $image.FullName `
+                -OutputPath $json `
+                -Nm $nm `
+                -Objdump $objdump
+            $exitCode = $LASTEXITCODE
+            if (-not (Test-Path $json)) {
+              throw "Pseudo-reloc scanner did not write $json"
+            }
+            $result = Get-Content $json -Raw | ConvertFrom-Json
+            $flags = @($result.flags)
+            $violations = @($result.policy_violations)
+            "result=$($result.result) format=$($result.table_format) records=$($result.record_count) flags=$($flags -join ',')" |
+              Add-Content $report
+            if ($exitCode -ne 0 -or $result.result -ne 'pass' -or
+                $violations.Count -ne 0 -or
+                @($flags | Where-Object { $_ -notin @(8, 16, 32, 64) }).Count -ne 0 -or
+                @($flags | Where-Object { $_ -in @(12, 21) }).Count -ne 0) {
+              throw "Pseudo-reloc audit failed for $($image.Name): $exitCode"
+            }
+          }
+
+      - name: Audit metadata ownership and lifecycle
+        shell: pwsh
+        run: |
+          $env:MSYS = 'winsymlinks:sys'
+          $bash = 'C:\msys64\usr\bin\bash.exe'
+          $buildRoot = '${{ steps.facts.outputs.drive }}\_'
+          $buildRoot = & 'C:\msys64\usr\bin\cygpath.exe' -u $buildRoot
+          $runtimeInputs = & 'C:\msys64\usr\bin\cygpath.exe' -u `
+            (Join-Path $env:RUNNER_TEMP 'msysarm64-runtime-inputs')
+          $isolatedRoot = Join-Path $env:RUNNER_TEMP 'libiconv-libalpm-root'
+          $evidence = Join-Path $env:RUNNER_TEMP 'libiconv-libalpm-evidence'
+          if (Test-Path $isolatedRoot) {
+            Remove-Item -Recurse -Force $isolatedRoot
+          }
+          if (Test-Path $evidence) {
+            Remove-Item -Recurse -Force $evidence
+          }
+          $isolatedRoot = & 'C:\msys64\usr\bin\cygpath.exe' -u $isolatedRoot
+          $evidence = & 'C:\msys64\usr\bin\cygpath.exe' -u $evidence
+          $validator = "$buildRoot/mingw-w64-cross-msysarm64-libiconv/validate-package-lifecycle.sh"
+          & $bash --login $validator `
+            $isolatedRoot `
+            $runtimeInputs `
+            "$buildRoot/artifacts" `
+            $evidence
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Package lifecycle audit failed'
+          }
+
+      - name: Upload ARM64 libiconv packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: MSYS-arm64-libiconv-packages
+          path: |
+            ${{ steps.facts.outputs.drive }}/_/artifacts/mingw-w64-cross-msysarm64-libiconv-*.pkg.tar.zst
+            ${{ steps.facts.outputs.drive }}/_/artifacts/mingw-w64-cross-msysarm64-iconv-*.pkg.tar.zst
+          if-no-files-found: error
+
+      - name: Upload ARM64 libiconv smoke executables
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: MSYS-arm64-libiconv-smoke
+          path: ${{ steps.facts.outputs.drive }}/_/mingw-w64-cross-msysarm64-libiconv/src/libiconv-check/conversion-*-smoke.exe
+          if-no-files-found: error
+
+      - name: Upload build audit report
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: MSYS-arm64-libiconv-build-audit
+          path: ${{ steps.facts.outputs.drive }}/_/mingw-w64-cross-msysarm64-libiconv/src/libiconv-report/*
+          if-no-files-found: warn
+
+      - name: Upload lifecycle audit report
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: MSYS-arm64-libiconv-lifecycle-audit
+          path: ${{ runner.temp }}/libiconv-libalpm-evidence/*
+          if-no-files-found: warn
+
+  native-smoke:
+    if: >-
+      ${{
+        github.repository == 'crutkas/MSYS2-packages' &&
+        (github.ref_name == 'crutkas-arm64-msys-libiconv' ||
+         github.head_ref == 'crutkas-arm64-msys-libiconv')
+      }}
+    needs: build
+    runs-on: windows-11-arm
+    timeout-minutes: 20
+
+    steps:
+      - name: Guard native ARM64 host
+        shell: pwsh
+        run: |
+          $architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+          if ($architecture -ne 'Arm64') {
+            throw "Native smoke requires Windows ARM64, got $architecture"
+          }
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: MSYS-arm64-libiconv-packages
+          path: packages
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: MSYS-arm64-libiconv-smoke
+          path: smoke
+
+      - name: Download native runtime dependencies
+        shell: pwsh
+        run: |
+          $assets = @(
+            @('msysarm64-runtime-pr10-a527-20260824', 'mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst', '158c505f45025a466950faa7c85c9fd85e9d32384dd27b53586ffc75d71ca78e'),
+            @('msysarm64-gcc-pr13-20260826', 'mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst', '990f163cacf9ffce1b58445be91fedc57f135cc26a88d7dba109806446b41438')
+          )
+          foreach ($asset in $assets) {
+            $tag, $name, $expectedHash = $asset
+            $path = Join-Path 'packages' $name
+            Invoke-WebRequest `
+              -Uri "https://github.com/crutkas/MSYS2-packages/releases/download/$tag/$name" `
+              -OutFile $path
+            $actualHash = (Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant()
+            if ($actualHash -ne $expectedHash) {
+              throw "SHA-256 mismatch for $name`: $actualHash"
+            }
+          }
+
+      - name: Run iconv conversion natively
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'arm64-msys-root'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          Get-ChildItem 'packages' -Filter '*.pkg.tar.zst' | ForEach-Object {
+            & tar.exe -xf $_.FullName -C $root
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to extract $($_.Name)"
+            }
+          }
+
+          $targetBin = Join-Path $root 'opt\aarch64-pc-msys\usr\bin'
+          $runtimeBin = Join-Path $root 'opt\aarch64-pc-msys\bin'
+          $gccBin = Join-Path $root 'opt\lib\gcc\aarch64-pc-msys'
+          $env:PATH = "$targetBin;$runtimeBin;$gccBin;$env:PATH"
+          $iconv = Join-Path $targetBin 'iconv.exe'
+          if (-not (Test-Path $iconv)) {
+            throw 'iconv.exe is missing from the iconv package'
+          }
+
+          $version = & $iconv --version 2>&1
+          if ($LASTEXITCODE -ne 0 -or ($version -join "`n") -notmatch '1\.19') {
+            throw "Native iconv version smoke failed: $version"
+          }
+          $encodings = @(& $iconv -l 2>&1)
+          $encodingText = $encodings -join "`n"
+          if ($LASTEXITCODE -ne 0 -or
+              $encodingText -notmatch '(?m)^\s*UTF-8//' -or
+              $encodingText -notmatch '(?m)^\s*ISO-8859-1//') {
+            throw 'Native iconv encoding-list smoke failed'
+          }
+
+          $smokes = @(Get-ChildItem 'smoke' -Filter 'conversion-*-smoke.exe')
+          if ($smokes.Count -ne 2) {
+            throw "Expected 2 linked smoke executables, got $($smokes.Count)"
+          }
+          foreach ($smoke in $smokes) {
+            & $smoke.FullName
+            if ($LASTEXITCODE -ne 0) {
+              throw "Native linked smoke failed: $($smoke.Name)"
+            }
+          }
+
+          function Invoke-Iconv {
+            param(
+              [string[]]$Arguments,
+              [byte[]]$InputBytes
+            )
+            $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+            $startInfo.FileName = $iconv
+            $startInfo.UseShellExecute = $false
+            $startInfo.RedirectStandardInput = $true
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+            foreach ($argument in $Arguments) {
+              $startInfo.ArgumentList.Add($argument)
+            }
+            $process = [System.Diagnostics.Process]::new()
+            $process.StartInfo = $startInfo
+            if (-not $process.Start()) {
+              throw 'Failed to start native iconv'
+            }
+            $process.StandardInput.BaseStream.Write(
+              $InputBytes, 0, $InputBytes.Length)
+            $process.StandardInput.Close()
+            $output = [System.IO.MemoryStream]::new()
+            $process.StandardOutput.BaseStream.CopyTo($output)
+            $stderr = $process.StandardError.ReadToEnd()
+            $process.WaitForExit()
+            return @{
+              ExitCode = $process.ExitCode
+              Output = $output.ToArray()
+              Stderr = $stderr
+            }
+          }
+
+          [byte[]]$inputBytes = 0x63, 0x61, 0x66, 0xe9
+          $valid = Invoke-Iconv `
+            -Arguments @('-f', 'ISO-8859-1', '-t', 'UTF-8') `
+            -InputBytes $inputBytes
+          [byte[]]$expected = 0x63, 0x61, 0x66, 0xc3, 0xa9
+          if ($valid.ExitCode -ne 0 -or
+              ($valid.Output -join ',') -ne ($expected -join ',') -or
+              $valid.Stderr) {
+            throw "Native iconv stream conversion failed: $($valid.Stderr)"
+          }
+
+          $invalid = Invoke-Iconv `
+            -Arguments @('-f', 'NOT-A-REAL-ENCODING', '-t', 'UTF-8') `
+            -InputBytes ([byte[]]@())
+          if ($invalid.ExitCode -eq 0 -or
+              $invalid.Output.Length -ne 0 -or
+              $invalid.Stderr -notmatch 'unsupported') {
+            throw 'Native iconv invalid-encoding semantics failed'
+          }
+
+          @(
+            'host=windows-arm64'
+            'packages=libiconv-1.19-1,iconv-1.19-1'
+            'linked-smokes=dynamic,static'
+            'library-conversion=ISO-8859-1-to-UTF-8'
+            'tool-version=1.19'
+            'tool-encodings=ISO-8859-1,UTF-8'
+            'cli-stream-conversion=ISO-8859-1-to-UTF-8'
+            'cli-invalid-encoding=nonzero-stderr'
+            "output=$($valid.Output -join ',')"
+          ) | Set-Content native-smoke.txt
+
+      - name: Upload native smoke report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: MSYS-arm64-libiconv-native-smoke
+          path: native-smoke.txt
+          if-no-files-found: error

@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "target": "aarch64-pc-msys",
+  "package_prefix": "opt/aarch64-pc-msys",
+  "source_recipe": {
+    "name": "libiconv",
+    "version": "1.19-1",
+    "recipe_repository": "msys2/MSYS2-packages",
+    "recipe_commit": "84dfd072fc4338cce775628ffc0a053da7e57d80",
+    "source_sha256": "88dd96a8c0464eca144fc791ae60cd31cd8ee78321e67397e25fc095c4a19aa6"
+  },
+  "frozen_ownership": {
+    "repository": "crutkas/build-extra",
+    "pull_request": 12,
+    "commit": "3ef6d935092dc6ab2e376bcd0ffc74fa52dac39d",
+    "inventory_commit": "7a77c0c5ff81d1c979302c9cc49a62f26f68d17c",
+    "ownership_manifest": "arm64-x64-ownership-v2.55.0.4.tsv",
+    "ownership_manifest_blob": "b533787b2fc714fb6055b01cd816760d62431a31",
+    "ownership_manifest_size": 36191,
+    "ownership_manifest_sha256": "045104e4e84dbbc788382c1d7ed64220f4956b913714d1f287a69263caa26805",
+    "backlog_model": "arm64-x64-backlog-v2.55.0.4.json",
+    "backlog_model_blob": "61a0b93fa1dd7dea0b357047a92b261b201b527f",
+    "backlog_model_size": 311663,
+    "backlog_model_sha256": "fd6d4e4f01db476e8b97271f35e349973791d1c7719c095b068a9508942414e4",
+    "residual_rows_size": 154,
+    "residual_rows_sha256": "c43f18ca170ac8de0bf53e2faa3816641daa1f56d886798ee5c33323edc420e4"
+  },
+  "residual_path_count": 2,
+  "residuals": [
+    {
+      "baseline_path": "usr/bin/iconv.exe",
+      "baseline_owner": "iconv",
+      "baseline_version": "1.19-1",
+      "source_staged_path": "usr/bin/iconv.exe",
+      "installed_path": "opt/aarch64-pc-msys/usr/bin/iconv.exe",
+      "replacement_package": "mingw-w64-cross-msysarm64-iconv",
+      "replacement_version": "1.19-1",
+      "role": "cli",
+      "required_semantics": [
+        "encoding-name-resolution",
+        "invalid-encoding-nonzero-stderr",
+        "binary-stdin-stdout-streams"
+      ]
+    },
+    {
+      "baseline_path": "usr/bin/msys-iconv-2.dll",
+      "baseline_owner": "libiconv",
+      "baseline_version": "1.19-1",
+      "source_staged_path": "usr/bin/msys-iconv-2.dll",
+      "installed_path": "opt/aarch64-pc-msys/usr/bin/msys-iconv-2.dll",
+      "replacement_package": "mingw-w64-cross-msysarm64-libiconv",
+      "replacement_version": "1.19-1",
+      "role": "runtime-library",
+      "required_abi": {
+        "dll_basename": "msys-iconv-2.dll",
+        "exported_symbols": [
+          "_libiconv_version",
+          "libiconv_open",
+          "libiconv",
+          "libiconv_close",
+          "locale_charset"
+        ],
+        "public_api": [
+          "iconv_open",
+          "iconv",
+          "iconv_close"
+        ],
+        "runtime_import": "msys-2.0.dll"
+      }
+    }
+  ],
+  "support_paths": [
+    {
+      "source_staged_path": "usr/bin/msys-charset-1.dll",
+      "installed_path": "opt/aarch64-pc-msys/usr/bin/msys-charset-1.dll",
+      "replacement_package": "mingw-w64-cross-msysarm64-libiconv"
+    }
+  ],
+  "admission": {
+    "admitted": false,
+    "blocked_on": "corrected-runtime-clean-ab-native",
+    "a527_evidence": "diagnostic-only",
+    "corrected_runtime": null
+  }
+}

@@ -18,3 +18,6 @@
 *.lib binary
 *.a binary
 *.ico binary
+
+# Preserve the reviewed pseudo-reloc scanner seal byte-for-byte.
+mingw-w64-cross-msysarm64-libiconv/check-aarch64-pseudo-relocs.ps1 -text

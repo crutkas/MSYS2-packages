@@ -1,0 +1,554 @@
+# Maintainer: Chris Reddington <crutkas@microsoft.com>
+
+_realname=libiconv
+_target=aarch64-pc-msys
+_target_root="/opt/${_target}"
+_configure_host=aarch64-pc-cygwin
+_binutils_release_tag=cygwinarm64-binutils-pr21-3356eec-20260827
+_binutils_pkgver=2.44.50
+_binutils_pkgrel=2
+_binutils_source_commit=3f05fc4d3e0eeab265f2157e3257a7067b6e7223
+_binutils_source_sha256=d11c2b4453318a6168287fe74655c54aa15bf12f415f9ffe3f0ea32e30a3411e
+_binutils_package_sha256=3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b
+_binutils_pkginfo_sha256=c49d9b366e4c5e5a564511cce75042a51629d2ef5887aa5a9256c5974eea3826
+_binutils_linker_sha256=075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f
+_pseudo_reloc_scanner_sha256=888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9
+_runtime_release_tag=msysarm64-runtime-pr10-a527-20260824
+_runtime_pkgver=3.6.10.r0.ga527ace21
+_runtime_pkgrel=1
+_sysroot_pkgver=3.6.10.r0.ga527ace21
+_sysroot_pkgrel=1
+_w32api_pkgver=14.0.0.r0.g9b3dd0125
+_w32api_pkgrel=1
+_gcc_release_tag=msysarm64-gcc-pr13-20260826
+_gcc_support_release_tag=msysarm64-gcc-pr13-support-20260826
+_gcc_pkgver=15.0.1dev
+_gcc_pkgrel=1
+
+pkgbase=mingw-w64-cross-msysarm64-libiconv
+pkgname=(
+  mingw-w64-cross-msysarm64-libiconv
+  mingw-w64-cross-msysarm64-iconv
+  mingw-w64-cross-msysarm64-libiconv-devel
+)
+pkgver=1.19
+pkgrel=1
+pkgdesc="GNU character set conversion library for aarch64-pc-msys"
+arch=('x86_64')
+url='https://www.gnu.org/software/libiconv/'
+msys2_repository_url='https://git.savannah.gnu.org/gitweb/?p=libiconv.git'
+license=('spdx:GPL-3.0-only AND LGPL-2.1-only')
+groups=('mingw-w64-cross-toolchain' 'mingw-w64-cross')
+depends=()
+makedepends=(
+  'autotools'
+  'gcc'
+  'make'
+  'pkgconf'
+  'python'
+  "mingw-w64-cross-cygwinarm64-binutils=${_binutils_pkgver}-${_binutils_pkgrel}"
+  "mingw-w64-cross-msysarm64-gcc=${_gcc_pkgver}-${_gcc_pkgrel}"
+  "mingw-w64-cross-msysarm64-gcc-libs=${_gcc_pkgver}-${_gcc_pkgrel}"
+  "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_pkgver}-${_runtime_pkgrel}"
+  "mingw-w64-cross-msysarm64-sysroot=${_sysroot_pkgver}-${_sysroot_pkgrel}"
+  "mingw-w64-cross-msysarm64-w32api-runtime=${_w32api_pkgver}-${_w32api_pkgrel}"
+)
+options=('!strip' '!buildflags' '!emptydirs')
+source=(
+  "https://ftp.gnu.org/pub/gnu/${_realname}/${_realname}-${pkgver}.tar.gz"
+  1.16-aliases.patch
+  1.16-cross-install.patch
+  1.16-wchar.patch
+  libiconv-1.16-msysize.patch
+  0001-fixes-building-with-gcc-15.patch
+  ownership-manifest.json
+  validate-ownership.py
+)
+sha256sums=(
+  '88dd96a8c0464eca144fc791ae60cd31cd8ee78321e67397e25fc095c4a19aa6'
+  'd447b5467867b72041737d0d35720c30e4edf4845b9bcd1858b0f44e126a179d'
+  '1e24e990d67fd8fbb9ece6318880127ff06b84d2d278dd18b0643044e64e5edf'
+  'c2f4b2d0ce0cd7d2dc98aa1d5e2db31c3b88c1b399d3706dbdacfaef3c13d70c'
+  '8a43391e9402e99f70ef3f5dfbb8dda7ab7a30d91c00189ce5ab38c1bc6352d8'
+  '126065bc77421edfe0eb01ca50c2920742f0ddddb5860f8eec06d0e497cbcd20'
+  'fb6bf3929b712c2760be937e5868c273574afe22be99751e1a25e74fc782d681'
+  '5a162760636eda9b4361e65a0b705f789da67fca2c7cfc086ed13aaf2c75c17d'
+)
+
+_assert_final_toolchain() {
+  local actual alias binutils_bindir compiler resolved tool
+
+  binutils_bindir=/opt/bin
+  export PATH="${binutils_bindir}:${PATH}"
+  if [[ "${MSYSTEM:-}" != MSYS ]]; then
+    printf 'ERROR: build requires MSYSTEM=MSYS, got %s\n' \
+      "${MSYSTEM:-<unset>}" >&2
+    return 1
+  fi
+  if [[ "${CARCH:-}" != x86_64 || "$(uname -m)" != x86_64 ]]; then
+    printf 'ERROR: build host must be x86_64: CARCH=%s uname=%s\n' \
+      "${CARCH:-<unset>}" "$(uname -m)" >&2
+    return 1
+  fi
+
+  actual="$(pacman -Q mingw-w64-cross-msysarm64-gcc)"
+  if [[ "${actual}" != "mingw-w64-cross-msysarm64-gcc ${_gcc_pkgver}-${_gcc_pkgrel}" ]]; then
+    printf 'ERROR: unexpected GCC package: %s\n' "${actual}" >&2
+    return 1
+  fi
+  actual="$(pacman -Q mingw-w64-cross-msysarm64-gcc-libs)"
+  if [[ "${actual}" != "mingw-w64-cross-msysarm64-gcc-libs ${_gcc_pkgver}-${_gcc_pkgrel}" ]]; then
+    printf 'ERROR: unexpected GCC libraries package: %s\n' "${actual}" >&2
+    return 1
+  fi
+  actual="$(pacman -Q mingw-w64-cross-msysarm64-runtime)"
+  if [[ "${actual}" != "mingw-w64-cross-msysarm64-runtime ${_runtime_pkgver}-${_runtime_pkgrel}" ]]; then
+    printf 'ERROR: unexpected runtime package: %s\n' "${actual}" >&2
+    return 1
+  fi
+  actual="$(pacman -Q mingw-w64-cross-msysarm64-runtime-devel)"
+  if [[ "${actual}" != "mingw-w64-cross-msysarm64-runtime-devel ${_runtime_pkgver}-${_runtime_pkgrel}" ]]; then
+    printf 'ERROR: unexpected runtime-devel package: %s\n' "${actual}" >&2
+    return 1
+  fi
+  actual="$(pacman -Q mingw-w64-cross-msysarm64-sysroot)"
+  if [[ "${actual}" != "mingw-w64-cross-msysarm64-sysroot ${_sysroot_pkgver}-${_sysroot_pkgrel}" ]]; then
+    printf 'ERROR: unexpected sysroot package: %s\n' "${actual}" >&2
+    return 1
+  fi
+  actual="$(pacman -Q mingw-w64-cross-msysarm64-w32api-runtime)"
+  if [[ "${actual}" != "mingw-w64-cross-msysarm64-w32api-runtime ${_w32api_pkgver}-${_w32api_pkgrel}" ]]; then
+    printf 'ERROR: unexpected w32api package: %s\n' "${actual}" >&2
+    return 1
+  fi
+  actual="$(pacman -Q mingw-w64-cross-cygwinarm64-binutils)"
+  if [[ "${actual}" != "mingw-w64-cross-cygwinarm64-binutils ${_binutils_pkgver}-${_binutils_pkgrel}" ]]; then
+    printf 'ERROR: unexpected binutils package: %s\n' "${actual}" >&2
+    return 1
+  fi
+  actual="$(sha256sum "${binutils_bindir}/aarch64-pc-cygwin-ld.exe" |
+    cut -d ' ' -f 1)"
+  if [[ "${actual}" != "${_binutils_linker_sha256}" ]]; then
+    printf 'ERROR: fixed linker hash mismatch: %s\n' "${actual}" >&2
+    return 1
+  fi
+  for tool in \
+    addr2line ar as c++filt dlltool dllwrap elfedit gprof ld ld.bfd \
+    nm objcopy objdump ranlib readelf size strings strip windmc windres
+  do
+    alias="${binutils_bindir}/${_target}-${tool}.exe"
+    if [[ ! -L "${alias}" ||
+          "$(readlink "${alias}")" != "aarch64-pc-cygwin-${tool}.exe" ]]; then
+      printf 'ERROR: invalid package-owned MSYS binutils alias: %s\n' \
+        "${alias}" >&2
+      return 1
+    fi
+    actual="$(pacman -Qoq "${alias}")"
+    if [[ "${actual}" != mingw-w64-cross-cygwinarm64-binutils ]]; then
+      printf 'ERROR: binutils alias owner mismatch: %s\n' "${alias}" >&2
+      return 1
+    fi
+  done
+
+  compiler="$(command -v "${_target}-gcc")"
+  if [[ "${compiler}" != "/opt/bin/${_target}-gcc" ]]; then
+    printf 'ERROR: compiler is not the package-owned driver: %s\n' \
+      "${compiler:-<missing>}" >&2
+    return 1
+  fi
+  actual="$(pacman -Qoq "${compiler}.exe")"
+  if [[ "${actual}" != mingw-w64-cross-msysarm64-gcc ]]; then
+    printf 'ERROR: compiler owner mismatch: %s\n' "${actual}" >&2
+    return 1
+  fi
+  if [[ "$("${compiler}" -dumpmachine)" != "${_target}" ]]; then
+    printf 'ERROR: compiler target mismatch\n' >&2
+    return 1
+  fi
+  if [[ "$("${compiler}" -dumpfullversion)" != 15.0.1 ]]; then
+    printf 'ERROR: compiler version mismatch\n' >&2
+    return 1
+  fi
+  if [[ "$("${compiler}" -print-sysroot)" != "${_target_root}" ]]; then
+    printf 'ERROR: compiler sysroot mismatch\n' >&2
+    return 1
+  fi
+  for tool in as ld; do
+    resolved="$("${compiler}" -B"${binutils_bindir}/" \
+      "-print-prog-name=${tool}")"
+    case "${resolved}" in
+      "${binutils_bindir}/aarch64-pc-cygwin-${tool}"|\
+      "${binutils_bindir}/aarch64-pc-cygwin-${tool}.exe")
+        ;;
+      *)
+        printf 'ERROR: compiler selected non-candidate %s: %s\n' \
+          "${tool}" "${resolved}" >&2
+        return 1
+        ;;
+    esac
+    actual="$(pacman -Qoq "${resolved%.exe}.exe")"
+    if [[ "${actual}" != mingw-w64-cross-cygwinarm64-binutils ]]; then
+      printf 'ERROR: compiler-selected %s owner mismatch: %s\n' \
+        "${tool}" "${actual}" >&2
+      return 1
+    fi
+  done
+}
+
+prepare() {
+  cd "${srcdir}/${_realname}-${pkgver}"
+
+  patch -Nbp1 -i "${srcdir}/1.16-aliases.patch"
+  patch -Nbp1 -i "${srcdir}/1.16-cross-install.patch"
+  patch -Nbp1 -i "${srcdir}/1.16-wchar.patch"
+  patch -Nbp1 -i "${srcdir}/libiconv-1.16-msysize.patch"
+  patch -Nbp1 -i "${srcdir}/0001-fixes-building-with-gcc-15.patch"
+  cp -f srcm4/* m4/
+  (cd libcharset && autoreconf -fiv)
+  autoreconf -fiv
+}
+
+build() {
+  local source_dir="${srcdir}/${_realname}-${pkgver}"
+  local build_dir="${srcdir}/build-${_target}"
+  local dest_dir="${srcdir}/dest"
+  local binutils_bindir
+  local prefix_map="-ffile-prefix-map=${srcdir}=. -fdebug-prefix-map=${srcdir}=. -fmacro-prefix-map=${srcdir}=."
+
+  _assert_final_toolchain
+  binutils_bindir=/opt/bin
+  rm -rf "${build_dir}" "${dest_dir}"
+  mkdir -p "${build_dir}" "${dest_dir}"
+  export PATH="${binutils_bindir}:/opt/bin:${PATH}"
+  export CC="${_target}-gcc"
+  export AR="${binutils_bindir}/${_target}-ar"
+  export NM="${binutils_bindir}/${_target}-nm"
+  export RANLIB="${binutils_bindir}/${_target}-ranlib"
+  export LD="${binutils_bindir}/${_target}-ld"
+  export STRIP="${binutils_bindir}/${_target}-strip"
+  export DLLTOOL="${binutils_bindir}/${_target}-dlltool"
+  export RC="${binutils_bindir}/${_target}-windres -I ${_target_root}/include/w32api"
+  export WINDRES="${RC}"
+  export CPPFLAGS="-isystem ${_target_root}/include -isystem ${_target_root}/include/w32api"
+  export CFLAGS="-O2 -pipe ${prefix_map} -B${binutils_bindir}/ --sysroot=${_target_root}"
+  export LDFLAGS="-B${binutils_bindir}/ --sysroot=${_target_root} -specs=${_target_root}/lib/cygwin-compile-only.specs"
+  export lt_cv_deplibs_check_method=pass_all
+  export gl_cv_clean_version_stddef=yes
+
+  (
+    cd "${build_dir}"
+    CC_FOR_BUILD=gcc \
+    CFLAGS_FOR_BUILD='-O2 -pipe' \
+      "${source_dir}/configure" \
+      --prefix=/usr \
+      --build="${CHOST}" \
+      --host="${_configure_host}" \
+      --disable-nls \
+      --without-libintl-prefix \
+      --enable-static \
+      --enable-shared \
+      --enable-extra-encodings
+  )
+
+  make -C "${build_dir}" -j"$(nproc)"
+  make -C "${build_dir}" DESTDIR="${dest_dir}" install
+  install -d "${dest_dir}/usr/lib/pkgconfig"
+  cat > "${dest_dir}/usr/lib/pkgconfig/libiconv.pc" <<EOF
+prefix=${_target_root}/usr
+exec_prefix=\${prefix}
+libdir=\${exec_prefix}/lib
+includedir=\${prefix}/include
+
+Name: libiconv
+Description: Character set conversion library
+Version: ${pkgver}
+Libs: -L\${libdir} -liconv
+Libs.private: -lcharset
+Cflags: -I\${includedir}
+EOF
+}
+
+check() {
+  local pkgroot="${srcdir}/dest/usr"
+  local report_dir="${srcdir}/libiconv-report"
+  local work_dir="${srcdir}/libiconv-check"
+  local binutils_bindir
+  local objdump
+  local ar
+  local nm
+  local file iconv_exports imports map_info member object_info pe_info symbol
+  local -a pe_files archives objects
+
+  _assert_final_toolchain
+  binutils_bindir=/opt/bin
+  objdump="${binutils_bindir}/${_target}-objdump"
+  ar="${binutils_bindir}/${_target}-ar"
+  nm="${binutils_bindir}/${_target}-nm"
+  rm -rf "${report_dir}" "${work_dir}"
+  mkdir -p "${report_dir}" "${work_dir}"
+  export PATH="/opt/bin:${PATH}"
+
+  python "${srcdir}/validate-ownership.py" \
+    "${srcdir}/ownership-manifest.json" \
+    "${srcdir}/dest"
+  cp "${srcdir}/ownership-manifest.json" \
+    "${report_dir}/ownership-manifest.json"
+  test -f "${pkgroot}/include/iconv.h"
+  test -f "${pkgroot}/lib/libiconv.a"
+  test -f "${pkgroot}/lib/libiconv.dll.a"
+  test -f "${pkgroot}/lib/libcharset.a"
+  test -f "${pkgroot}/lib/libcharset.dll.a"
+  test -f "${pkgroot}/lib/pkgconfig/libiconv.pc"
+  test -x "${pkgroot}/bin/iconv.exe"
+  iconv_exports="$("${objdump}" -p "${pkgroot}/bin/msys-iconv-2.dll")"
+  for symbol in \
+    _libiconv_version \
+    libiconv_open \
+    libiconv \
+    libiconv_close \
+    locale_charset
+  do
+    grep -Eq "[[:space:]]${symbol}$" <<< "${iconv_exports}"
+  done
+  grep -Fq "prefix=${_target_root}/usr" \
+    "${pkgroot}/lib/pkgconfig/libiconv.pc"
+  grep -Fq 'Libs.private: -lcharset' \
+    "${pkgroot}/lib/pkgconfig/libiconv.pc"
+  PKG_CONFIG_PATH="${pkgroot}/lib/pkgconfig" \
+    pkg-config --cflags --libs libiconv |
+    grep -Fq -- "-I${_target_root}/usr/include"
+  PKG_CONFIG_PATH="${pkgroot}/lib/pkgconfig" \
+    pkg-config --static --libs libiconv |
+    grep -Fq -- '-liconv -lcharset'
+  mapfile -d '' -t pe_files < <(
+    find "${pkgroot}" -type f \( -name '*.dll' -o -name '*.exe' \) -print0 |
+      sort -z
+  )
+  test "${#pe_files[@]}" -ge 3
+  : > "${report_dir}/pe-audit.txt"
+  : > "${report_dir}/imports.txt"
+  for file in "${pe_files[@]}"; do
+    pe_info="$("${objdump}" -f "${file}")"
+    printf '%s\n%s\n' "${file#${pkgroot}/}" "${pe_info}" \
+      >> "${report_dir}/pe-audit.txt"
+    grep -Fq 'architecture: aarch64' <<< "${pe_info}"
+    grep -Eq 'file format pei?-aarch64-little' <<< "${pe_info}"
+    imports="$("${objdump}" -p "${file}" | sed -n 's/^[[:space:]]*DLL Name: //p')"
+    printf '%s\n%s\n' "${file#${pkgroot}/}" "${imports}" \
+      >> "${report_dir}/imports.txt"
+    grep -Fqi 'msys-2.0.dll' <<< "${imports}"
+    ! grep -Eiq \
+      'cygwin1\.dll|libgcc_s_|libwinpthread|msvcrt|ucrtbase|x86_64|i[3-6]86' \
+      <<< "${imports}"
+    if [[ "${file}" = "${pkgroot}/bin/iconv.exe" ]]; then
+      grep -Eiq '^msys-iconv-[0-9]+\.dll$' <<< "${imports}"
+    fi
+  done
+
+  mapfile -d '' -t archives < <(
+    find "${pkgroot}/lib" -type f \( -name '*.a' -o -name '*.dll.a' \) -print0 |
+      sort -z
+  )
+  test "${#archives[@]}" -ge 4
+  : > "${report_dir}/archive-audit.txt"
+  : > "${report_dir}/archive-map.txt"
+  for file in "${archives[@]}"; do
+    map_info="$("${nm}" --print-armap "${file}")"
+    printf '%s\n%s\n' "${file#${pkgroot}/}" "${map_info}" \
+      >> "${report_dir}/archive-map.txt"
+    grep -Fq 'Archive index:' <<< "${map_info}"
+    while IFS= read -r member; do
+      case "${member}" in
+        ''|'/'*|'__.SYMDEF'*)
+          continue
+          ;;
+      esac
+      "${ar}" p "${file}" "${member}" > "${work_dir}/member.o"
+      object_info="$("${objdump}" -f "${work_dir}/member.o")"
+      printf '%s(%s)\n%s\n' "${file#${pkgroot}/}" "${member}" "${object_info}" \
+        >> "${report_dir}/archive-audit.txt"
+      grep -Fq 'architecture: aarch64' <<< "${object_info}"
+      grep -Fq 'file format pe-aarch64-little' <<< "${object_info}"
+    done < <("${ar}" t "${file}")
+  done
+
+  mapfile -d '' -t objects < <(find "${pkgroot}" -type f -name '*.o' -print0)
+  for file in "${objects[@]}"; do
+    object_info="$("${objdump}" -f "${file}")"
+    grep -Fq 'architecture: aarch64' <<< "${object_info}"
+    grep -Fq 'file format pe-aarch64-little' <<< "${object_info}"
+  done
+
+  cat > "${work_dir}/conversion-smoke.c" <<'EOF'
+#include <errno.h>
+#include <iconv.h>
+#include <stddef.h>
+#include <string.h>
+
+int main(void)
+{
+  const char input_bytes[] = { 'c', 'a', 'f', (char) 0xe9 };
+  const unsigned char expected[] = { 'c', 'a', 'f', 0xc3, 0xa9 };
+  char output_bytes[8] = { 0 };
+  char *input = (char *) input_bytes;
+  char *output = output_bytes;
+  size_t input_left = sizeof(input_bytes);
+  size_t output_left = sizeof(output_bytes);
+  iconv_t converter = iconv_open("UTF-8", "ISO-8859-1");
+
+  if (converter == (iconv_t) -1)
+    return errno ? errno : 1;
+  if (iconv(converter, &input, &input_left, &output, &output_left) == (size_t) -1)
+    return errno ? errno : 2;
+  if (iconv_close(converter) != 0)
+    return errno ? errno : 3;
+  if (input_left != 0 || (size_t) (output - output_bytes) != sizeof(expected))
+    return 4;
+  return memcmp(output_bytes, expected, sizeof(expected)) == 0 ? 0 : 5;
+}
+EOF
+
+  "${_target}-gcc" \
+    -B"${binutils_bindir}/" \
+    --sysroot="${_target_root}" \
+    -specs="${_target_root}/lib/cygwin-compile-only.specs" \
+    -I"${pkgroot}/include" \
+    "${work_dir}/conversion-smoke.c" \
+    -L"${pkgroot}/lib" \
+    -liconv \
+    -o "${work_dir}/conversion-dynamic-smoke.exe"
+  "${objdump}" -f "${work_dir}/conversion-dynamic-smoke.exe" \
+    | grep -F 'file format pei-aarch64-little'
+  imports="$("${objdump}" -p "${work_dir}/conversion-dynamic-smoke.exe" |
+    sed -n 's/^[[:space:]]*DLL Name: //p')"
+  grep -Fqi 'msys-2.0.dll' <<< "${imports}"
+  grep -Eiq '^msys-iconv-[0-9]+\.dll$' <<< "${imports}"
+  ! grep -Eiq 'cygwin1\.dll|libgcc_s_|libwinpthread|x86_64|i[3-6]86' \
+    <<< "${imports}"
+
+  "${_target}-gcc" \
+    -B"${binutils_bindir}/" \
+    --sysroot="${_target_root}" \
+    -specs="${_target_root}/lib/cygwin-compile-only.specs" \
+    -I"${pkgroot}/include" \
+    "${work_dir}/conversion-smoke.c" \
+    "${pkgroot}/lib/libiconv.a" \
+    "${pkgroot}/lib/libcharset.a" \
+    -o "${work_dir}/conversion-static-smoke.exe"
+  "${objdump}" -f "${work_dir}/conversion-static-smoke.exe" \
+    | grep -F 'file format pei-aarch64-little'
+  imports="$("${objdump}" -p "${work_dir}/conversion-static-smoke.exe" |
+    sed -n 's/^[[:space:]]*DLL Name: //p')"
+  grep -Fqi 'msys-2.0.dll' <<< "${imports}"
+  ! grep -Eiq \
+    'msys-(iconv|charset)-[0-9]+\.dll|cygwin1\.dll|libgcc_s_|libwinpthread|x86_64|i[3-6]86' \
+    <<< "${imports}"
+
+  find "${pkgroot}/lib" -type f -name '*.la' -print0 |
+    while IFS= read -r -d '' file; do
+      ! grep -Eq "${srcdir}|x86_64|mingw|cygwin1\\.dll" "${file}"
+      grep -Eq "^libdir='?/usr/lib'?$" "${file}"
+    done
+  ! grep -RIEq 'x86_64|mingw|cygwin1\.dll' \
+    "${pkgroot}/include" "${pkgroot}/share"
+
+  {
+    printf 'package\t%s\n' "${pkgbase}"
+    printf 'version\t%s-%s\n' "${pkgver}" "${pkgrel}"
+    printf 'target\t%s\n' "${_target}"
+    printf 'ownership-repository\tcrutkas/build-extra\n'
+    printf 'ownership-pr\t12\n'
+    printf 'ownership-commit\t3ef6d935092dc6ab2e376bcd0ffc74fa52dac39d\n'
+    printf 'ownership-manifest-sha256\t045104e4e84dbbc788382c1d7ed64220f4956b913714d1f287a69263caa26805\n'
+    printf 'ownership-backlog-sha256\tfd6d4e4f01db476e8b97271f35e349973791d1c7719c095b068a9508942414e4\n'
+    printf 'ownership-residual-rows-sha256\tc43f18ca170ac8de0bf53e2faa3816641daa1f56d886798ee5c33323edc420e4\n'
+    printf 'ownership-residual-count\t2\n'
+    printf 'admitted\tfalse\n'
+    printf 'binutils-release\t%s\n' "${_binutils_release_tag}"
+    printf 'binutils-version\t%s-%s\n' "${_binutils_pkgver}" "${_binutils_pkgrel}"
+    printf 'binutils-source-commit\t%s\n' "${_binutils_source_commit}"
+    printf 'binutils-source-sha256\t%s\n' "${_binutils_source_sha256}"
+    printf 'binutils-package-sha256\t%s\n' "${_binutils_package_sha256}"
+    printf 'binutils-pkginfo-sha256\t%s\n' "${_binutils_pkginfo_sha256}"
+    printf 'binutils-linker-sha256\t%s\n' "${_binutils_linker_sha256}"
+    printf 'pseudo-reloc-scanner-sha256\t%s\n' "${_pseudo_reloc_scanner_sha256}"
+    printf 'runtime-release\t%s\n' "${_runtime_release_tag}"
+    printf 'runtime-version\t%s-%s\n' "${_runtime_pkgver}" "${_runtime_pkgrel}"
+    printf 'sysroot-version\t%s-%s\n' "${_sysroot_pkgver}" "${_sysroot_pkgrel}"
+    printf 'gcc-release\t%s\n' "${_gcc_release_tag}"
+    printf 'gcc-support-release\t%s\n' "${_gcc_support_release_tag}"
+    printf 'gcc-version\t%s-%s\n' "${_gcc_pkgver}" "${_gcc_pkgrel}"
+    printf 'pe-count\t%s\n' "${#pe_files[@]}"
+    printf 'archive-count\t%s\n' "${#archives[@]}"
+    printf 'smoke-count\t2\n'
+    printf 'native-execution\tdeferred-to-windows-11-arm-job\n'
+  } > "${report_dir}/identity.txt"
+  (
+    cd "${pkgroot}"
+    find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+  ) > "${report_dir}/payload.sha256"
+}
+
+package_mingw-w64-cross-msysarm64-libiconv() {
+  local source_root="${srcdir}/dest/usr"
+  local target_prefix="${pkgdir}${_target_root}/usr"
+  local license_dir="${pkgdir}/usr/share/licenses/${pkgname}"
+
+  pkgdesc="GNU character set conversion runtime libraries for aarch64-pc-msys"
+  license=('spdx:LGPL-2.1-only')
+  depends=("mingw-w64-cross-msysarm64-runtime=${_runtime_pkgver}-${_runtime_pkgrel}")
+  provides=("aarch64-pc-msys-libiconv=${pkgver}")
+  conflicts=('aarch64-pc-msys-libiconv')
+
+  install -d "${target_prefix}/bin"
+  cp -a "${source_root}/bin/"*.dll "${target_prefix}/bin/"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING.LIB" \
+    "${license_dir}/COPYING.LIB"
+}
+
+package_mingw-w64-cross-msysarm64-libiconv-devel() {
+  local source_root="${srcdir}/dest/usr"
+  local target_prefix="${pkgdir}${_target_root}/usr"
+  local license_dir="${pkgdir}/usr/share/licenses/${pkgname}"
+
+  pkgdesc="GNU libiconv headers and libraries for aarch64-pc-msys"
+  license=('spdx:LGPL-2.1-only')
+  depends=(
+    "mingw-w64-cross-msysarm64-iconv=${pkgver}-${pkgrel}"
+    "mingw-w64-cross-msysarm64-libiconv=${pkgver}-${pkgrel}"
+    "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_pkgver}-${_runtime_pkgrel}"
+  )
+  provides=("aarch64-pc-msys-libiconv-devel=${pkgver}")
+  conflicts=('aarch64-pc-msys-libiconv-devel')
+  options=('staticlibs' '!strip' '!buildflags' '!emptydirs')
+
+  install -d "${target_prefix}"
+  cp -a "${source_root}/include" "${target_prefix}/"
+  cp -a "${source_root}/lib" "${target_prefix}/"
+  rm -f "${target_prefix}/lib/charset.alias"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING.LIB" \
+    "${license_dir}/COPYING.LIB"
+}
+
+package_mingw-w64-cross-msysarm64-iconv() {
+  local source_root="${srcdir}/dest/usr"
+  local target_prefix="${pkgdir}${_target_root}/usr"
+  local license_dir="${pkgdir}/usr/share/licenses/${pkgname}"
+
+  pkgdesc="GNU iconv conversion tool and data for aarch64-pc-msys"
+  license=('spdx:GPL-3.0-only')
+  depends=(
+    "mingw-w64-cross-msysarm64-libiconv=${pkgver}-${pkgrel}"
+    "mingw-w64-cross-msysarm64-runtime=${_runtime_pkgver}-${_runtime_pkgrel}"
+  )
+  provides=("aarch64-pc-msys-iconv=${pkgver}")
+  conflicts=('aarch64-pc-msys-iconv')
+
+  install -d "${target_prefix}/bin"
+  cp -a "${source_root}/bin/iconv.exe" "${target_prefix}/bin/"
+  if [[ -d "${source_root}/share" ]]; then
+    cp -a "${source_root}/share" "${target_prefix}/"
+  fi
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING" \
+    "${license_dir}/COPYING"
+}
