@@ -1,0 +1,400 @@
+# Maintainer: Chris Reddington <crutkas@microsoft.com>
+
+_realname=gmp
+_target=aarch64-pc-msys
+_target_root="/opt/${_target}"
+if [[ ${MSYSARM64_CANONICAL_RUNTIME_ADMITTED:-false} != true ]]; then
+  echo "canonical MSYS ARM64 runtime is not independently admitted" >&2
+  return 1
+fi
+_runtime_version=${MSYSARM64_CANONICAL_RUNTIME_VERSION:?}
+_runtime_pkgrel=${MSYSARM64_CANONICAL_RUNTIME_PKGREL:?}
+_gcc_version=15.0.1dev
+_gcc_pkgrel=1
+_w32api_version=14.0.0.r0.g9b3dd0125
+_w32api_pkgrel=1
+_binutils_version=2.44.50
+_binutils_pkgrel=2
+_binutils_linker_sha256=075ed377a430eb120a994dfdc7c3187e937331239204578d696f08ee1c72fb1f
+_pseudo_reloc_scanner_sha256=888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9
+
+pkgbase=mingw-w64-cross-msysarm64-gmp
+pkgname=(
+  mingw-w64-cross-msysarm64-gmp
+  mingw-w64-cross-msysarm64-gmp-devel
+)
+pkgver=6.3.0
+pkgrel=2
+pkgdesc="GNU multiple precision arithmetic library for aarch64-pc-msys"
+arch=('x86_64')
+url='https://gmplib.org/'
+msys2_repository_url='https://gmplib.org/repo/gmp/'
+license=('spdx:LGPL-3.0-or-later' 'spdx:GPL-2.0-or-later')
+groups=('mingw-w64-cross-toolchain' 'mingw-w64-cross')
+makedepends=(
+  'autoconf'
+  'automake'
+  'gcc'
+  'libtool'
+  'make'
+  "mingw-w64-cross-cygwinarm64-binutils=${_binutils_version}-${_binutils_pkgrel}"
+  "mingw-w64-cross-msysarm64-gcc=${_gcc_version}-${_gcc_pkgrel}"
+  "mingw-w64-cross-msysarm64-gcc-libs=${_gcc_version}-${_gcc_pkgrel}"
+  "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
+  "mingw-w64-cross-msysarm64-sysroot=${_runtime_version}-${_runtime_pkgrel}"
+  "mingw-w64-cross-msysarm64-w32api-runtime=${_w32api_version}-${_w32api_pkgrel}"
+)
+options=('!strip' '!buildflags' '!emptydirs')
+source=(
+  "https://ftpmirror.gnu.org/gmp/${_realname}-${pkgver}.tar.xz"{,.sig}
+  "check-aarch64-pseudo-relocs.ps1::https://raw.githubusercontent.com/crutkas/MSYS2-packages/3356eec1411983cc252b04afac32bca5f3b8d824/.ci/check-aarch64-pseudo-relocs.ps1"
+  gmp-consumer.c
+  gmp-consumer.cpp
+  scan-forbidden-paths.py
+  validate-gmp.sh
+  README.md
+  dependency-lock.json
+)
+sha256sums=(
+  'a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898'
+  '94def8c1a731854de684689126046ec93589147abd4cd0025f12d741d323aa82'
+  '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9'
+  'd703f8628c8058872a72c43c8719476ef54dc3b9285a0474ae9f737e3da81728'
+  '3c65019f0115137463b24073ee8c715fc0857ef5824f0f64681f6a3b73d61891'
+  'a30cb4a7fe3e8250019d0cba34b1034f9425f8dbc3015ba770b633c12dcc53a0'
+  '03c9ba222a0337a3e2a407e4defa06dd4d82c66c01dd3550bcf39750a7ffa1ff'
+  'e0fdd382bb1f1cd9695c318794ec2bdf5c25bb779435cfa388c3f5bd91a8aae0'
+  '3de57570f2680ea5f09f60ea73b9b06b24e8360ef2e9a778c54bab10fc0ca127'
+)
+validpgpkeys=('343C2FF0FBEE5EC2EDBEF399F3599FF828C67298')
+
+export SOURCE_DATE_EPOCH=1690719513
+export TZ=UTC
+
+_private_pacman() {
+  pacman \
+    --root / \
+    --dbpath /var/lib/pacman \
+    --cachedir /var/cache/pacman/pkg \
+    --logfile /var/log/gmp-build-pacman.log \
+    --config /etc/gmp-build-pacman.conf \
+    --hookdir /etc/pacman.d/hooks \
+    --gpgdir /etc/pacman.d/gnupg \
+    "$@"
+}
+
+_assert_final_toolchain() {
+  local actual tool alias
+
+  test "${MSYSTEM:-}" = MSYS
+  test "${CARCH:-}" = x86_64
+  test "$(uname -m)" = x86_64
+  test "$(_private_pacman -Q mingw-w64-cross-cygwinarm64-binutils)" = \
+    "mingw-w64-cross-cygwinarm64-binutils ${_binutils_version}-${_binutils_pkgrel}"
+  test "$(_private_pacman -Q mingw-w64-cross-msysarm64-gcc)" = \
+    "mingw-w64-cross-msysarm64-gcc ${_gcc_version}-${_gcc_pkgrel}"
+  test "$(_private_pacman -Q mingw-w64-cross-msysarm64-gcc-libs)" = \
+    "mingw-w64-cross-msysarm64-gcc-libs ${_gcc_version}-${_gcc_pkgrel}"
+  test "$(_private_pacman -Q mingw-w64-cross-msysarm64-runtime-devel)" = \
+    "mingw-w64-cross-msysarm64-runtime-devel ${_runtime_version}-${_runtime_pkgrel}"
+  test "$(_private_pacman -Q mingw-w64-cross-msysarm64-sysroot)" = \
+    "mingw-w64-cross-msysarm64-sysroot ${_runtime_version}-${_runtime_pkgrel}"
+  test "$(_private_pacman -Q mingw-w64-cross-msysarm64-w32api-runtime)" = \
+    "mingw-w64-cross-msysarm64-w32api-runtime ${_w32api_version}-${_w32api_pkgrel}"
+  test "$("${_target}-gcc" -dumpmachine)" = "${_target}"
+  test "$("${_target}-gcc" -print-sysroot)" = "${_target_root}"
+  test "$("${_target}-g++" -dumpmachine)" = "${_target}"
+  test "$("${_target}-g++" -print-sysroot)" = "${_target_root}"
+  test "$(_private_pacman -Qoq /opt/bin/${_target}-gcc.exe)" = \
+    mingw-w64-cross-msysarm64-gcc
+  test "$(_private_pacman -Qoq /opt/bin/${_target}-g++.exe)" = \
+    mingw-w64-cross-msysarm64-gcc
+  test "$("${_target}-g++" -print-file-name=libstdc++.a)" = \
+    "/opt/lib/gcc/${_target}/15.0.1/libstdc++.a"
+  test "$(_private_pacman -Qoq \
+    /opt/lib/gcc/${_target}/15.0.1/libstdc++.a)" = \
+    mingw-w64-cross-msysarm64-gcc-libs
+  actual="$(sha256sum /opt/bin/aarch64-pc-cygwin-ld.exe | cut -d ' ' -f 1)"
+  test "${actual}" = "${_binutils_linker_sha256}"
+  for tool in ar as ld nm objdump ranlib strings strip; do
+    alias="/opt/bin/${_target}-${tool}.exe"
+    test -L "${alias}"
+    test "$(readlink "${alias}")" = "aarch64-pc-cygwin-${tool}.exe"
+    test "$(_private_pacman -Qoq "${alias}")" = \
+      mingw-w64-cross-cygwinarm64-binutils
+  done
+  test "$(sha256sum "${srcdir}/check-aarch64-pseudo-relocs.ps1" |
+    cut -d ' ' -f 1)" = "${_pseudo_reloc_scanner_sha256}"
+  test -f "${_target_root}/lib/cygwin-compile-only.specs"
+  test -f "${_target_root}/lib/libmsys-2.0.a"
+  test -f "${_target_root}/usr/lib/libkernel32.a"
+}
+
+_fix_msys_libtool() {
+  local libtool=$1
+
+  grep -Fqx 'host_os=msys' "${libtool}"
+  grep -Fqx 'build_libtool_libs=yes' "${libtool}"
+  sed -i \
+    -e 's|^build_libtool_need_lc=.*|build_libtool_need_lc=no|' \
+    -e 's|^library_names_spec=.*|library_names_spec="\\\$libname.dll.a"|' \
+    -e 's|^soname_spec=.*|soname_spec="msys-gmp\\\$versuffix\\\$shared_ext"|' \
+    "${libtool}"
+  grep -Fqx 'build_libtool_need_lc=no' "${libtool}"
+  grep -Fqx 'library_names_spec="\$libname.dll.a"' "${libtool}"
+  grep -Fqx 'soname_spec="msys-gmp\$versuffix\$shared_ext"' "${libtool}"
+}
+
+_build_gmp_library() {
+  local build_dir=$1
+
+  make -C "${build_dir}" -j"$(nproc)" \
+    gmp.h \
+    fac_table.h \
+    sieve_table.h \
+    fib_table.h \
+    mpn/fib_table.c \
+    mp_bases.h \
+    mpn/mp_bases.c \
+    trialdivtab.h \
+    mpn/jacobitab.h \
+    mpn/perfsqr.h
+  make -C "${build_dir}" -j"$(nproc)" libgmp.la
+}
+
+_replace_generic_multifunction_links() {
+  local build_dir=$1
+  local source_dir=$2
+  local operation implementation source_link expected
+
+  while read -r operation implementation; do
+    source_link="${build_dir}/mpn/${operation}.c"
+    expected="${source_dir}/mpn/generic/${implementation}.c"
+    test -L "${source_link}"
+    test "$(readlink "${source_link}")" = "${expected}"
+    rm "${source_link}"
+    printf '#define OPERATION_%s 1\n#include "../../%s-%s/mpn/generic/%s.c"\n' \
+      "${operation}" \
+      "${_realname}" \
+      "${pkgver}" \
+      "${implementation}" > "${source_link}"
+  done <<'MULTIFUNCTION_EOF'
+and_n logops_n
+andn_n logops_n
+hamdist popham
+ior_n logops_n
+iorn_n logops_n
+nand_n logops_n
+nior_n logops_n
+popcount popham
+sec_add_1 sec_aors_1
+sec_div_qr sec_div
+sec_div_r sec_div
+sec_pi1_div_qr sec_pi1_div
+sec_pi1_div_r sec_pi1_div
+sec_sub_1 sec_aors_1
+xnor_n logops_n
+xor_n logops_n
+MULTIFUNCTION_EOF
+}
+
+prepare() {
+  local scanner="${srcdir}/check-aarch64-pseudo-relocs.ps1"
+
+  if test -L "${scanner}"; then
+    cp -L "${scanner}" "${scanner}.materialized"
+    rm "${scanner}"
+    mv "${scanner}.materialized" "${scanner}"
+  fi
+
+  cd "${srcdir}/${_realname}-${pkgver}"
+  chmod 755 "${srcdir}/validate-gmp.sh"
+  sed -i \
+    's|#define __GMP_LIBGMP_DLL  @LIBGMP_DLL@|#if defined (GMP_STATIC)\n#define __GMP_LIBGMP_DLL  0\n#else\n#define __GMP_LIBGMP_DLL  @LIBGMP_DLL@\n#endif|' \
+    gmp-h.in
+  AUTOCONF=autoconf-2.73 \
+  AUTOHEADER=autoheader-2.73 \
+  AUTOMAKE=automake-1.18 \
+  ACLOCAL=aclocal-1.18 \
+    autoreconf-2.73 -fi
+  sed -i \
+    -e 's|cygwin\*)|cygwin* \| msys*)|g' \
+    -e 's|cygwin\* \| mingw\*|cygwin* \| msys* \| mingw*|g' \
+    -e 's|\*-\*-cygwin\* \| \*-\*-mingw\*|*-*-cygwin* \| *-*-msys* \| *-*-mingw*|g' \
+    aclocal.m4
+  autoconf-2.73
+}
+
+build() {
+  local source_dir="${srcdir}/${_realname}-${pkgver}"
+  local shared_build_dir="${srcdir}/build-${_target}-shared"
+  local static_build_dir="${srcdir}/build-${_target}-static"
+  local dest_dir="${srcdir}/dest"
+  local static_dest_dir="${srcdir}/dest-static"
+  local binutils_bindir=/opt/bin
+  local specs="${_target_root}/lib/cygwin-compile-only.specs"
+  local prefix_map="-ffile-prefix-map=${srcdir}=. -fdebug-prefix-map=${srcdir}=. -fmacro-prefix-map=${srcdir}=."
+
+  _assert_final_toolchain
+  rm -rf \
+    "${shared_build_dir}" \
+    "${static_build_dir}" \
+    "${dest_dir}" \
+    "${static_dest_dir}"
+  mkdir -p \
+    "${shared_build_dir}" \
+    "${static_build_dir}" \
+    "${dest_dir}" \
+    "${static_dest_dir}"
+  export PATH="/opt/bin:/usr/bin:/bin"
+  export CC="${_target}-gcc"
+  export AR="${binutils_bindir}/${_target}-ar"
+  export AS="${binutils_bindir}/${_target}-as"
+  export LD="${binutils_bindir}/${_target}-ld"
+  export NM="${binutils_bindir}/${_target}-nm"
+  export OBJDUMP="${binutils_bindir}/${_target}-objdump"
+  export RANLIB="${binutils_bindir}/${_target}-ranlib"
+  export STRIP="${binutils_bindir}/${_target}-strip"
+  export CPPFLAGS="-D__MSYS__ -isystem ${_target_root}/include -isystem ${_target_root}/include/w32api"
+  export CFLAGS="-O2 -pipe -std=gnu17 ${prefix_map} -B${binutils_bindir}/ --sysroot=${_target_root} -specs=${specs}"
+  export LDFLAGS="-B${binutils_bindir}/ --sysroot=${_target_root} -static-libgcc -Wl,--no-insert-timestamp"
+
+  (
+    cd "${shared_build_dir}"
+    ABI=64 \
+    CC_FOR_BUILD=gcc \
+    CFLAGS_FOR_BUILD='-O2 -pipe' \
+    lt_cv_deplibs_check_method=pass_all \
+    lt_cv_archive_cmds_need_lc=no \
+      "${source_dir}/configure" \
+      --build="${CHOST}" \
+      --host="${_target}" \
+      --prefix=/usr \
+      --enable-shared \
+      --disable-static \
+      --disable-assembly \
+      --disable-fat
+  )
+  _fix_msys_libtool "${shared_build_dir}/libtool"
+  _replace_generic_multifunction_links \
+    "${shared_build_dir}" \
+    "${source_dir}"
+  _build_gmp_library "${shared_build_dir}"
+  make -C "${shared_build_dir}" DESTDIR="${dest_dir}" install
+
+  (
+    cd "${static_build_dir}"
+    ABI=64 \
+    CC_FOR_BUILD=gcc \
+    CFLAGS_FOR_BUILD='-O2 -pipe' \
+    lt_cv_deplibs_check_method=pass_all \
+    lt_cv_archive_cmds_need_lc=no \
+      "${source_dir}/configure" \
+      --build="${CHOST}" \
+      --host="${_target}" \
+      --prefix=/usr \
+      --disable-shared \
+      --enable-static \
+      --disable-assembly \
+      --disable-fat
+  )
+  _replace_generic_multifunction_links \
+    "${static_build_dir}" \
+    "${source_dir}"
+  _build_gmp_library "${static_build_dir}"
+  make -C "${static_build_dir}" DESTDIR="${static_dest_dir}" install
+  install -Dm755 \
+    "${shared_build_dir}/.libs/msys-gmp-10.dll" \
+    "${dest_dir}/usr/bin/msys-gmp-10.dll"
+  install -Dm644 \
+    "${shared_build_dir}/.libs/libgmp.dll.a" \
+    "${dest_dir}/usr/lib/libgmp.dll.a"
+  cp "${static_dest_dir}/usr/lib/libgmp.a" "${dest_dir}/usr/lib/libgmp.a"
+  "${RANLIB}" -D "${dest_dir}/usr/lib/libgmp.a"
+  "${RANLIB}" -D "${dest_dir}/usr/lib/libgmp.dll.a"
+
+  test -f "${dest_dir}/usr/bin/msys-gmp-10.dll"
+  test -f "${dest_dir}/usr/lib/libgmp.a"
+  test -f "${dest_dir}/usr/lib/libgmp.dll.a"
+  test -f "${dest_dir}/usr/include/gmp.h"
+  sed -i "s|${srcdir}|<BUILD_SOURCE_ROOT>|g" \
+    "${dest_dir}/usr/include/gmp.h"
+  ! grep -Fq "${srcdir}" "${dest_dir}/usr/include/gmp.h"
+  grep -Eq '^#define (GMP_LIMB_BITS|__GMP_BITS_PER_MP_LIMB)[[:space:]]+64$' \
+    "${dest_dir}/usr/include/gmp.h"
+  if [[ -f "${dest_dir}/usr/lib/libgmp.la" ]]; then
+    sed -i \
+      -e "s|^libdir=.*|libdir='${_target_root}/usr/lib'|" \
+      -e "s|^old_library=.*|old_library='libgmp.a'|" \
+      "${dest_dir}/usr/lib/libgmp.la"
+  fi
+}
+
+check() {
+  local report_dir="${srcdir}/gmp-report"
+
+  _assert_final_toolchain
+  rm -rf "${report_dir}"
+  TARGET="${_target}" \
+  TARGET_ROOT="${_target_root}" \
+  TARGET_CC="/opt/bin/${_target}-gcc" \
+  TARGET_CXX="/opt/bin/${_target}-g++" \
+  TARGET_AR="/opt/bin/${_target}-ar" \
+  TARGET_NM="/opt/bin/${_target}-nm" \
+  TARGET_OBJDUMP="/opt/bin/${_target}-objdump" \
+  BUILD_SOURCE_ROOT="${srcdir}" \
+  PWSH="${PWSH:?}" \
+  PYTHON="${PYTHON:?}" \
+  PSEUDO_RELOC_SCANNER="${srcdir}/check-aarch64-pseudo-relocs.ps1" \
+  BINARY_PATH_SCANNER="${srcdir}/scan-forbidden-paths.py" \
+    "${srcdir}/validate-gmp.sh" \
+      "${srcdir}/dest/usr" \
+      "${srcdir}/build-${_target}-shared" \
+      "${report_dir}" \
+      "${srcdir}/gmp-consumer.c" \
+      "${srcdir}/gmp-consumer.cpp"
+}
+
+package_mingw-w64-cross-msysarm64-gmp() {
+  local source_root="${srcdir}/dest/usr"
+  local target_prefix="${pkgdir}${_target_root}/usr"
+  local license_dir="${pkgdir}/usr/share/licenses/${pkgname}"
+  local doc_dir="${pkgdir}/usr/share/doc/${pkgbase}"
+
+  pkgdesc="GNU multiple precision runtime library for aarch64-pc-msys"
+  depends=(
+    "mingw-w64-cross-msysarm64-runtime=${_runtime_version}-${_runtime_pkgrel}"
+  )
+  provides=("aarch64-pc-msys-gmp=${pkgver}")
+  conflicts=('aarch64-pc-msys-gmp')
+
+  install -Dm755 "${source_root}/bin/msys-gmp-10.dll" \
+    "${target_prefix}/bin/msys-gmp-10.dll"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING.LESSERv3" \
+    "${license_dir}/COPYING.LESSERv3"
+  install -d "${doc_dir}"
+  install -Dm644 "${srcdir}/dependency-lock.json" \
+    "${doc_dir}/dependency-lock.json"
+  install -Dm644 "${srcdir}/README.md" "${doc_dir}/README.md"
+}
+
+package_mingw-w64-cross-msysarm64-gmp-devel() {
+  local source_root="${srcdir}/dest/usr"
+  local target_prefix="${pkgdir}${_target_root}/usr"
+  local license_dir="${pkgdir}/usr/share/licenses/${pkgname}"
+
+  pkgdesc="GNU multiple precision headers and libraries for aarch64-pc-msys"
+  depends=(
+    "mingw-w64-cross-msysarm64-gmp=${pkgver}-${pkgrel}"
+    "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
+  )
+  provides=("aarch64-pc-msys-gmp-devel=${pkgver}")
+  conflicts=('aarch64-pc-msys-gmp-devel')
+  options=('staticlibs' '!strip' '!buildflags' '!emptydirs')
+
+  install -d "${target_prefix}"
+  cp -a "${source_root}/include" "${target_prefix}/"
+  cp -a "${source_root}/lib" "${target_prefix}/"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING.LESSERv3" \
+    "${license_dir}/COPYING.LESSERv3"
+}

@@ -1,0 +1,100 @@
+name: MSYS ARM64 GMP infrastructure
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/msysarm64-gmp.yml"
+      - "mingw-w64-cross-msysarm64-gmp/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: msysarm64-gmp-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static-contract:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository
+      )
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - name: Check out the exact event head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Bind checkout to the event
+        shell: pwsh
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -ne $env:EXPECTED_HEAD) {
+            throw "Checked out $actual instead of event head $env:EXPECTED_HEAD"
+          }
+          if ($env:GITHUB_REPOSITORY -ne 'crutkas/MSYS2-packages') {
+            throw "Unexpected repository $env:GITHUB_REPOSITORY"
+          }
+
+      - name: Run static and adversarial tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lane = Join-Path $env:GITHUB_WORKSPACE 'mingw-w64-cross-msysarm64-gmp'
+          Push-Location $lane
+          try {
+            foreach ($script in Get-ChildItem -LiteralPath . -Filter '*.ps1' -File) {
+              $tokens = $null
+              $errors = $null
+              [Management.Automation.Language.Parser]::ParseFile(
+                $script.FullName,
+                [ref]$tokens,
+                [ref]$errors) | Out-Null
+              if ($errors.Count -ne 0) {
+                throw "$($script.Name) parser errors: $($errors.Message -join '; ')"
+              }
+            }
+
+            python -m unittest -v test_scan_forbidden_paths.py test_validate_contract.py
+            if ($LASTEXITCODE -ne 0) { throw 'Python tests failed' }
+
+            pwsh -NoProfile -File .\test-native-smoke-contract.ps1
+            if ($LASTEXITCODE -ne 0) { throw 'PowerShell contract tests failed' }
+
+            $bash = 'C:\Program Files\Git\bin\bash.exe'
+            foreach ($script in @('validate-gmp.sh', 'validate-package-lifecycle.sh')) {
+              & $bash -n $script
+              if ($LASTEXITCODE -ne 0) { throw "Bash syntax failed for $script" }
+            }
+
+            python .\validate_contract.py
+            if ($LASTEXITCODE -ne 0) { throw 'Contract validation failed' }
+          } finally {
+            Pop-Location
+          }
+
+  canonical-package:
+    if: ${{ false }}
+    needs: static-contract
+    runs-on: windows-2025
+    steps:
+      - run: |
+          throw 'Blocked until dependency-lock.json names an independently admitted corrected runtime.'
+
+  canonical-native:
+    if: ${{ false }}
+    needs: canonical-package
+    runs-on: windows-11-arm
+    steps:
+      - run: |
+          throw 'Blocked until a clean canonical package build is complete and independently audited.'
