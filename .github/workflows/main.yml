@@ -16,7 +16,16 @@ jobs:
         (github.repository != 'crutkas/MSYS2-packages' ||
          github.event_name != 'push' ||
          (github.ref_type != 'tag' &&
-          github.ref_name != 'crutkas-package-aarch64-static-libgcc'))
+          github.ref_name != 'crutkas-package-aarch64-static-libgcc')) &&
+        !(github.repository == 'crutkas/MSYS2-packages' &&
+          ((github.event_name == 'push' &&
+            (github.ref_name == 'crutkas-arm64-msys-sqlite' ||
+             startsWith(github.ref, 'refs/tags/msysarm64-sqlite-'))) ||
+           (github.event_name == 'pull_request' &&
+            github.head_ref == 'crutkas-arm64-msys-sqlite' &&
+            github.event.pull_request.base.ref == 'crutkas-aarch64-gcc-layer' &&
+            github.event.pull_request.head.repo.full_name ==
+              'crutkas/MSYS2-packages')))
       }}
     env:
       CI_BASE_REPOSITORY: https://github.com/${{ github.repository }}.git
