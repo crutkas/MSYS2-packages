@@ -1,0 +1,212 @@
+{
+  "version": 2,
+  "repository": {
+    "full_name": "crutkas/MSYS2-packages",
+    "id": 1333319488,
+    "api_url": "https://api.github.com",
+    "html_url": "https://github.com/crutkas/MSYS2-packages",
+    "default_branch": "master",
+    "required_check": "workflow-policy / verify",
+    "required_workflow": ".github/workflows/workflow-policy.yml",
+    "required_workflow_ref": "refs/heads/master",
+    "github_actions_integration_id": 15368,
+    "dedicated_check": {
+      "context": "workflow-policy / anchored-admission",
+      "integration_id": null
+    }
+  },
+  "bootstrap": {
+    "base_policy_absent": true,
+    "self_admission": "denied",
+    "source_admission": "required",
+    "rules_activation": "required-after-landing"
+  },
+  "approved_actions": {
+    "actions/checkout": "11d5960a326750d5838078e36cf38b85af677262",
+    "msys2/setup-msys2": "66cd2cce69caa17b53920067426061ca1de3a884",
+    "actions/upload-artifact": "ea165f8d65b6e75b540449e92b4886f43607fa02",
+    "actions/download-artifact": "d3f86a106a0bac45b974a628896c90dbdf5c8093"
+  },
+  "workflows": {
+    ".github/workflows/workflow-policy.yml": {
+      "blob": "703fa9f2a895bb3952bbb4c2ad9dd3f80b828599",
+      "name": "workflow-policy",
+      "events": [
+        "pull_request_target"
+      ],
+      "event_types": {
+        "pull_request_target": [
+          "opened",
+          "synchronize",
+          "reopened",
+          "ready_for_review"
+        ]
+      },
+      "permissions": {
+        "contents": "read"
+      },
+      "fork_execution": "base-only-data-validation",
+      "jobs": {
+        "verify": {
+          "name": "workflow-policy / verify",
+          "runs_on": "windows-2025",
+          "steps": [
+            {
+              "name": "Check out protected base",
+              "kind": "action",
+              "action": "actions/checkout",
+              "with": {
+                "ref": "${{ github.event.pull_request.base.sha }}",
+                "path": "protected-base",
+                "fetch-depth": 1,
+                "persist-credentials": false,
+                "clean": true
+              }
+            },
+            {
+              "name": "Verify protected base and create private root",
+              "kind": "run",
+              "run_sha256": "741e997f4fc1390ce82af812566564333080ff457848f12031f54a88e20977af",
+              "env": {
+                "POLICY_REPOSITORY": "${{ github.repository }}",
+                "POLICY_REPOSITORY_ID": "${{ github.repository_id }}",
+                "POLICY_BASE_SHA": "${{ github.event.pull_request.base.sha }}",
+                "POLICY_BASE_REF": "${{ github.event.pull_request.base.ref }}",
+                "POLICY_RUN_ID": "${{ github.run_id }}",
+                "POLICY_RUN_ATTEMPT": "${{ github.run_attempt }}",
+                "POLICY_JOB": "${{ github.job }}",
+                "POLICY_MATRIX": "none"
+              }
+            },
+            {
+              "name": "Validate candidate as inert data",
+              "kind": "run",
+              "github_token": true,
+              "run_sha256": "1eb9d1708938da14faf3c78ff89d285f5ba7f57edbb33f8f8385a90da3c590b7",
+              "env": {
+                "POLICY_GITHUB_TOKEN": "${{ github.token }}",
+                "POLICY_API_URL": "${{ github.api_url }}",
+                "POLICY_REPOSITORY": "${{ github.repository }}"
+              }
+            }
+          ]
+        }
+      },
+      "helpers": [
+        ".github/policy/private-root.ps1",
+        ".github/policy/validator.py"
+      ],
+      "data": [
+        ".github/policy/approval-graph.json"
+      ]
+    }
+  },
+  "helpers": {
+    ".github/policy/private-root.ps1": {
+      "blob": "07532887403cb8b60eaa86017034125d6962d4a4",
+      "mode": "100644",
+      "interpreter": "pwsh",
+      "capabilities": [],
+      "dependencies": [
+        ".github/policy/PrivateRoot.psm1"
+      ],
+      "consumers": [
+        ".github/workflows/workflow-policy.yml"
+      ]
+    },
+    ".github/policy/PrivateRoot.psm1": {
+      "blob": "9471952c6394f2b063a5ca08f67015aa64b7db5f",
+      "mode": "100644",
+      "interpreter": "pwsh-module",
+      "capabilities": [
+        "git-read-local"
+      ],
+      "dependencies": [],
+      "consumers": [
+        ".github/policy/private-root.ps1"
+      ]
+    },
+    ".github/policy/validator.py": {
+      "blob": "3fb9462e6bec9b106f8f8b9b36d946244672e59b",
+      "mode": "100644",
+      "interpreter": "python",
+      "capabilities": [
+        "github-api-read",
+        "git-read-local"
+      ],
+      "dependencies": [
+        ".github/policy/policy_lib.py"
+      ],
+      "consumers": [
+        ".github/workflows/workflow-policy.yml"
+      ]
+    },
+    ".github/policy/policy_lib.py": {
+      "blob": "fafec91c1f388bba33461dbc0c5bf7bb401e35b8",
+      "mode": "100644",
+      "interpreter": "python-module",
+      "capabilities": [],
+      "dependencies": [],
+      "consumers": [
+        ".github/policy/validator.py"
+      ]
+    },
+    ".ci/ci-build.sh": {
+      "blob": "1228acdb452bfb8e85ecdeb31e8eea591564a70b",
+      "mode": "100755",
+      "interpreter": "bash",
+      "capabilities": [
+        "legacy-disabled"
+      ],
+      "dependencies": [
+        ".ci/ci-get-build-order.py",
+        ".ci/ci-dont-install-list.txt",
+        ".ci/fetch-validpgpkeys.sh"
+      ],
+      "consumers": []
+    },
+    ".ci/ci-get-build-order.py": {
+      "blob": "c089858116fd8dacb9144a40537dcb34dc4a40d5",
+      "mode": "100755",
+      "interpreter": "python",
+      "capabilities": [
+        "legacy-disabled"
+      ],
+      "dependencies": [],
+      "consumers": [
+        ".ci/ci-build.sh"
+      ]
+    },
+    ".ci/ci-dont-install-list.txt": {
+      "blob": "a2f6be8e86d82fdc89c2a6d09d7af6fb15ee712a",
+      "mode": "100644",
+      "interpreter": "text",
+      "capabilities": [
+        "legacy-disabled"
+      ],
+      "dependencies": [],
+      "consumers": [
+        ".ci/ci-build.sh"
+      ]
+    },
+    ".ci/fetch-validpgpkeys.sh": {
+      "blob": "b6f969cfea31bb7c8fd6bf476544386815c5cb85",
+      "mode": "100755",
+      "interpreter": "bash",
+      "capabilities": [
+        "legacy-disabled"
+      ],
+      "dependencies": [],
+      "consumers": [
+        ".ci/ci-build.sh"
+      ]
+    }
+  },
+  "locks": {
+    "prefixes": [
+      ".github/policy/locks/"
+    ],
+    "artifact": [],
+    "release": []
+  }
+}
