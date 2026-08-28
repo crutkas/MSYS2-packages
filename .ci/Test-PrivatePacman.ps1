@@ -513,7 +513,13 @@ function Start-PrivatePacmanFixtureJob {
         [psobject] $Fixture,
 
         [Parameter(Mandatory)]
-        [string] $Mode
+        [string] $Mode,
+
+        [string] $SnapshotBarrierRoot = '',
+
+        [string] $SnapshotBarrierEnteredPath = '',
+
+        [string] $SnapshotBarrierReleasePath = ''
     )
 
     $job = Start-Job `
@@ -535,7 +541,10 @@ function Start-PrivatePacmanFixtureJob {
             $Fixture.ReadyPath,
             $Fixture.GoPath,
             $Mode,
-            $script:testCanonicalSharedRoot
+            $script:testCanonicalSharedRoot,
+            $SnapshotBarrierRoot,
+            $SnapshotBarrierEnteredPath,
+            $SnapshotBarrierReleasePath
         ) `
         -ScriptBlock {
             param(
@@ -555,7 +564,10 @@ function Start-PrivatePacmanFixtureJob {
                 $ReadyPath,
                 $GoPath,
                 $Mode,
-                $CanonicalSharedRoot
+                $CanonicalSharedRoot,
+                $BarrierRoot,
+                $BarrierEnteredPath,
+                $BarrierReleasePath
             )
             Set-StrictMode -Version Latest
             $ErrorActionPreference = 'Stop'
@@ -569,6 +581,20 @@ function Start-PrivatePacmanFixtureJob {
                 param([string] $Path)
                 $script:CanonicalSharedRoot = $Path
             } $CanonicalSharedRoot
+            if (-not [string]::IsNullOrEmpty($BarrierRoot)) {
+                & $jobModule {
+                    param(
+                        [string] $Root,
+                        [string] $EnteredPath,
+                        [string] $ReleasePath
+                    )
+                    $script:TestSnapshotBarrier = [pscustomobject][ordered]@{
+                        Root = $Root
+                        EnteredPath = $EnteredPath
+                        ReleasePath = $ReleasePath
+                    }
+                } $BarrierRoot $BarrierEnteredPath $BarrierReleasePath
+            }
             Invoke-PrivatePacmanUpgrade `
                 -Layout $Layout `
                 -SeedRoot $Seed `
@@ -732,6 +758,8 @@ try {
             Assert-PrivatePacmanEqual $before.ContentDigest $after.ContentDigest 'Populated protected content digest changed.'
             Assert-PrivatePacmanTest (-not [string]::IsNullOrWhiteSpace($before.RootOwnerSid)) 'Protected-root owner is absent from evidence.'
             Assert-PrivatePacmanTest (-not [string]::IsNullOrWhiteSpace($before.RootSecurityDescriptorSddl)) 'Protected-root security descriptor is absent from evidence.'
+            Assert-PrivatePacmanTest ([int64]$before.RootChangeTimeFileTime -gt 0) 'Protected-root change time is absent from evidence.'
+            Assert-PrivatePacmanTest (-not [string]::IsNullOrWhiteSpace($before.RootIdentity)) 'Protected-root identity is absent from evidence.'
             Assert-PrivatePacmanEqual 'forbidden' $before.AlternateDataStreams 'Protected-root ADS policy is absent from evidence.'
 
             $manifest = Get-Content `
@@ -743,6 +771,8 @@ try {
             Assert-PrivatePacmanTest (-not [string]::IsNullOrWhiteSpace($sharedEntry.OwnerSid)) 'Protected file owner is absent from canonical evidence.'
             Assert-PrivatePacmanTest (-not [string]::IsNullOrWhiteSpace($sharedEntry.SecurityDescriptorSddl)) 'Protected file security descriptor is absent from canonical evidence.'
             Assert-PrivatePacmanTest ($null -ne $sharedEntry.Attributes) 'Protected file attributes are absent from canonical evidence.'
+            Assert-PrivatePacmanTest ([int64]$sharedEntry.ChangeTimeFileTime -gt 0) 'Protected file change time is absent from canonical evidence.'
+            Assert-PrivatePacmanTest (-not [string]::IsNullOrWhiteSpace($sharedEntry.Identity)) 'Protected file identity is absent from canonical evidence.'
             Assert-PrivatePacmanEqual 0 @($sharedEntry.AlternateStreams).Count 'Protected evidence admitted an alternate stream.'
 
             $script:populatedSharedEvidence = [pscustomobject][ordered]@{
@@ -827,7 +857,8 @@ try {
                     ConvertFrom-Json
             $before = @($evidence.ProtectedBefore | Where-Object Path -EQ $fixture.ProtectedRoot)[0]
             $after = @($evidence.ProtectedAfter | Where-Object Path -EQ $fixture.ProtectedRoot)[0]
-            Assert-PrivatePacmanEqual $before.Digest $after.Digest 'Restored metadata did not return to the original canonical digest.'
+            Assert-PrivatePacmanTest ($before.Digest -cne $after.Digest) 'Restored metadata did not advance canonical change-time evidence.'
+            Assert-PrivatePacmanEqual $before.ContentDigest $after.ContentDigest 'Restored metadata changed protected bytes.'
             $events = @(
                 $evidence.Watchers |
                     Where-Object Path -EQ $fixture.ProtectedRoot |
@@ -898,7 +929,8 @@ try {
                     ConvertFrom-Json
             $before = @($evidence.ProtectedBefore | Where-Object Path -EQ $transientFixture.ProtectedRoot)[0]
             $after = @($evidence.ProtectedAfter | Where-Object Path -EQ $transientFixture.ProtectedRoot)[0]
-            Assert-PrivatePacmanEqual $before.Digest $after.Digest 'Transient ADS test did not restore canonical state.'
+            Assert-PrivatePacmanTest ($before.Digest -cne $after.Digest) 'Transient ADS did not advance canonical change-time evidence.'
+            Assert-PrivatePacmanEqual $before.ContentDigest $after.ContentDigest 'Transient ADS changed default-stream bytes.'
             $events = @(
                 $evidence.Watchers |
                     Where-Object Path -EQ $transientFixture.ProtectedRoot |
@@ -1245,7 +1277,8 @@ try {
             Assert-PrivatePacmanTest (-not $evidence.Success) 'Transient drift was reported as success.'
             $before = @($evidence.ProtectedBefore | Where-Object Path -EQ $fixture.ProtectedRoot)[0]
             $after = @($evidence.ProtectedAfter | Where-Object Path -EQ $fixture.ProtectedRoot)[0]
-            Assert-PrivatePacmanEqual $before.Digest $after.Digest 'Transient drift test did not restore byte identity.'
+            Assert-PrivatePacmanTest ($before.Digest -cne $after.Digest) 'Transient drift did not advance canonical change-time evidence.'
+            Assert-PrivatePacmanEqual $before.ContentDigest $after.ContentDigest 'Transient drift did not restore default-stream bytes.'
             $changeCount = @($evidence.Watchers | ForEach-Object { $_.Changes }).Count
             Assert-PrivatePacmanTest ($changeCount -gt 0) 'Transient drift emitted no watcher evidence.'
             Assert-PrivatePacmanTest (-not (Test-Path -LiteralPath $fixture.Layout.Root)) 'Drift failure left a private root.'
@@ -1259,28 +1292,26 @@ try {
 
     Invoke-PrivatePacmanTestCase -Name 'changes during the monitored before snapshot remain fatal' -Test {
         $fixture = New-PrivatePacmanFixture -Name 'before-snapshot-drift' -SuiteRoot $suiteRoot -RecorderPath $recorderPath
-        $bulk = Join-Path $fixture.ProtectedRoot 'bulk'
-        [void][IO.Directory]::CreateDirectory($bulk)
-        $bytes = [byte[]]::new(262144)
-        for ($index = 0; $index -lt 256; $index++) {
-            $bytes[0] = [byte]($index % 251)
-            [IO.File]::WriteAllBytes((Join-Path $bulk ("file-{0:D4}.bin" -f $index)), $bytes)
-        }
-
         $original = [IO.File]::ReadAllBytes($fixture.SharedFile)
-        $job = Start-PrivatePacmanFixtureJob -Fixture $fixture -Mode 'wait'
+        $barrierEntered = Join-Path $fixture.Base 'before-snapshot-entered'
+        $barrierRelease = Join-Path $fixture.Base 'before-snapshot-release'
+        $job = Start-PrivatePacmanFixtureJob `
+            -Fixture $fixture `
+            -Mode 'wait' `
+            -SnapshotBarrierRoot $fixture.ProtectedRoot `
+            -SnapshotBarrierEnteredPath $barrierEntered `
+            -SnapshotBarrierReleasePath $barrierRelease
         try {
-            $firstManifest = Join-Path $fixture.Layout.EvidenceDirectory 'protected-0-before.json'
             $protectedManifest = Join-Path $fixture.Layout.EvidenceDirectory 'protected-1-before.json'
-            Wait-PrivatePacmanPath -Path $firstManifest
+            Wait-PrivatePacmanPath -Path $barrierEntered
             Assert-PrivatePacmanTest `
                 (-not [IO.File]::Exists($protectedManifest)) `
-                'Protected before snapshot completed before the injected race.'
+                'Protected before snapshot escaped its deterministic test barrier.'
             for ($index = 0; $index -lt 3; $index++) {
                 [IO.File]::WriteAllText($fixture.SharedFile, "before-snapshot-drift-$index")
                 [IO.File]::WriteAllBytes($fixture.SharedFile, $original)
-                [Threading.Thread]::Sleep(10)
             }
+            [IO.File]::WriteAllText($barrierRelease, 'release')
 
             Wait-PrivatePacmanPath -Path $fixture.ReadyPath
             [IO.File]::WriteAllText($fixture.GoPath, 'go')
@@ -1305,6 +1336,9 @@ try {
         }
         finally {
             [IO.File]::WriteAllBytes($fixture.SharedFile, $original)
+            if (-not [IO.File]::Exists($barrierRelease)) {
+                [IO.File]::WriteAllText($barrierRelease, 'release')
+            }
             if (-not [IO.File]::Exists($fixture.GoPath)) {
                 [IO.File]::WriteAllText($fixture.GoPath, 'go')
             }

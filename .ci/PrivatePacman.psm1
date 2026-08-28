@@ -5,6 +5,7 @@ $script:OwnershipManifestSchema = 'private-pacman-package-ownership/v2'
 $script:OwnershipSignatureAlgorithm = 'ecdsa-p256-sha256'
 $script:CanonicalSharedRoot = 'C:\msys64'
 $script:OwnerFileName = '.private-pacman-owner.json'
+$script:TestSnapshotBarrier = $null
 $script:RequiredIsolationSwitches = @(
     '--root',
     '--dbpath',
@@ -42,6 +43,9 @@ namespace PrivatePacmanV2
     {
         public string OwnerSid { get; set; }
         public string SecurityDescriptorSddl { get; set; }
+        public long ChangeTimeFileTime { get; set; }
+        public uint FileAttributes { get; set; }
+        public string Identity { get; set; }
     }
 
     public static class NativePath
@@ -52,6 +56,7 @@ namespace PrivatePacmanV2
         private const uint FileShareRead = 0x00000001;
         private const uint FileShareWrite = 0x00000002;
         private const uint FileShareDelete = 0x00000004;
+        private const uint FileReadAttributes = 0x00000080;
         private const uint ReadControl = 0x00020000;
         private const uint OwnerSecurityInformation = 0x00000001;
         private const uint GroupSecurityInformation = 0x00000002;
@@ -73,6 +78,16 @@ namespace PrivatePacmanV2
             public uint NumberOfLinks;
             public uint FileIndexHigh;
             public uint FileIndexLow;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct FileBasicInformation
+        {
+            public long CreationTime;
+            public long LastAccessTime;
+            public long LastWriteTime;
+            public long ChangeTime;
+            public uint FileAttributes;
         }
 
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -105,6 +120,13 @@ namespace PrivatePacmanV2
         private static extern bool GetFileInformationByHandle(
             SafeFileHandle file,
             out ByHandleFileInformation information);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetFileInformationByHandleEx(
+            SafeFileHandle file,
+            int fileInformationClass,
+            out FileBasicInformation information,
+            uint bufferSize);
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern uint QueryDosDeviceW(
@@ -244,7 +266,7 @@ namespace PrivatePacmanV2
 
             using (SafeFileHandle handle = CreateFileW(
                 path,
-                ReadControl,
+                ReadControl | FileReadAttributes,
                 FileShareRead | FileShareWrite | FileShareDelete,
                 IntPtr.Zero,
                 OpenExisting,
@@ -255,6 +277,29 @@ namespace PrivatePacmanV2
                 {
                     throw new Win32Exception(Marshal.GetLastWin32Error(), "Unable to read security state: " + path);
                 }
+
+                FileBasicInformation basicInformation;
+                if (!GetFileInformationByHandleEx(
+                    handle,
+                    0,
+                    out basicInformation,
+                    (uint)Marshal.SizeOf(typeof(FileBasicInformation))))
+                {
+                    throw new Win32Exception(
+                        Marshal.GetLastWin32Error(),
+                        "Unable to read change-time state: " + path);
+                }
+
+                ByHandleFileInformation identityInformation;
+                if (!GetFileInformationByHandle(handle, out identityInformation))
+                {
+                    throw new Win32Exception(
+                        Marshal.GetLastWin32Error(),
+                        "Unable to read snapshot identity: " + path);
+                }
+                ulong fileIndex =
+                    ((ulong)identityInformation.FileIndexHigh << 32) |
+                    identityInformation.FileIndexLow;
 
                 IntPtr owner;
                 IntPtr group;
@@ -296,7 +341,13 @@ namespace PrivatePacmanV2
                         return new SecurityState
                         {
                             OwnerSid = owner == IntPtr.Zero ? null : new SecurityIdentifier(owner).Value,
-                            SecurityDescriptorSddl = Marshal.PtrToStringUni(stringDescriptor)
+                            SecurityDescriptorSddl = Marshal.PtrToStringUni(stringDescriptor),
+                            ChangeTimeFileTime = basicInformation.ChangeTime,
+                            FileAttributes = basicInformation.FileAttributes,
+                            Identity =
+                                identityInformation.VolumeSerialNumber.ToString("x8") +
+                                ":" +
+                                fileIndex.ToString("x16")
                         };
                     }
                     finally
@@ -866,10 +917,15 @@ function Get-PrivatePacmanSnapshotMetadata {
 
     $isReparse = ($Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
     $security = [PrivatePacmanV2.NativePath]::GetSecurityState($Path, $isReparse)
+    if ([uint32]$security.FileAttributes -ne [uint32][int64]$Attributes) {
+        throw "File attributes changed while snapshot metadata was captured: $Path"
+    }
     return [pscustomobject][ordered]@{
         Attributes = [int64]$Attributes
         OwnerSid = [string]$security.OwnerSid
         SecurityDescriptorSddl = [string]$security.SecurityDescriptorSddl
+        ChangeTimeFileTime = [int64]$security.ChangeTimeFileTime
+        Identity = [string]$security.Identity
         AlternateStreams = @()
     }
 }
@@ -909,6 +965,8 @@ function Get-PrivatePacmanTreeSnapshotCore {
             RootAttributes = $null
             RootOwnerSid = $null
             RootSecurityDescriptorSddl = $null
+            RootChangeTimeFileTime = $null
+            RootIdentity = $null
             RootAlternateStreams = @()
             Entries = @()
         }
@@ -919,6 +977,23 @@ function Get-PrivatePacmanTreeSnapshotCore {
     $rootMetadata = Get-PrivatePacmanSnapshotMetadata `
         -Path $root `
         -Attributes $rootAttributes
+    $testBarrier = $script:TestSnapshotBarrier
+    if ($null -ne $testBarrier -and
+        [StringComparer]::OrdinalIgnoreCase.Equals([string]$testBarrier.Root, $root)) {
+        $script:TestSnapshotBarrier = $null
+        [IO.File]::WriteAllText(
+            [string]$testBarrier.EnteredPath,
+            'entered',
+            [Text.UTF8Encoding]::new($false)
+        )
+        $deadline = [DateTime]::UtcNow.AddSeconds(120)
+        while (-not [IO.File]::Exists([string]$testBarrier.ReleasePath)) {
+            if ([DateTime]::UtcNow -ge $deadline) {
+                throw "Timed out at the private snapshot test barrier: $root"
+            }
+            [Threading.Thread]::Sleep(25)
+        }
+    }
     $excluded = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($relativePath in $ExcludeRelativePath) {
         [void]$excluded.Add($relativePath)
@@ -951,6 +1026,8 @@ function Get-PrivatePacmanTreeSnapshotCore {
                     Attributes = [int64]$attributes
                     OwnerSid = [string]$security.OwnerSid
                     SecurityDescriptorSddl = [string]$security.SecurityDescriptorSddl
+                    ChangeTimeFileTime = [int64]$security.ChangeTimeFileTime
+                    Identity = [string]$security.Identity
                     AlternateStreams = @('<not-enumerated-for-reparse-entry>')
                 }
             }
@@ -1008,6 +1085,8 @@ function Get-PrivatePacmanTreeSnapshotCore {
                 Attributes = $metadata.Attributes
                 OwnerSid = $metadata.OwnerSid
                 SecurityDescriptorSddl = $metadata.SecurityDescriptorSddl
+                ChangeTimeFileTime = $metadata.ChangeTimeFileTime
+                Identity = $metadata.Identity
                 AlternateStreams = $metadata.AlternateStreams
                 LinkType = if ($isReparse) { [string]$item.LinkType } else { $null }
                 RawTarget = $rawTarget
@@ -1041,6 +1120,8 @@ function Get-PrivatePacmanTreeSnapshotCore {
             Attributes = $rootMetadata.Attributes
             OwnerSid = $rootMetadata.OwnerSid
             SecurityDescriptorSddl = $rootMetadata.SecurityDescriptorSddl
+            ChangeTimeFileTime = $rootMetadata.ChangeTimeFileTime
+            Identity = $rootMetadata.Identity
             AlternateStreams = $rootMetadata.AlternateStreams
         } | ConvertTo-Json -Compress
     )
@@ -1053,6 +1134,8 @@ function Get-PrivatePacmanTreeSnapshotCore {
             Attributes = $entry.Attributes
             OwnerSid = $entry.OwnerSid
             SecurityDescriptorSddl = $entry.SecurityDescriptorSddl
+            ChangeTimeFileTime = $entry.ChangeTimeFileTime
+            Identity = $entry.Identity
             AlternateStreams = $entry.AlternateStreams
             LinkType = $entry.LinkType
             RawTarget = $entry.RawTarget
@@ -1069,6 +1152,8 @@ function Get-PrivatePacmanTreeSnapshotCore {
         RootAttributes = $rootMetadata.Attributes
         RootOwnerSid = $rootMetadata.OwnerSid
         RootSecurityDescriptorSddl = $rootMetadata.SecurityDescriptorSddl
+        RootChangeTimeFileTime = $rootMetadata.ChangeTimeFileTime
+        RootIdentity = $rootMetadata.Identity
         RootAlternateStreams = $rootMetadata.AlternateStreams
         Entries = $orderedEntries
     }
@@ -2438,6 +2523,8 @@ function Invoke-PrivatePacmanUpgrade {
                 RootAttributes = $snapshot.RootAttributes
                 RootOwnerSid = $snapshot.RootOwnerSid
                 RootSecurityDescriptorSddl = $snapshot.RootSecurityDescriptorSddl
+                RootChangeTimeFileTime = $snapshot.RootChangeTimeFileTime
+                RootIdentity = $snapshot.RootIdentity
                 AlternateDataStreams = 'forbidden'
                 Manifest = $fileName
                 IsCanonicalSharedRoot = $protectedEntry.IsCanonicalSharedRoot
@@ -2610,6 +2697,8 @@ function Invoke-PrivatePacmanUpgrade {
                         RootAttributes = $snapshot.RootAttributes
                         RootOwnerSid = $snapshot.RootOwnerSid
                         RootSecurityDescriptorSddl = $snapshot.RootSecurityDescriptorSddl
+                        RootChangeTimeFileTime = $snapshot.RootChangeTimeFileTime
+                        RootIdentity = $snapshot.RootIdentity
                         AlternateDataStreams = 'forbidden'
                         Manifest = $fileName
                         IsCanonicalSharedRoot = $protectedEntry.IsCanonicalSharedRoot

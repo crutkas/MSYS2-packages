@@ -44,7 +44,8 @@ The helper:
 - snapshots every protected tree by hashing each regular file's bytes and
   rejects every nested reparse entry before transaction state is admitted;
 - binds each root and entry's owner SID, group/DACL security descriptor SDDL,
-  and complete Windows attribute mask into the canonical digest and evidence;
+  complete Windows attribute mask, file identity, and filesystem change time
+  into the canonical digest and evidence;
 - watches security and attribute changes in addition to names, writes, and
   sizes, so restored metadata changes remain fatal even when final digests
   match;
@@ -91,9 +92,14 @@ pacman, or evidence storage with the caller's authority.
 
 `FileSystemWatcher` events supplement, but do not replace, full byte
 snapshots. A normal completed invocation requires both mechanisms to remain
-clean. If the owning PowerShell process crashes, watcher continuity is lost;
-recovery can remove only roots with matching internal and external ownership
-records and records the outcome as failed, never successful.
+clean. The canonical digest also binds filesystem change time, which ordinary
+content, ACL, attribute, and named-stream mutate/restore operations cannot
+restore; this remains fail-closed if watcher callback delivery is delayed. A
+private test barrier separately proves that a mutate/restore operation paused
+inside baseline capture is retained by the authoritative watcher. If the
+owning PowerShell process crashes, watcher continuity is lost; recovery can
+remove only roots with matching internal and external ownership records and
+records the outcome as failed, never successful.
 
 The canonical security evidence contains owner, group, and DACL state readable
 with `READ_CONTROL`. Audit SACL access requires `SeSecurityPrivilege` and is
@@ -233,16 +239,18 @@ argv completeness, repository absence, path aliases, drive mismatch,
 UNC/device/share paths, junctions, file symlinks, seed reparse points, atomic
 collisions, concurrent sentinel ownership, package/config/root locks,
 permanent and restored ACL/attribute drift, permanent and transient alternate
-data streams, transient protected-state races, child crashes, timeouts,
-parent-process crash recovery, and reparse-safe cleanup.
+data streams, transient protected-state races, a deterministic private
+snapshot barrier that injects mutation during baseline capture, child crashes,
+timeouts, parent-process crash recovery, and reparse-safe cleanup.
 
 The JSON report and logs expose `ExistedBefore`, `ExistedAfter`, entry counts,
 and pre/post content and canonical digests for a deterministic populated
 protected-root fixture. One native-boundary transaction protects the literal
 canonical `C:\msys64`; its transaction evidence and separate suite-level
 pre/post snapshot are reported. Remaining adversarial transactions substitute
-a small populated fixed-drive root by changing private module state only inside
-the test harness; the production command surface has no canonical-root
-override. This avoids repeatedly walking a hosted multi-gigabyte installation
-without weakening production behavior. An absent hosted-run root remains an
-explicit non-admission gate rather than evidence for a populated installation.
+a small populated fixed-drive root and one test uses a deterministic snapshot
+barrier by changing private module state only inside the test harness; the
+production command surface exposes neither override. This avoids repeatedly
+walking a hosted multi-gigabyte installation without weakening production
+behavior. An absent hosted-run root remains an explicit non-admission gate
+rather than evidence for a populated installation.
