@@ -17,15 +17,32 @@ import urllib.request
 from typing import Any, Mapping
 
 from policy_lib import (
+    ACQUISITION_MARKERS,
     APPROVED_ACTIONS,
+    CAPABILITY_VOCABULARY,
+    DANGEROUS_GIT_SUBCOMMANDS,
+    FORBIDDEN_PYTHON_BUILTINS,
+    FORBIDDEN_PYTHON_CALLS,
+    FORBIDDEN_PYTHON_MODULES,
+    MODELED_GIT_SUBCOMMANDS,
+    NETWORK_COMMANDS,
+    NETWORK_PYTHON_MODULES,
+    PACKAGE_COMMANDS,
+    PROCESS_PYTHON_MODULES,
+    SURFACE_CODES,
+    SURFACE_ORDER,
     PolicyError,
     REPOSITORY_RE,
     SHA1_RE,
+    SUBPROCESS_ENTRYPOINTS,
     TreeEntry,
     TreeManifest,
     assert_safe_diff,
     decode_github_blob,
     diff_manifests,
+    exact_equal,
+    is_exact_int,
+    is_positive_id,
     normalize_policy_path,
     parse_json_strict,
     parse_workflow_yaml,
@@ -35,12 +52,19 @@ from policy_lib import (
     validate_workflow_document,
     verify_artifact_lock,
     verify_release_lock,
+    verify_trusted_topology,
 )
 
 
 MAX_RESPONSE_BYTES = 64 * 1024 * 1024
 MAX_BLOB_BYTES = 4 * 1024 * 1024
 ALLOWED_PR_ACTIONS = {"opened", "synchronize", "reopened", "ready_for_review"}
+TRUSTED_GIT_PATHS = (
+    r"C:\Program Files\Git\cmd\git.exe",
+    r"C:\Program Files\Git\bin\git.exe",
+    r"C:\Program Files (x86)\Git\cmd\git.exe",
+    "/usr/bin/git",
+)
 
 
 class GitHubHttpError(PolicyError):
@@ -181,10 +205,106 @@ class BlobReader:
         return self.read(path, entry)[:length]
 
 
-def _run_git(checkout: pathlib.Path, *arguments: str) -> str:
+GIT_COMMANDS = {
+    "head": ("rev-parse", "--verify", "HEAD"),
+    "head-tree": ("rev-parse", "--verify", "HEAD^{tree}"),
+    "graph-blob": ("rev-parse", "--verify", "HEAD:.github/policy/approval-graph.json"),
+    "status": ("status", "--porcelain=v2", "--untracked-files=all"),
+    "origin": ("remote", "get-url", "origin"),
+}
+GIT_COMMAND_KEYS = frozenset(GIT_COMMANDS)
+# Git honours dozens of environment variables that redirect the repository,
+# inject configuration, or run arbitrary programs (GIT_DIR, GIT_WORK_TREE,
+# GIT_INDEX_FILE, GIT_CONFIG*, GIT_SSH*, GIT_PROXY_COMMAND, GIT_EXTERNAL_DIFF,
+# GIT_ALTERNATE_OBJECT_DIRECTORIES, core.fsmonitor, ...). The policy therefore
+# builds the child environment from scratch instead of filtering the parent's.
+GIT_ENVIRONMENT_ALLOWLIST = ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP")
+GIT_FORCED_ENVIRONMENT = {
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_TERMINAL_PROMPT": "0",
+    "GIT_OPTIONAL_LOCKS": "0",
+    "GIT_ATTR_NOSYSTEM": "1",
+    "GIT_NO_REPLACE_OBJECTS": "1",
+    "GIT_ALLOW_PROTOCOL": "none",
+    "HOME": "",
+    "XDG_CONFIG_HOME": "",
+    "USERPROFILE": "",
+    "HOMEDRIVE": "",
+    "HOMEPATH": "",
+    "LC_ALL": "C",
+}
+# Config that disables every remaining hook/command execution vector, applied on
+# the command line so no config file can override it.
+GIT_FORCED_CONFIG = (
+    "core.fsmonitor=",
+    "core.hooksPath=",
+    "core.askPass=",
+    "core.editor=false",
+    "core.pager=cat",
+    "core.sshCommand=",
+    "core.alternateRefsCommand=",
+    "core.symlinks=false",
+    "diff.external=",
+    "protocol.allow=never",
+    "uploadpack.packObjectsHook=",
+    "credential.helper=",
+    "safe.directory=*",
+    "gc.auto=0",
+    "advice.detachedHead=false",
+)
+
+
+def _git_executable() -> str:
+    """Resolve git to an absolute path under the trusted system root."""
+    override = os.environ.get("POLICY_GIT_EXECUTABLE")
+    candidates = [override] if override else list(TRUSTED_GIT_PATHS)
+    for candidate in candidates:
+        if candidate and os.path.isabs(candidate) and os.path.isfile(candidate):
+            return candidate
+    raise PolicyError(
+        "BASE_CHECKOUT_GIT",
+        "no absolute trusted git executable is available; refusing to resolve "
+        "git through PATH",
+    )
+
+
+def _git_environment() -> dict[str, str]:
+    environment = {
+        name: os.environ[name]
+        for name in GIT_ENVIRONMENT_ALLOWLIST
+        if name in os.environ
+    }
+    environment.update(GIT_FORCED_ENVIRONMENT)
+    # A deliberately minimal PATH: git must not discover helper programs.
+    system_root = environment.get("SYSTEMROOT") or environment.get("WINDIR") or ""
+    environment["PATH"] = (
+        os.pathsep.join([os.path.join(system_root, "System32"), system_root])
+        if system_root
+        else ""
+    )
+    # Forced configuration is supplied through the scrubbed environment rather
+    # than argv, so the command line stays a fixed literal. GIT_CONFIG_COUNT is
+    # authoritative here precisely because the environment was rebuilt from
+    # scratch; nothing the caller exported can add or renumber an entry.
+    for index, setting in enumerate(GIT_FORCED_CONFIG):
+        key, _, value = setting.partition("=")
+        environment[f"GIT_CONFIG_KEY_{index}"] = key
+        environment[f"GIT_CONFIG_VALUE_{index}"] = value
+    environment["GIT_CONFIG_COUNT"] = str(len(GIT_FORCED_CONFIG))
+    return environment
+
+
+def _run_git(checkout: pathlib.Path, command: str) -> str:
+    require(
+        command in GIT_COMMANDS,
+        "BASE_CHECKOUT_GIT",
+        f"unmodelled git command key {command!r}",
+    )
+    first, second, third = GIT_COMMANDS[command]
     try:
         completed = subprocess.run(
-            ["git", "-C", str(checkout), *arguments],
+            ["git", "-C", str(checkout), first, second, third],
+            executable=_git_executable(),
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -192,10 +312,13 @@ def _run_git(checkout: pathlib.Path, *arguments: str) -> str:
             encoding="utf-8",
             errors="strict",
             timeout=30,
+            env=_git_environment(),
+            cwd=str(checkout),
+            shell=False,
         )
     except (OSError, subprocess.SubprocessError, UnicodeError) as error:
         raise PolicyError(
-            "BASE_CHECKOUT_GIT", f"git {' '.join(arguments)} failed: {error}"
+            "BASE_CHECKOUT_GIT", f"git {command} failed: {error}"
         ) from error
     return completed.stdout.strip()
 
@@ -218,7 +341,7 @@ def verify_local_base(
         "BASE_CHECKOUT_HEAD",
         "expected base commit is not a lowercase SHA-1",
     )
-    origin = _run_git(checkout, "remote", "get-url", "origin")
+    origin = _run_git(checkout, "origin")
     require(
         origin
         in {
@@ -229,18 +352,18 @@ def verify_local_base(
         "local protected base origin changed",
     )
     require(
-        _run_git(checkout, "rev-parse", "--verify", "HEAD") == expected_commit,
+        _run_git(checkout, "head") == expected_commit,
         "BASE_CHECKOUT_HEAD",
         "local protected base HEAD changed",
     )
-    local_tree = _run_git(checkout, "rev-parse", "--verify", "HEAD^{tree}")
+    local_tree = _run_git(checkout, "head-tree")
     require(
         SHA1_RE.fullmatch(local_tree) is not None,
         "BASE_CHECKOUT_TREE",
         "local protected base tree is not a lowercase SHA-1",
     )
     require(
-        _run_git(checkout, "status", "--porcelain=v2", "--untracked-files=all") == "",
+        _run_git(checkout, "status") == "",
         "BASE_CHECKOUT_DIRTY",
         "local protected base is dirty",
     )
@@ -312,7 +435,7 @@ def validate_event(
     head_repository = head.get("repo")
     require(
         isinstance(head_repository, dict)
-        and isinstance(head_repository.get("id"), int)
+        and is_exact_int(head_repository.get("id"))
         and isinstance(head_repository.get("full_name"), str)
         and REPOSITORY_RE.fullmatch(head_repository["full_name"]) is not None,
         "EVENT_HEAD_REPOSITORY",
@@ -331,7 +454,7 @@ def validate_event(
     )
     number = pull.get("number") or event.get("number")
     require(
-        isinstance(number, int) and number > 0,
+        is_positive_id(number),
         "EVENT_PULL_REQUEST_NUMBER",
         "pull request number is invalid",
     )
@@ -346,82 +469,239 @@ def validate_event(
     }
 
 
+def _ruleset_detail(
+    api: HttpGitHubApi, repository: Mapping[str, Any], ruleset_id: int
+) -> Mapping[str, Any]:
+    require(
+        is_positive_id(ruleset_id),
+        "BOOTSTRAP_RULES",
+        "ruleset id is not an exact positive integer",
+    )
+    detail = api.get(f"/repos/{repository['full_name']}/rulesets/{ruleset_id}")
+    require(isinstance(detail, dict), "BOOTSTRAP_RULES", "ruleset shape changed")
+    return detail
+
+
+def _ruleset_is_authoritative(
+    detail: Mapping[str, Any], repository: Mapping[str, Any], model: Mapping[str, Any]
+) -> bool:
+    """A ruleset may carry authority only if every framing field is exact.
+
+    Enforcement must be active (never `disabled` or `evaluate`), the ruleset
+    must be sourced from this repository (an organization or inherited ruleset
+    is a different trust domain and is not modelled), it must target branches,
+    it must name exactly the protected ref with no wildcard and no exclusion,
+    and it must grant no bypass to anyone.
+    """
+    if detail.get("enforcement") != model["enforcement"]:
+        return False
+    if detail.get("target") != model["target"]:
+        return False
+    if detail.get("source_type") != model["source_type"]:
+        return False
+    if detail.get("source") != repository["full_name"]:
+        return False
+    bypass = detail.get("bypass_actors")
+    if bypass is None:
+        bypass = []
+    if not isinstance(bypass, list) or bypass:
+        return False
+    conditions = detail.get("conditions")
+    if not isinstance(conditions, dict):
+        return False
+    ref_name = conditions.get("ref_name")
+    if not isinstance(ref_name, dict):
+        return False
+    if not exact_equal(ref_name.get("include"), [model["ref"]]):
+        return False
+    exclude = ref_name.get("exclude")
+    if exclude is None:
+        exclude = []
+    if not exact_equal(exclude, []):
+        return False
+    if set(conditions) - {"ref_name"}:
+        return False
+    return True
+
+
+def _workflow_rule_matches(
+    rule: Mapping[str, Any], repository: Mapping[str, Any]
+) -> str | None:
+    """Exact commit SHA named by a well-formed `workflows` rule, else None."""
+    parameters = rule.get("parameters")
+    if not isinstance(parameters, dict):
+        return None
+    workflows = parameters.get("workflows")
+    if not isinstance(workflows, list) or len(workflows) != 1:
+        return None
+    entry = workflows[0]
+    if not isinstance(entry, dict):
+        return None
+    if set(entry) - {"repository_id", "path", "ref", "sha"}:
+        return None
+    if not is_exact_int(entry.get("repository_id")):
+        return None
+    if entry["repository_id"] != repository["id"]:
+        return None
+    if entry.get("path") != repository["required_workflow"]:
+        return None
+    if entry.get("ref") != repository["required_workflow_ref"]:
+        return None
+    sha = entry.get("sha")
+    # A null or short SHA would let the rule float to whatever master points at,
+    # which is exactly the authority a candidate could try to influence.
+    if not isinstance(sha, str) or SHA1_RE.fullmatch(sha) is None:
+        return None
+    return sha
+
+
+def _workflow_rule_is_anchored(
+    api: HttpGitHubApi,
+    repository: Mapping[str, Any],
+    sha: str,
+    protected_base_sha: str,
+    workflow_blob: str,
+) -> bool:
+    """The pinned commit must contain the exact approved workflow blob.
+
+    It must also be reachable from the protected base, so a rule cannot pin some
+    unrelated or abandoned commit that merely happens to exist.
+    """
+    try:
+        verify_trusted_topology(api, repository["full_name"], sha, protected_base_sha)
+        _, tree_sha = _commit_and_tree(api, repository["full_name"], sha)
+        manifest = _tree_manifest(api, repository["full_name"], tree_sha)
+        entry = manifest.assert_symlink_free_path(repository["required_workflow"])
+    except PolicyError:
+        return False
+    return entry.mode == "100644" and entry.sha == workflow_blob
+
+
 def verify_repository_rules(
     api: HttpGitHubApi,
     repository: Mapping[str, Any],
     branch: str,
     protected_base_sha: str,
+    workflow_blob: str | None = None,
 ) -> None:
+    model = repository["required_workflow_ruleset"]
     quoted_branch = urllib.parse.quote(branch, safe="")
-    rules = api.get(
-        f"/repos/{repository['full_name']}/rules/branches/{quoted_branch}"
-    )
+    rules = api.get(f"/repos/{repository['full_name']}/rules/branches/{quoted_branch}")
     require(isinstance(rules, list), "BOOTSTRAP_RULES", "rules API shape changed")
     rulesets = api.get_paginated(f"/repos/{repository['full_name']}/rulesets")
-    active_ruleset_ids = {
-        ruleset.get("id")
-        for ruleset in rulesets
-        if ruleset.get("enforcement") == "active"
-        and ruleset.get("target") == "branch"
-        and isinstance(ruleset.get("id"), int)
-    }
+    require(isinstance(rulesets, list), "BOOTSTRAP_RULES", "rulesets API shape changed")
+
+    authoritative: set[int] = set()
+    for summary in rulesets:
+        if not isinstance(summary, dict):
+            continue
+        ruleset_id = summary.get("id")
+        if not is_positive_id(ruleset_id):
+            continue
+        if summary.get("enforcement") != model["enforcement"]:
+            continue
+        if summary.get("target") != model["target"]:
+            continue
+        detail = _ruleset_detail(api, repository, ruleset_id)
+        if detail.get("id") != ruleset_id:
+            continue
+        if _ruleset_is_authoritative(detail, repository, model):
+            authoritative.add(ruleset_id)
+
     required_check = repository["required_check"]
     integration_id = repository["github_actions_integration_id"]
     dedicated_check = repository["dedicated_check"]
+    seen_types: dict[str, int] = {}
     has_pull_request_rule = False
     has_required_check = False
     has_required_workflow = False
     has_dedicated_check = False
+    has_non_fast_forward = False
+    has_deletion = False
+
     for rule in rules:
         if not isinstance(rule, dict):
             continue
-        if rule.get("ruleset_id") not in active_ruleset_ids:
+        if rule.get("ruleset_id") not in authoritative:
             continue
-        if rule.get("type") == "pull_request":
+        # An organization or inherited rule reaching this branch is a different
+        # trust domain; it is not modelled and must not contribute authority.
+        if rule.get("ruleset_source_type") not in {None, model["source_type"]}:
+            continue
+        if rule.get("ruleset_source") not in {None, repository["full_name"]}:
+            continue
+        rule_type = rule.get("type")
+        if not isinstance(rule_type, str):
+            continue
+        seen_types[rule_type] = seen_types.get(rule_type, 0) + 1
+
+        if rule_type == "pull_request":
             has_pull_request_rule = True
-        if rule.get("type") == "workflows":
-            workflows = rule.get("parameters", {}).get("workflows", [])
-            for workflow in workflows:
+        elif rule_type == "non_fast_forward":
+            has_non_fast_forward = True
+        elif rule_type == "deletion":
+            has_deletion = True
+        elif rule_type == "workflows":
+            sha = _workflow_rule_matches(rule, repository)
+            if sha is not None and workflow_blob is not None:
+                has_required_workflow = _workflow_rule_is_anchored(
+                    api, repository, sha, protected_base_sha, workflow_blob
+                )
+        elif rule_type == "required_status_checks":
+            parameters = rule.get("parameters")
+            if not isinstance(parameters, dict):
+                continue
+            if parameters.get("strict_required_status_checks_policy") is not True:
+                continue
+            checks = parameters.get("required_status_checks")
+            if not isinstance(checks, list):
+                continue
+            for check in checks:
+                if not isinstance(check, dict):
+                    continue
                 if (
-                    isinstance(workflow, dict)
-                    and workflow.get("repository_id") == repository["id"]
-                    and workflow.get("path") == repository["required_workflow"]
-                    and workflow.get("ref") == repository["required_workflow_ref"]
-                    and workflow.get("sha") in {None, protected_base_sha}
+                    check.get("context") == required_check
+                    and is_exact_int(check.get("integration_id"))
+                    and check.get("integration_id") == integration_id
                 ):
-                    has_required_workflow = True
-        if rule.get("type") != "required_status_checks":
-            continue
-        parameters = rule.get("parameters", {})
-        if parameters.get("strict_required_status_checks_policy") is not True:
-            continue
-        checks = parameters.get("required_status_checks", [])
-        for check in checks:
-            if (
-                isinstance(check, dict)
-                and check.get("context") == required_check
-                and check.get("integration_id") == integration_id
-            ):
-                has_required_check = True
-            if (
-                isinstance(check, dict)
-                and dedicated_check["integration_id"] is not None
-                and check.get("context") == dedicated_check["context"]
-                and check.get("integration_id")
-                == dedicated_check["integration_id"]
-            ):
-                has_dedicated_check = True
+                    has_required_check = True
+                if (
+                    dedicated_check["integration_id"] is not None
+                    and check.get("context") == dedicated_check["context"]
+                    and is_exact_int(check.get("integration_id"))
+                    and check.get("integration_id") == dedicated_check["integration_id"]
+                ):
+                    has_dedicated_check = True
+
+    duplicated = sorted(
+        name
+        for name, count in seen_types.items()
+        if count > 1 and name in set(model["required_rule_types"])
+    )
+    require(
+        not duplicated,
+        "BOOTSTRAP_RULES",
+        f"conflicting duplicate rules of type {duplicated}",
+    )
+
     require(
         has_pull_request_rule
         and has_required_check
+        and has_non_fast_forward
+        and has_deletion
         and (has_required_workflow or has_dedicated_check),
         "BOOTSTRAP_NOT_ACTIVATED",
-        "independent source admission and repository rules requiring the protected "
-        f"workflow {repository['required_workflow']!r}, or a dedicated non-Actions "
-        f"check {dedicated_check['context']!r}, plus strict diagnostic check "
-        f"{required_check!r} must be active after landing; an Actions-only named "
-        "check is spoofable, and required-workflow rules are currently unavailable "
-        "to user-owned repositories",
+        "activation requires an ACTIVE repository-sourced branch ruleset that "
+        f"targets exactly {model['ref']!r} with no bypass actors, blocks force "
+        "pushes and deletion, requires pull requests, requires the strict "
+        f"status check {required_check!r} from integration {integration_id}, and "
+        "either pins the exact workflow "
+        f"(repository {repository['id']}, path "
+        f"{repository['required_workflow']!r}, ref "
+        f"{repository['required_workflow_ref']!r}, exact commit SHA containing "
+        "the approved workflow blob) or supplies the dedicated non-Actions check "
+        f"{dedicated_check['context']!r}; a generic Actions-named status check is "
+        "spoofable and is never a substitute"
     )
 
 
@@ -515,6 +795,229 @@ def verify_live_identity(
     return base_manifest, candidate_manifest
 
 
+def _python_surfaces(path: str, source: str, active: bool) -> set[str]:
+    """Derive the capability surfaces a Python helper actually exercises."""
+    try:
+        syntax = ast.parse(source, filename=path)
+    except SyntaxError as error:
+        raise PolicyError("HELPER_SYNTAX", f"{path}: {error}") from error
+
+    modules: set[str] = set()
+    # Names bound by `from X import Y [as Z]` -> the fully qualified target.
+    bound: dict[str, str] = {}
+    for node in ast.walk(syntax):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                modules.add(alias.name)
+                bound[alias.asname or alias.name.split(".")[0]] = alias.name
+        elif isinstance(node, ast.ImportFrom):
+            if node.module is None:
+                raise PolicyError(
+                    "HELPER_DYNAMIC_EXECUTION", f"{path} uses a relative import"
+                )
+            modules.add(node.module)
+            for alias in node.names:
+                bound[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+
+    for module in modules:
+        root = module.split(".")[0]
+        require(
+            root not in FORBIDDEN_PYTHON_MODULES,
+            "HELPER_DYNAMIC_EXECUTION",
+            f"{path} imports the unmodelled module {module}",
+        )
+
+    surfaces: set[str] = set()
+    if any(
+        module == name or module.startswith(name + ".")
+        for module in modules
+        for name in NETWORK_PYTHON_MODULES
+    ):
+        surfaces.add("github-api-read")
+    if any(
+        module == name or module.startswith(name + ".")
+        for module in modules
+        for name in PROCESS_PYTHON_MODULES
+    ):
+        surfaces.add("git-read-local")
+
+    if not active:
+        return surfaces
+
+    def qualified(func: ast.expr) -> str:
+        parts: list[str] = []
+        current: ast.expr | None = func
+        while isinstance(current, ast.Attribute):
+            parts.append(current.attr)
+            current = current.value
+        if isinstance(current, ast.Name):
+            parts.append(bound.get(current.id, current.id))
+        parts.reverse()
+        return ".".join(parts)
+
+    for node in ast.walk(syntax):
+        if isinstance(node, ast.Call):
+            name = qualified(node.func)
+            if isinstance(node.func, ast.Name):
+                resolved = bound.get(node.func.id, node.func.id)
+                require(
+                    resolved not in FORBIDDEN_PYTHON_CALLS
+                    and node.func.id not in FORBIDDEN_PYTHON_BUILTINS,
+                    "HELPER_DYNAMIC_EXECUTION",
+                    f"{path} uses {node.func.id}",
+                )
+            else:
+                require(
+                    name not in FORBIDDEN_PYTHON_CALLS,
+                    "HELPER_DYNAMIC_EXECUTION",
+                    f"{path} uses {name}",
+                )
+            leaf = name.rsplit(".", 1)[-1]
+            if leaf == "_run_git":
+                require(
+                    len(node.args) >= 2
+                    and isinstance(node.args[1], ast.Constant)
+                    and node.args[1].value in GIT_COMMAND_KEYS,
+                    "HELPER_GIT_UNMODELED",
+                    f"{path} passes a dynamic or unmodelled Git command key",
+                )
+            if name.split(".")[0] == "subprocess" or name in SUBPROCESS_ENTRYPOINTS:
+                surfaces.add("git-read-local")
+                _assert_subprocess_command(path, node)
+        elif isinstance(node, ast.Attribute):
+            if node.attr in {"__globals__", "__builtins__", "__subclasses__", "__class__"}:
+                raise PolicyError(
+                    "HELPER_DYNAMIC_EXECUTION",
+                    f"{path} reaches through {node.attr}",
+                )
+    return surfaces
+
+
+def _assert_subprocess_command(path: str, node: ast.Call) -> None:
+    """A subprocess invocation must be a literal, fully modelled git read."""
+    require(node.args, "HELPER_PROCESS_COMMAND", path)
+    command = node.args[0]
+    require(
+        isinstance(command, (ast.List, ast.Tuple)),
+        "HELPER_PROCESS_COMMAND",
+        f"{path} invokes a constructed subprocess command",
+    )
+    require(
+        not any(isinstance(element, ast.Starred) for element in command.elts),
+        "HELPER_PROCESS_COMMAND",
+        f"{path} splats unmodelled arguments into a subprocess command",
+    )
+    require(
+        command.elts
+        and isinstance(command.elts[0], ast.Constant)
+        and command.elts[0].value == "git",
+        "HELPER_PROCESS_COMMAND",
+        f"{path} invokes a non-Git or constructed subprocess",
+    )
+    literals = [
+        element.value
+        for element in command.elts
+        if isinstance(element, ast.Constant) and isinstance(element.value, str)
+    ]
+    dangerous = [value for value in literals if value in DANGEROUS_GIT_SUBCOMMANDS]
+    require(
+        not dangerous,
+        "HELPER_GIT_UNMODELED",
+        f"{path} invokes git {dangerous!r}",
+    )
+    for keyword in node.keywords:
+        require(
+            keyword.arg != "shell"
+            or not isinstance(keyword.value, ast.Constant)
+            or keyword.value.value is not True,
+            "HELPER_PROCESS_SHELL",
+            f"{path} enables subprocess shell execution",
+        )
+        require(
+            keyword.arg != "env"
+            or isinstance(keyword.value, (ast.Dict, ast.Name))
+            or (
+                isinstance(keyword.value, ast.Call)
+                and isinstance(keyword.value.func, ast.Name)
+            ),
+            "HELPER_PROCESS_COMMAND",
+            f"{path} passes an unmodelled subprocess environment",
+        )
+        require(
+            keyword.arg != "env"
+            or not isinstance(keyword.value, ast.Attribute),
+            "HELPER_PROCESS_COMMAND",
+            f"{path} inherits the ambient environment into a subprocess",
+        )
+    require(
+        any(keyword.arg == "env" for keyword in node.keywords),
+        "HELPER_PROCESS_COMMAND",
+        f"{path} runs a subprocess without an explicit scrubbed environment",
+    )
+
+
+def _powershell_surfaces(path: str, source: str) -> set[str]:
+    """Derive the capability surfaces a PowerShell helper actually exercises."""
+    text = source.casefold()
+    words = set(re.findall(r"[a-z][a-z0-9_.-]*", text))
+
+    denied = words & (NETWORK_COMMANDS | {"invoke-webrequest", "invoke-restmethod"})
+    require(
+        not denied,
+        "HELPER_NETWORK_UNMODELED",
+        f"{path} references network commands {sorted(denied)}",
+    )
+    packages = words & PACKAGE_COMMANDS
+    require(
+        not packages,
+        "HELPER_PACKAGE_UNMODELED",
+        f"{path} references package commands {sorted(packages)}",
+    )
+    marker = next((item for item in ACQUISITION_MARKERS if item in text), None)
+    require(
+        marker is None,
+        "HELPER_NETWORK_UNMODELED",
+        f"{path} references the acquisition surface {marker!r}",
+    )
+    dynamic = words & {
+        "invoke-expression",
+        "iex",
+        "invoke-command",
+        "icm",
+        "new-object",
+        "add-type",
+        "start-process",
+    }
+    require(
+        not dynamic,
+        "HELPER_DYNAMIC_EXECUTION",
+        f"{path} uses dynamic execution {sorted(dynamic)}",
+    )
+    for subcommand in DANGEROUS_GIT_SUBCOMMANDS:
+        require(
+            re.search(rf"git[^\n]{{0,64}}?(?<![a-z0-9-]){re.escape(subcommand)}(?![a-z0-9-])", text)
+            is None,
+            "HELPER_GIT_UNMODELED",
+            f"{path} references git {subcommand}",
+        )
+
+    surfaces: set[str] = set()
+    if re.search(r"(?<![a-z0-9_])git(?:\.exe)?(?![a-z0-9_-])", text):
+        surfaces.add("git-read-local")
+    if re.search(r"\[(?:system\.)?io\.", text) or "[io.path]" in text:
+        surfaces.add("dotnet-filesystem")
+    if (
+        "security.accesscontrol" in text
+        or "security.principal" in text
+        or "get-acl" in text
+        or "set-acl" in text
+    ):
+        surfaces.add("dotnet-acl")
+    if "gettype(" in text or "getmethod(" in text or ".invoke(" in text:
+        surfaces.add("dotnet-reflection")
+    return surfaces
+
+
 def _helper_capabilities(
     path: str, content: bytes, capabilities: set[str], active: bool
 ) -> None:
@@ -522,141 +1025,47 @@ def _helper_capabilities(
         source = content.decode("utf-8")
     except UnicodeDecodeError as error:
         raise PolicyError("HELPER_ENCODING", f"{path} is not UTF-8") from error
-    text = source.casefold()
-    if path.endswith(".py"):
-        try:
-            syntax = ast.parse(source, filename=path)
-        except SyntaxError as error:
-            raise PolicyError("HELPER_SYNTAX", f"{path}: {error}") from error
-        imported_modules = {
-            alias.name
-            for node in ast.walk(syntax)
-            if isinstance(node, ast.Import)
-            for alias in node.names
-        }
-        imported_modules.update(
-            node.module
-            for node in ast.walk(syntax)
-            if isinstance(node, ast.ImportFrom) and node.module is not None
-        )
-        has_network = any(
-            module == "requests"
-            or module.startswith("requests.")
-            or module == "urllib"
-            or module.startswith("urllib.")
-            or module == "http.client"
-            for module in imported_modules
-        )
-        has_process = any(
-            module == "subprocess" or module.startswith("subprocess.")
-            for module in imported_modules
-        )
-        has_package = False
-        has_git_acquisition = False
-        if active:
-            for node in ast.walk(syntax):
-                if not isinstance(node, ast.Call):
-                    continue
-                function_name = None
-                if isinstance(node.func, ast.Name):
-                    function_name = node.func.id
-                elif isinstance(node.func, ast.Attribute):
-                    function_name = node.func.attr
-                is_dynamic_builtin = (
-                    isinstance(node.func, ast.Name)
-                    and function_name in {"eval", "exec", "compile", "__import__"}
-                )
-                is_dynamic_process = (
-                    isinstance(node.func, ast.Attribute)
-                    and function_name in {"system", "popen"}
-                    and isinstance(node.func.value, ast.Name)
-                    and node.func.value.id in {"os", "subprocess"}
-                )
-                require(
-                    not (is_dynamic_builtin or is_dynamic_process),
-                    "HELPER_DYNAMIC_EXECUTION",
-                    f"{path} uses {function_name}",
-                )
-                if function_name == "_run_git":
-                    require(
-                        len(node.args) >= 2
-                        and isinstance(node.args[1], ast.Constant)
-                        and node.args[1].value
-                        in {"rev-parse", "status", "remote"},
-                        "HELPER_GIT_UNMODELED",
-                        f"{path} passes a dynamic or unsafe Git subcommand",
-                    )
-                if (
-                    isinstance(node.func, ast.Attribute)
-                    and isinstance(node.func.value, ast.Name)
-                    and node.func.value.id == "subprocess"
-                ):
-                    require(node.args, "HELPER_PROCESS_COMMAND", path)
-                    command = node.args[0]
-                    require(
-                        isinstance(command, (ast.List, ast.Tuple))
-                        and command.elts
-                        and isinstance(command.elts[0], ast.Constant)
-                        and command.elts[0].value == "git",
-                        "HELPER_PROCESS_COMMAND",
-                        f"{path} invokes a non-Git or constructed subprocess",
-                    )
-                    for keyword in node.keywords:
-                        require(
-                            keyword.arg != "shell"
-                            or not isinstance(keyword.value, ast.Constant)
-                            or keyword.value.value is not True,
-                            "HELPER_PROCESS_SHELL",
-                            f"{path} enables subprocess shell execution",
-                        )
-    else:
-        has_network = any(
-            marker in text
-            for marker in (
-                "invoke-webrequest",
-                "invoke-restmethod",
-                "curl ",
-                "wget ",
-            )
-        )
-        has_package = any(
-            marker in text
-            for marker in (
-                "pip install",
-                "pipx install",
-                "npm install",
-                "pacman ",
-                "apt-get ",
-            )
-        )
-        has_git_acquisition = any(
-            marker in text
-            for marker in ("git fetch", "git clone", "git checkout")
-        )
-        has_process = bool(re.search(r"(?im)(?:^|[;&|]\s*)&?\s*git(?:\.exe)?\b", text))
 
-    if has_network:
+    unknown = capabilities - CAPABILITY_VOCABULARY
+    require(
+        not unknown,
+        "HELPER_CAPABILITY_UNKNOWN",
+        f"{path} declares capabilities outside the vocabulary: {sorted(unknown)}",
+    )
+
+    if "legacy-disabled" in capabilities:
         require(
-            "github-api-read" in capabilities or "legacy-disabled" in capabilities,
-            "HELPER_NETWORK_UNMODELED",
-            path,
-        )
-    if has_process:
-        require(
-            "git-read-local" in capabilities or "legacy-disabled" in capabilities,
-            "HELPER_PROCESS_UNMODELED",
-            path,
-        )
-    if has_package:
-        require("legacy-disabled" in capabilities, "HELPER_PACKAGE_UNMODELED", path)
-    if has_git_acquisition:
-        require("legacy-disabled" in capabilities, "HELPER_GIT_UNMODELED", path)
-    if active:
-        require(
-            "legacy-disabled" not in capabilities,
+            not active,
             "HELPER_LEGACY_ACTIVE",
             f"{path} is disabled legacy code but has an active consumer",
         )
+        return
+
+    if path.endswith((".py",)):
+        surfaces = _python_surfaces(path, source, active)
+    elif path.endswith((".ps1", ".psm1", ".psd1")):
+        surfaces = _powershell_surfaces(path, source)
+    else:
+        surfaces = set()
+        require(
+            not capabilities,
+            "HELPER_CAPABILITY_UNMODELED",
+            f"{path} is inert data but declares {sorted(capabilities)}",
+        )
+
+    undeclared = surfaces - capabilities
+    if undeclared:
+        surface = sorted(undeclared, key=lambda item: SURFACE_ORDER.index(item))[0]
+        raise PolicyError(
+            SURFACE_CODES[surface],
+            f"{path} exercises the undeclared surface {surface!r}",
+        )
+    dormant = capabilities - surfaces
+    require(
+        not dormant,
+        "HELPER_CAPABILITY_DORMANT",
+        f"{path} declares unused surfaces {sorted(dormant)}",
+    )
 
 
 def verify_approval_surface(
@@ -873,12 +1282,7 @@ def collect(arguments: argparse.Namespace) -> dict[str, Any]:
         "BASE_TREE_ENV",
         "base tree from the root guard changed",
     )
-    local_graph_blob = _run_git(
-        checkout,
-        "rev-parse",
-        "--verify",
-        "HEAD:.github/policy/approval-graph.json",
-    )
+    local_graph_blob = _run_git(checkout, "graph-blob")
     require(
         SHA1_RE.fullmatch(local_graph_blob) is not None,
         "GRAPH_BASE_BINDING",
@@ -917,6 +1321,7 @@ def collect(arguments: argparse.Namespace) -> dict[str, Any]:
         graph["repository"],
         graph["repository"]["default_branch"],
         event_info["base_sha"],
+        graph["workflows"][graph["repository"]["required_workflow"]]["blob"],
     )
     base_manifest, candidate_manifest = verify_live_identity(api, graph, event_info)
     require(

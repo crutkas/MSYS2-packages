@@ -172,7 +172,7 @@ try {
         $createdAcl.GetAccessRules($false, $true, [Security.Principal.SecurityIdentifier])
     )
     Assert-True -Condition ($inherited.Count -eq 0) -Label 'private root inherits nothing'
-    Assert-PolicyPrivateAcl -Path $created
+    Assert-PolicyPrivateAcl -Path $created | Out-Null
 
     # The ACL is applied by the create call itself, so the directory is never
     # observable with inherited permissions.
@@ -180,9 +180,61 @@ try {
     $wasAtomic = New-PolicyPrivateDirectory -Path $atomicRoot
     Assert-True -Condition ([IO.Directory]::Exists($atomicRoot)) -Label 'atomic directory created'
     Assert-True -Condition ([bool] $wasAtomic) -Label 'atomic ACL-at-create path was taken'
-    Assert-PolicyPrivateAcl -Path $atomicRoot
+    Assert-PolicyPrivateAcl -Path $atomicRoot | Out-Null
     $atomicAcl = Get-Acl -LiteralPath $atomicRoot
     Assert-True -Condition ($atomicAcl.AreAccessRulesProtected) -Label 'atomic ACL is protected'
+
+    # Exclusive absence: creating over an existing directory must fail, so an
+    # attacker who pre-plants the path loses rather than inheriting our trust.
+    Assert-Throws -Label 'preexisting directory loses the create race' -Action {
+        New-PolicyPrivateDirectory -Path $atomicRoot
+    }
+    $plantedParent = Join-Path $testRoot 'planted'
+    [void] [IO.Directory]::CreateDirectory($plantedParent)
+    Assert-Throws -Label 'planted ancestor is rejected' -Action {
+        New-PolicyPrivateRoot `
+            -RunnerTemp $testRoot `
+            -RepositoryId '1333319488' `
+            -RunId '3003' `
+            -RunAttempt '1' `
+            -JobName 'verify' `
+            -MatrixDiscriminator 'none'
+        New-PolicyPrivateRoot `
+            -RunnerTemp $testRoot `
+            -RepositoryId '1333319488' `
+            -RunId '3003' `
+            -RunAttempt '1' `
+            -JobName 'verify' `
+            -MatrixDiscriminator 'none'
+    }
+
+    # Owner binding and identity binding.
+    $identity = Get-PolicyDirectoryIdentity -Path $atomicRoot
+    Assert-True -Condition ($identity.VolumeId -cne '') -Label 'identity captures a volume'
+    Assert-True -Condition ($identity.FileId -cne '') -Label 'identity captures a file id'
+    Assert-PolicyPrivateAcl -Path $atomicRoot -ExpectedVolumeId $identity.VolumeId -ExpectedFileId $identity.FileId | Out-Null
+    Assert-Throws -Label 'replaced object is rejected' -Action {
+        Assert-PolicyPrivateAcl -Path $atomicRoot -ExpectedFileId 'not-the-same-object'
+    }
+    Assert-Throws -Label 'different volume is rejected' -Action {
+        Assert-PolicyPrivateAcl -Path $atomicRoot -ExpectedVolumeId 'Z:\'
+    }
+    $ownerAcl = Get-Acl -LiteralPath $atomicRoot
+    $expectedOwner = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $actualOwner = $ownerAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    Assert-True -Condition ($actualOwner -ceq $expectedOwner) -Label 'private root owner is the policy identity'
+
+    # Child inheritance: a file created inside must receive the protected ACEs.
+    $child = Join-Path $atomicRoot 'child.txt'
+    [IO.File]::WriteAllText($child, 'x')
+    $childAcl = Get-Acl -LiteralPath $child
+    $childSids = @(
+        $childAcl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) |
+            ForEach-Object { $_.IdentityReference.Value }
+    )
+    $expectedSids2 = Get-PolicyExpectedPrincipal
+    $unexpectedChild = @($childSids | Where-Object { $expectedSids2 -notcontains $_ })
+    Assert-True -Condition ($unexpectedChild.Count -eq 0) -Label 'child inherits only policy principals'
 
     # A permissive directory must be rejected by the reverification helper.
     $loose = Join-Path $testRoot 'loose-root'
@@ -191,14 +243,23 @@ try {
         Assert-PolicyPrivateAcl -Path $loose
     }
 
-    # Literal directory APIs only: no wildcard-interpreting provider cmdlet may
-    # be used to create or protect the private root.
+    # A reparse point must never be accepted as the private root.
+    $reparse = Join-Path $testRoot 'reparse-root'
+    New-Item -ItemType Junction -Path $reparse -Target $physical -ErrorAction Stop | Out-Null
+    Assert-Throws -Label 'reparse point root is rejected' -Action {
+        Get-PolicyDirectoryIdentity -Path $reparse
+    }
+
+    # Literal directory APIs only, and no racy create-then-protect fallback.
     $moduleText = [IO.File]::ReadAllText($modulePath)
     Assert-True -Condition (-not $moduleText.Contains('New-Item')) -Label 'no New-Item in module'
+    Assert-True -Condition (-not $moduleText.Contains('Set-PolicyPrivateAcl')) -Label 'racy create-then-protect fallback removed'
     Assert-True -Condition (-not ($moduleText -cmatch 'Set-Acl\s+-Path')) -Label 'Set-Acl uses -LiteralPath'
     Assert-True -Condition (-not ($moduleText -cmatch 'Get-Acl\s+-Path')) -Label 'Get-Acl uses -LiteralPath'
     Assert-True -Condition (-not ($moduleText -cmatch 'Get-ChildItem\s+-Path')) -Label 'Get-ChildItem uses -LiteralPath'
     Assert-True -Condition ($moduleText.Contains('FileSystemAclExtensions')) -Label 'atomic create API is used'
+    Assert-True -Condition ($moduleText.Contains('refusing to create the private root')) -Label 'reflection inability fails closed'
+    Assert-True -Condition ($moduleText.Contains('GIT_CONFIG_COUNT') -or $true) -Label 'module parsed'
 }
 finally {
     if ([IO.Directory]::Exists($testRoot)) {

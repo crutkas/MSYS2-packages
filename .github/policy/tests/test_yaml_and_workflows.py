@@ -15,6 +15,10 @@ from policy_lib import (  # noqa: E402
     PolicyError,
     StrictYamlParser,
     exact_equal,
+    is_exact_int,
+    is_nonnegative_size,
+    is_positive_id,
+    parse_json_strict,
     parse_workflow_yaml,
     references_github_token,
     references_secret,
@@ -223,6 +227,20 @@ class SecretExpressionTests(PolicyTestCase):
             with self.subTest(value=value):
                 self.assertFalse(references_secret(value), value)
 
+    def test_function_indirected_secret_expressions_are_detected(self):
+        cases = (
+            "${{ toJSON(secrets) }}",
+            "${{ toJson(secrets) }}",
+            "${{ fromJSON(toJSON(secrets)).DEPLOY_TOKEN }}",
+            "${{ format('{0}', toJSON(secrets)) }}",
+            "${{ join(secrets, ',') }}",
+            "${{ toJSON( secrets ) }}",
+            "${{ TOJSON(SECRETS) }}",
+        )
+        for value in cases:
+            with self.subTest(value=value):
+                self.assertTrue(references_secret(value), value)
+
 
 class GithubTokenExpressionTests(PolicyTestCase):
     def test_token_variants_are_detected(self):
@@ -252,10 +270,39 @@ class GithubTokenExpressionTests(PolicyTestCase):
             "${{ github_token }}",
             "github.token",
             "a token for github",
+            "${{ github.repository }}",
+            "${{ github.api_url }}",
+            "${{ github.repository_id }}",
+            "${{ github.run_id }}",
+            "${{ github.run_attempt }}",
+            "${{ github.job }}",
+            "${{ github.event.pull_request.base.sha }}",
         )
         for value in cases:
             with self.subTest(value=value):
                 self.assertFalse(references_github_token(value), value)
+
+    def test_whole_context_serialization_exposes_the_token(self):
+        cases = (
+            "${{ toJSON(github) }}",
+            "${{ toJson( github ) }}",
+            "${{ fromJSON(toJSON(github)).token }}",
+            "${{ format('{0}', github) }}",
+            "${{ TOJSON(GITHUB) }}",
+        )
+        for value in cases:
+            with self.subTest(value=value):
+                self.assertTrue(references_github_token(value), value)
+
+    def test_conservation_holds_for_indirected_forms(self):
+        from policy_lib import count_github_token_references
+
+        document = {"env": {"A": "${{ toJSON(github) }}", "B": "${{ github.token }}"}}
+        self.assertEqual(count_github_token_references(document), 2)
+        self.assertEqual(
+            count_github_token_references(document["env"]),
+            count_github_token_references(document),
+        )
 
 
 class WorkflowSemanticTests(PolicyTestCase):
@@ -832,12 +879,121 @@ class RunScriptScannerTests(PolicyTestCase):
         )
         self.assertEqual(scan_run_script(script), {".github/policy/validator.py"})
 
-    def test_unapproved_interpolation_in_a_command_target_is_denied(self):
-        self.assert_denied(
-            '& "$env:ATTACKER\\payload.ps1"\n', "DYNAMIC_EXECUTION"
+    def test_call_operator_target_must_be_a_canonical_anchored_helper(self):
+        cases = {
+            "bare-name": '& "notepad"\n',
+            "drive-absolute": '& "C:\\tools\\attacker.ps1"\n',
+            "unc": '& "\\\\server\\share\\attacker.ps1"\n',
+            "unc-github": '& "\\\\server\\share\\.github\\policy\\x.ps1"\n',
+            "device": '& "\\\\?\\C:\\.github\\policy\\x.ps1"\n',
+            "traversal": (
+                '& "$env:GITHUB_WORKSPACE\\protected-base'
+                '\\.github\\..\\..\\attacker.ps1"\n'
+            ),
+            "dot-component": (
+                '& "$env:GITHUB_WORKSPACE\\protected-base\\.github\\.\\x.ps1"\n'
+            ),
+            "ads": (
+                '& "$env:GITHUB_WORKSPACE\\protected-base'
+                '\\.github\\policy\\private-root.ps1:evil"\n'
+            ),
+            "trailing-dot": (
+                '& "$env:GITHUB_WORKSPACE\\protected-base'
+                '\\.github\\policy\\private-root.ps1."\n'
+            ),
+            "interpreter-prefix": (
+                '& "cmd /c $env:GITHUB_WORKSPACE\\protected-base'
+                '\\.github\\policy\\private-root.ps1"\n'
+            ),
+            "wrong-anchor": '& "$env:GITHUB_WORKSPACE\\.github\\policy\\x.ps1"\n',
+            "substring-anchor": (
+                '& "$env:GITHUB_WORKSPACE\\protected-base-evil'
+                '\\.github\\policy\\x.ps1"\n'
+            ),
+            "outside-roots": (
+                '& "$env:GITHUB_WORKSPACE\\protected-base\\tools\\x.ps1"\n'
+            ),
+            "mixed-separators": (
+                '& "$env:GITHUB_WORKSPACE\\protected-base/.github\\policy\\x.ps1"\n'
+            ),
+            "no-file": '& "$env:GITHUB_WORKSPACE\\protected-base\\.github"\n',
+        }
+        for label, script in cases.items():
+            with self.subTest(label=label):
+                self.assert_denied(script)
+
+    def test_control_path_cannot_appear_outside_an_anchored_reference(self):
+        script = (
+            'python -B "$env:GITHUB_WORKSPACE\\protected-base'
+            '\\.github\\policy\\validator.py" --note C:\\.github\\policy\\evil.py\n'
         )
-        self.assert_denied(
-            'python -B "$env:ATTACKER"\n', "DYNAMIC_EXECUTION"
+        self.assert_denied(script, "COMMAND_UNMODELED")
+
+    def test_canonical_anchored_helper_is_accepted(self):
+        script = (
+            '& "$env:GITHUB_WORKSPACE\\protected-base'
+            '\\.github\\policy\\private-root.ps1"\n'
+        )
+        self.assertEqual(scan_run_script(script), {".github/policy/private-root.ps1"})
+
+    def test_unapproved_interpolation_in_a_command_target_is_denied(self):
+        self.assert_denied('& "$env:ATTACKER\\payload.ps1"\n', "DYNAMIC_EXECUTION")
+        self.assert_denied('python -B "$env:ATTACKER"\n', "DYNAMIC_EXECUTION")
+
+
+class StrictJsonTests(PolicyTestCase):
+    def test_non_json_constants_are_rejected(self):
+        for text in (
+            '{"a": NaN}',
+            '{"a": Infinity}',
+            '{"a": -Infinity}',
+            '[NaN]',
+            '{"a": {"b": [1, Infinity]}}',
+        ):
+            with self.subTest(text=text):
+                self.assert_policy_error(
+                    "JSON_CONSTANT", lambda text=text: parse_json_strict(text)
+                )
+
+    def test_duplicate_keys_still_reject(self):
+        self.assert_policy_error(
+            "JSON_DUPLICATE_KEY", lambda: parse_json_strict('{"a": 1, "a": 2}')
+        )
+
+    def test_ordinary_json_still_parses(self):
+        self.assertEqual(parse_json_strict('{"a": [1, true, null]}'), {"a": [1, True, None]})
+
+
+class ExactIntegerTests(PolicyTestCase):
+    def test_bool_is_never_an_integer_id(self):
+        for value in (True, False):
+            with self.subTest(value=value):
+                self.assertFalse(is_exact_int(value))
+                self.assertFalse(is_positive_id(value))
+                self.assertFalse(is_nonnegative_size(value))
+
+    def test_real_integers_are_accepted(self):
+        self.assertTrue(is_exact_int(0))
+        self.assertTrue(is_positive_id(1))
+        self.assertTrue(is_nonnegative_size(0))
+        self.assertFalse(is_positive_id(0))
+        self.assertFalse(is_nonnegative_size(-1))
+
+    def test_floats_and_strings_are_not_integers(self):
+        for value in (1.0, "1", None, [1]):
+            with self.subTest(value=value):
+                self.assertFalse(is_exact_int(value))
+
+    def test_graph_repository_id_rejects_bool(self):
+        graph = copy.deepcopy(self.graph_snapshot())
+        graph["repository"]["id"] = True
+        self.assert_policy_error(
+            "GRAPH_REPOSITORY", lambda: validate_approval_graph(graph)
+        )
+
+    def graph_snapshot(self):
+        return json.loads(
+            (POLICY_DIR / "approval-graph.json").read_text(encoding="utf-8")
         )
 
 

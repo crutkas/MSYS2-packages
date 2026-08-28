@@ -247,6 +247,125 @@ class ManifestTests(unittest.TestCase):
                     lambda path, entry, length: b"ordinary package metadata\n",
                 )
 
+    def test_windows_trailing_dot_and_space_forms_are_classified(self):
+        # Win32 strips trailing dots and spaces, so "evil.ps1." opens "evil.ps1".
+        for spelling in (
+            "package/evil.ps1.",
+            "package/evil.ps1 ",
+            "package/evil.ps1...",
+            "package/evil.PS1.",
+            "package/Makefile.",
+            "package/CMakeLists.txt ",
+        ):
+            with self.subTest(path=spelling):
+                base = manifest(TREE_A)
+                candidate = manifest(TREE_B, blob(spelling, mode="100644"))
+                _, error = self.assert_diff_denied(base, candidate)
+                self.assertEqual(error.code, "EXECUTABLE_SURFACE_CHANGE")
+
+    def test_alternate_data_stream_paths_fail_closed(self):
+        # An ADS spelling never even reaches classification: the manifest
+        # refuses to construct, which is the strongest possible outcome.
+        for spelling in (
+            "package/data.txt:evil.ps1",
+            "package/data.txt:evil.ps1:$DATA",
+            "package/.gitattributes:evil",
+            ".github/workflows/policy.yml:evil",
+        ):
+            with self.subTest(path=spelling):
+                self.assert_policy_error(
+                    "PATH_DEVICE",
+                    lambda spelling=spelling: manifest(
+                        TREE_B, blob(spelling, mode="100644")
+                    ),
+                )
+
+    def test_traversal_and_backslash_paths_fail_closed(self):
+        for spelling in (
+            "package/../evil.ps1",
+            "package/./evil.ps1",
+            "package\\evil.ps1",
+            "/package/evil.ps1",
+            "package//evil.ps1",
+        ):
+            with self.subTest(path=spelling):
+                with self.assertRaises(PolicyError):
+                    manifest(TREE_B, blob(spelling, mode="100644"))
+
+    def test_controlled_directory_with_trailing_dot_is_still_controlled(self):
+        for spelling in (
+            ".github./workflows/policy.yml",
+            ".github/workflows./policy.yml",
+            ".GITHUB./POLICY/x.json",
+            ".ci./build.sh",
+        ):
+            with self.subTest(path=spelling):
+                base = manifest(TREE_A)
+                candidate = manifest(TREE_B, blob(spelling, mode="100644"))
+                _, error = self.assert_diff_denied(base, candidate)
+                self.assertIn(
+                    error.code,
+                    {"SOURCE_ADMISSION_REQUIRED", "EXECUTABLE_SURFACE_CHANGE"},
+                )
+
+    def test_additional_executable_and_build_forms_deny(self):
+        paths = (
+            "package/tool.pyw",
+            "package/module.cmake",
+            "package/Makefile.am",
+            "package/Makefile.in",
+            "package/configure",
+            "package/configure.ac",
+            "package/BUILD.bazel",
+            "package/WORKSPACE.bazel",
+            "package/rules.bzl",
+            "package/types.ps1xml",
+            "package/profile.psrc",
+            "package/session.pssc",
+            "package/page.hta",
+            "package/script.vbe",
+            "package/host.wsh",
+            "package/keys.reg",
+            "package/report.awk",
+            "package/app.tcl",
+            "package/build.groovy",
+            "package/build.gradle.kts",
+            "package/wscript",
+            "package/SConscript",
+            "package/meson_options.txt",
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                base = manifest(TREE_A)
+                candidate = manifest(TREE_B, blob(path, mode="100644"))
+                _, error = self.assert_diff_denied(base, candidate)
+                self.assertEqual(error.code, "EXECUTABLE_SURFACE_CHANGE")
+
+    def test_shebang_behind_bom_or_leading_blanks_is_detected(self):
+        prefixes = (
+            b"\xef\xbb\xbf#!/bin/sh\n",
+            b"  #!/bin/sh\n",
+            b"\t#!/usr/bin/env python\n",
+            b"\xef\xbb\xbf  #!/bin/bash\n",
+            b"\xff\xfe#\x00!\x00/\x00b\x00i\x00n\x00",
+        )
+        for prefix in prefixes:
+            with self.subTest(prefix=prefix):
+                base = manifest(TREE_A)
+                candidate = manifest(TREE_B, blob("tools/runner", mode="100644"))
+                _, error = self.assert_diff_denied(base, candidate, prefix=prefix)
+                self.assertEqual(error.code, "EXECUTABLE_SURFACE_CHANGE")
+
+    def test_plain_text_without_shebang_still_admits(self):
+        base = manifest(TREE_A, blob("package/notes.txt", BLOB_A))
+        candidate = manifest(TREE_B, blob("package/notes.txt", BLOB_B))
+        changes = diff_manifests(base, candidate)
+        assert_safe_diff(
+            changes,
+            [".github/policy/locks/"],
+            lambda path, entry, length: b"# not a shebang\n",
+        )
+
     def test_plain_package_data_change_is_not_mislabeled_executable(self):
         base = manifest(TREE_A, blob("package/data.txt", BLOB_A))
         candidate = manifest(TREE_B, blob("package/data.txt", BLOB_B))

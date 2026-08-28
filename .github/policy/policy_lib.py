@@ -47,42 +47,69 @@ FORBIDDEN_JOB_KEYS = {
     "environment",
 }
 SCRIPT_SUFFIXES = {
+    ".awk",
     ".bash",
     ".bat",
+    ".bzl",
     ".cjs",
+    ".cmake",
     ".cmd",
     ".com",
     ".exe",
+    ".groovy",
+    ".hta",
     ".js",
     ".jse",
+    ".kts",
     ".lua",
     ".mjs",
     ".mk",
     ".php",
     ".pl",
     ".ps1",
+    ".ps1xml",
     ".psd1",
     ".psm1",
+    ".psrc",
+    ".pssc",
     ".py",
+    ".pyw",
     ".rb",
+    ".reg",
     ".scr",
     ".sh",
+    ".tcl",
+    ".vbe",
     ".vbs",
     ".wsf",
+    ".wsh",
     ".zsh",
 }
 EXECUTABLE_FILENAMES = {
     "action.yaml",
     "action.yml",
+    "build.bazel",
     "build.gradle",
+    "build.gradle.kts",
     "cmakelists.txt",
+    "configure",
+    "configure.ac",
+    "configure.in",
     "dockerfile",
     "gnumakefile",
+    "gnumakefile.am",
+    "gnumakefile.in",
     "justfile",
     "makefile",
+    "makefile.am",
+    "makefile.in",
     "meson.build",
+    "meson_options.txt",
     "pkgbuild",
     "sconstruct",
+    "sconscript",
+    "wscript",
+    "workspace.bazel",
 }
 NETWORK_COMMANDS = {
     "curl",
@@ -189,6 +216,85 @@ PERMITTED_INTERPOLATIONS = {
     "$env:github_event_path",
     "$env:policy_private_root",
 }
+# Declared helper capabilities. A helper may only exercise a surface it names,
+# and it may not name a surface it does not exercise.
+CAPABILITY_VOCABULARY = {
+    "github-api-read",
+    "git-read-local",
+    "dotnet-filesystem",
+    "dotnet-acl",
+    "dotnet-reflection",
+    "legacy-disabled",
+}
+# Python import/call surfaces used by the helper capability model.
+NETWORK_PYTHON_MODULES = {"urllib", "http", "requests", "socket", "ssl", "ftplib"}
+PROCESS_PYTHON_MODULES = {"subprocess"}
+FORBIDDEN_PYTHON_MODULES = {
+    "ctypes",
+    "importlib",
+    "multiprocessing",
+    "pickle",
+    "pty",
+    "runpy",
+    "shutil",
+    "signal",
+    "site",
+    "telnetlib",
+    "webbrowser",
+    "xmlrpc",
+}
+FORBIDDEN_PYTHON_CALLS = {
+    "builtins.eval",
+    "builtins.exec",
+    "builtins.compile",
+    "builtins.__import__",
+    "os.system",
+    "os.popen",
+    "os.execv",
+    "os.execve",
+    "os.spawnv",
+    "os.posix_spawn",
+    "importlib.import_module",
+    "ctypes.CDLL",
+    "pickle.loads",
+    "runpy.run_path",
+    "runpy.run_module",
+}
+SUBPROCESS_ENTRYPOINTS = {
+    "subprocess.run",
+    "subprocess.call",
+    "subprocess.check_call",
+    "subprocess.check_output",
+    "subprocess.Popen",
+}
+FORBIDDEN_PYTHON_BUILTINS = {
+    "eval",
+    "exec",
+    "compile",
+    "__import__",
+    "globals",
+    "locals",
+    "vars",
+    "getattr",
+    "setattr",
+    "delattr",
+    "memoryview",
+}
+# Undeclared-surface denial codes, most specific first.
+SURFACE_ORDER = (
+    "github-api-read",
+    "git-read-local",
+    "dotnet-reflection",
+    "dotnet-acl",
+    "dotnet-filesystem",
+)
+SURFACE_CODES = {
+    "github-api-read": "HELPER_NETWORK_UNMODELED",
+    "git-read-local": "HELPER_PROCESS_UNMODELED",
+    "dotnet-reflection": "HELPER_CAPABILITY_UNMODELED",
+    "dotnet-acl": "HELPER_CAPABILITY_UNMODELED",
+    "dotnet-filesystem": "HELPER_CAPABILITY_UNMODELED",
+}
 EXPRESSION_SCAN_LIMIT = 8192
 SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -199,14 +305,23 @@ LOCAL_HELPER_RE = re.compile(
 )
 YAML_CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u2028\u2029\ufeff]")
 EXPRESSION_OPEN_RE = re.compile(r"\$\{\{")
+# A reference to the `secrets` context in ANY position leaks secrets: the
+# property forms (`secrets.X`, `secrets['X']`) and the whole-context forms that
+# function indirection produces (`toJSON(secrets)`, `fromJSON(toJSON(secrets))`).
+# The negative lookbehind for `.` keeps a property named `secrets` a near-miss.
 SECRETS_TOKEN_RE = re.compile(
-    r"(?<![A-Za-z0-9_])secrets(?![A-Za-z0-9_])[ \t\n]{0,64}(?:\.|\[)",
+    r"(?<![A-Za-z0-9_.])secrets(?![A-Za-z0-9_])",
     re.IGNORECASE,
 )
+# `github.token` directly, or any whole-context use of `github` -- serializing
+# the context with toJSON(github) exposes the token just as surely.
 GITHUB_TOKEN_RE = re.compile(
-    r"(?<![A-Za-z0-9_])github(?![A-Za-z0-9_])[ \t\n]{0,64}"
-    r"(?:\.[ \t\n]{0,64}token(?![A-Za-z0-9_])"
-    r"|\[[ \t\n]{0,64}(?P<quote>['\"])[ \t\n]{0,64}token[ \t\n]{0,64}(?P=quote))",
+    r"(?<![A-Za-z0-9_.])github(?![A-Za-z0-9_])"
+    r"(?:"
+    r"[ \t\n]{0,64}\.[ \t\n]{0,64}token(?![A-Za-z0-9_])"
+    r"|[ \t\n]{0,64}\[[ \t\n]{0,64}(?P<quote>['\"])[ \t\n]{0,64}token[ \t\n]{0,64}(?P=quote)"
+    r"|(?![ \t\n]{0,64}[.\[])"
+    r")",
     re.IGNORECASE,
 )
 SHELL_TOKEN_RE = re.compile(
@@ -217,6 +332,14 @@ SHELL_TOKEN_RE = re.compile(
     r"|(?P<word>[^\s;|&(){}=\"']+)"
 )
 INTERPOLATION_RE = re.compile(r"\$(?:\{[^}]{0,256}\}|[A-Za-z_:][A-Za-z0-9_:.]{0,256}|\()")
+# A command target must be the whole, anchored, workspace-local helper path --
+# not merely a string that happens to contain ".github" somewhere.
+WORKSPACE_ANCHOR_RE = re.compile(
+    r"\$env:GITHUB_WORKSPACE[\\/]protected-base(?P<rest>[\\/][^\\/].*)",
+    re.IGNORECASE,
+)
+HELPER_ROOTS = {".github", ".ci"}
+HELPER_COMPONENT_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
 
 
 class PolicyError(RuntimeError):
@@ -229,6 +352,23 @@ class PolicyError(RuntimeError):
 def require(condition: bool, code: str, message: str) -> None:
     if not condition:
         raise PolicyError(code, message)
+
+
+def is_exact_int(value: Any) -> bool:
+    """True only for a real JSON integer.
+
+    ``is_exact_int(True)`` is True in Python, so every numeric identity
+    check must use this instead or a JSON ``true`` would satisfy an ID.
+    """
+    return type(value) is int
+
+
+def is_positive_id(value: Any) -> bool:
+    return is_exact_int(value) and value > 0
+
+
+def is_nonnegative_size(value: Any) -> bool:
+    return is_exact_int(value) and value >= 0
 
 
 def require_exact_keys(
@@ -251,8 +391,18 @@ def parse_json_strict(text: str, label: str = "JSON") -> Any:
             result[key] = value
         return result
 
+    def reject_constant(name: str) -> Any:
+        # NaN, Infinity, and -Infinity are Python extensions, not JSON. Accepting
+        # them would let a lock or graph carry a value that compares unequal to
+        # itself or exceeds every bound.
+        raise PolicyError(
+            "JSON_CONSTANT", f"{label} contains the non-JSON constant {name}"
+        )
+
     try:
-        return json.loads(text, object_pairs_hook=no_duplicates)
+        return json.loads(
+            text, object_pairs_hook=no_duplicates, parse_constant=reject_constant
+        )
     except PolicyError:
         raise
     except (TypeError, ValueError) as error:
@@ -637,13 +787,19 @@ class TreeManifest:
         entries: list[TreeEntry] = []
         for raw in raw_entries:
             require(isinstance(raw, dict), "TREE_SHAPE", "tree entry is not a map")
+            size = raw.get("size")
+            require(
+                size is None or is_nonnegative_size(size),
+                "TREE_SHAPE",
+                "tree entry size is not an exact non-negative integer",
+            )
             entries.append(
                 TreeEntry(
                     path=raw.get("path"),
                     mode=raw.get("mode"),
                     type=raw.get("type"),
                     sha=raw.get("sha"),
-                    size=raw.get("size"),
+                    size=size,
                 )
             )
         return cls(expected_sha, entries)
@@ -753,9 +909,23 @@ def diff_manifests(base: TreeManifest, candidate: TreeManifest) -> list[NameStat
     return sorted(result, key=lambda item: (item.paths, item.status))
 
 
+def windows_effective_path(path: str) -> str:
+    """Collapse every component to the name Windows would actually open.
+
+    ``normalize_policy_path`` has already rejected backslashes, ``..``, and
+    device/ADS colons, so this only has to fold the trailing dot and space
+    forms: ``.github./workflows/x`` opens ``.github/workflows/x`` on Win32 and
+    must therefore be treated as a controlled path.
+    """
+    parts = []
+    for part in normalize_policy_path(path).split("/"):
+        stripped = part.rstrip(". \t")
+        parts.append((stripped or part).casefold())
+    return "/".join(parts)
+
+
 def path_is_controlled(path: str, lock_prefixes: Sequence[str]) -> bool:
-    folded = normalize_policy_path(path).casefold()
-    name = PurePosixPath(folded).name
+    folded = windows_effective_path(path)
     prefixes = {
         ".github/workflows/",
         ".github/policy/",
@@ -770,9 +940,8 @@ def path_is_controlled(path: str, lock_prefixes: Sequence[str]) -> bool:
         ".github/github-app.yaml",
     }:
         return True
-    if folded.endswith(("/action.yml", "/action.yaml")):
-        return True
-    if name in {".gitattributes", ".gitmodules"}:
+    names = windows_effective_names(path)
+    if names & {"action.yml", "action.yaml", ".gitattributes", ".gitmodules"}:
         return True
     return any(
         folded == prefix.casefold().rstrip("/")
@@ -781,16 +950,50 @@ def path_is_controlled(path: str, lock_prefixes: Sequence[str]) -> bool:
     )
 
 
+def windows_effective_names(path: str) -> set[str]:
+    """Every filename Windows could actually resolve this path component to.
+
+    Win32 silently strips trailing dots and spaces, so ``evil.ps1.`` opens
+    ``evil.ps1``. NTFS also resolves ``host.txt:evil.ps1`` to an alternate data
+    stream. Both forms must be classified, not just the literal spelling.
+    """
+    name = PurePosixPath(path).name
+    candidates = {name}
+    queue = [name]
+    while queue:
+        current = queue.pop()
+        stripped = current.rstrip(". \t")
+        if stripped and stripped not in candidates:
+            candidates.add(stripped)
+            queue.append(stripped)
+        if ":" in current:
+            for part in current.split(":"):
+                if part and part not in candidates:
+                    candidates.add(part)
+                    queue.append(part)
+    return {candidate.casefold() for candidate in candidates if candidate}
+
+
+def looks_like_shebang(prefix: bytes) -> bool:
+    """Detect a shebang behind a UTF-8/UTF-16 BOM or leading blank bytes."""
+    for bom in (b"\xef\xbb\xbf", b"\xff\xfe", b"\xfe\xff"):
+        if prefix.startswith(bom):
+            prefix = prefix[len(bom) :]
+            break
+    compact = prefix.replace(b"\x00", b"")
+    return compact.lstrip(b" \t").startswith(b"#!")
+
+
 def path_looks_executable(path: str, entry: TreeEntry | None) -> bool:
-    normalized = PurePosixPath(path)
-    suffix = normalized.suffix.casefold()
-    name = normalized.name.casefold()
-    return bool(
-        suffix in SCRIPT_SUFFIXES
-        or suffix == ".install"
-        or name in EXECUTABLE_FILENAMES
-        or (entry is not None and (entry.is_executable or entry.is_submodule))
-    )
+    if entry is not None and (entry.is_executable or entry.is_submodule):
+        return True
+    for name in windows_effective_names(path):
+        if name in EXECUTABLE_FILENAMES:
+            return True
+        suffix = PurePosixPath(name).suffix.casefold()
+        if suffix in SCRIPT_SUFFIXES or suffix == ".install":
+            return True
+    return False
 
 
 def exact_equal(left: Any, right: Any) -> bool:
@@ -844,7 +1047,7 @@ def assert_safe_diff(
                 )
         if change.new_path and change.new_entry and change.new_entry.type == "blob":
             prefix = candidate_blob_prefix(change.new_path, change.new_entry, 256)
-            if prefix.startswith(b"#!"):
+            if looks_like_shebang(prefix):
                 raise PolicyError(
                     "EXECUTABLE_SURFACE_CHANGE",
                     f"{change.status} introduces or changes shebang file {change.new_path}",
@@ -941,10 +1144,58 @@ def command_name(value: str) -> str:
     return name
 
 
+def canonical_workspace_helper(value: str) -> str | None:
+    """Repo-relative helper path for a fully anchored literal, else ``None``.
+
+    The entire token must be ``$env:GITHUB_WORKSPACE\\protected-base\\`` followed
+    by a canonical ``.github``/``.ci`` path. Anything else -- a UNC or drive
+    path, an absolute path, ``..`` traversal, an alternate data stream, an
+    interpreter prefix such as ``cmd /c ...``, or a bare command name -- yields
+    ``None`` and is refused by the caller.
+    """
+    match = WORKSPACE_ANCHOR_RE.fullmatch(value)
+    if match is None:
+        return None
+    rest = match.group("rest")
+    if "/" in rest and "\\" in rest:
+        return None
+    candidate = rest.replace("\\", "/").lstrip("/")
+    parts = candidate.split("/")
+    if len(parts) < 2 or parts[0] not in HELPER_ROOTS:
+        return None
+    for part in parts[1:]:
+        if HELPER_COMPONENT_RE.fullmatch(part) is None:
+            return None
+        if part != part.rstrip(". \t"):
+            return None
+    try:
+        normalized = normalize_policy_path(candidate)
+    except PolicyError:
+        return None
+    if normalized != candidate:
+        return None
+    if windows_effective_path(normalized) != normalized.casefold():
+        return None
+    return normalized
+
+
+def _assert_helper_reference(value: str) -> str | None:
+    """Any token naming a local control path must be a canonical anchored one."""
+    body = _string_body(value)
+    if LOCAL_HELPER_RE.search(body) is None:
+        return None
+    helper = canonical_workspace_helper(body)
+    require(
+        helper is not None,
+        "COMMAND_UNMODELED",
+        f"run script references {value!r}, which is not a canonical "
+        "workspace-local .github/.ci helper path",
+    )
+    return helper
+
+
 def _assert_literal_interpolation(value: str) -> None:
-    inner = value
-    if len(inner) >= 2 and inner[0] in "\"'" and inner[-1] == inner[0]:
-        inner = inner[1:-1]
+    inner = _string_body(value)
     for match in INTERPOLATION_RE.finditer(inner):
         require(
             match.group().casefold() in PERMITTED_INTERPOLATIONS,
@@ -1006,15 +1257,18 @@ def _validate_call_target(
     _assert_literal_interpolation(target.value)
     body = _string_body(target.value)
     # The call operator is not an escape hatch around classification: the target
-    # must clear the deny-lists and must name a local policy helper path rather
-    # than an arbitrary command such as "cmd", "pwsh", or "pacman".
+    # must clear the deny-lists and must be a canonical, fully anchored,
+    # workspace-local helper path rather than "cmd", "pacman", a UNC or drive
+    # path, a traversal, an ADS name, or an interpreter prefix.
     _assert_not_denied_command(command_name(body), target.value)
+    helper = canonical_workspace_helper(body)
     require(
-        LOCAL_HELPER_RE.search(body) is not None,
+        helper is not None,
         "COMMAND_UNMODELED",
-        f"run script calls {target.value!r}, which is not a local policy helper",
+        f"run script calls {target.value!r}, which is not a canonical "
+        "workspace-local .github/.ci helper path",
     )
-    return index + 1
+    return index + 1, helper
 
 
 def _validate_python(tokens: Sequence[_ShellToken], index: int) -> int:
@@ -1092,6 +1346,7 @@ def scan_run_script(script: str) -> set[str]:
     )
 
     tokens = tokenize_shell(script)
+    helpers: set[str] = set()
     command_position = True
     index = 0
     while index < len(tokens):
@@ -1110,16 +1365,18 @@ def scan_run_script(script: str) -> set[str]:
                     "DYNAMIC_EXECUTION",
                     f"run script opens {token.value!r} at a command position",
                 )
-                index = _validate_call_target(tokens, index + 1, "&")
+                index, helper = _validate_call_target(tokens, index + 1, "&")
+                helpers.add(helper)
                 command_position = False
                 continue
             command_position = True
             index += 1
             continue
-        if token.kind == "string":
+        if token.kind in {"string", "word"}:
             _assert_literal_interpolation(token.value)
-        if token.kind == "word":
-            _assert_literal_interpolation(token.value)
+            referenced = _assert_helper_reference(token.value)
+            if referenced is not None:
+                helpers.add(referenced)
         if command_position:
             if token.kind == "word" and token.value == ".":
                 raise PolicyError(
@@ -1139,10 +1396,15 @@ def scan_run_script(script: str) -> set[str]:
             command_position = False
         index += 1
 
-    helpers: set[str] = set()
+    # Nothing outside a validated, anchored token may name a control path.
     for match in LOCAL_HELPER_RE.finditer(script):
-        path = match.group(1).replace("\\", "/").rstrip(".,;:)")
-        helpers.add(normalize_policy_path(path))
+        candidate = match.group(1).replace("\\", "/").rstrip(".,;:)")
+        require(
+            any(candidate.casefold().endswith(helper.casefold()) for helper in helpers),
+            "COMMAND_UNMODELED",
+            f"run script names the control path {candidate!r} outside a "
+            "validated anchored helper reference",
+        )
     return helpers
 
 
@@ -1462,6 +1724,7 @@ def validate_approval_graph(graph: Mapping[str, Any]) -> None:
             "required_check",
             "required_workflow",
             "required_workflow_ref",
+            "required_workflow_ruleset",
             "github_actions_integration_id",
             "dedicated_check",
         },
@@ -1474,7 +1737,7 @@ def validate_approval_graph(graph: Mapping[str, Any]) -> None:
         "repository name is invalid",
     )
     require(
-        isinstance(repository["id"], int) and repository["id"] > 0,
+        is_positive_id(repository["id"]),
         "GRAPH_REPOSITORY",
         "repository id is invalid",
     )
@@ -1505,6 +1768,45 @@ def validate_approval_graph(graph: Mapping[str, Any]) -> None:
         "GRAPH_CHECK",
         "required workflow ref changed",
     )
+    ruleset_model = repository["required_workflow_ruleset"]
+    require_exact_keys(
+        ruleset_model,
+        {"source_type", "target", "enforcement", "ref", "required_rule_types"},
+        "GRAPH_RULESET",
+        "required workflow ruleset",
+    )
+    require(
+        ruleset_model["source_type"] == "Repository",
+        "GRAPH_RULESET",
+        "only a repository-sourced ruleset is modelled as authority",
+    )
+    require(
+        ruleset_model["target"] == "branch",
+        "GRAPH_RULESET",
+        "ruleset target must be branch",
+    )
+    require(
+        ruleset_model["enforcement"] == "active",
+        "GRAPH_RULESET",
+        "only an active ruleset is modelled as authority",
+    )
+    require(
+        ruleset_model["ref"] == f"refs/heads/{repository['default_branch']}",
+        "GRAPH_RULESET",
+        "ruleset ref must be exactly the protected default branch",
+    )
+    require_exact_equal(
+        ruleset_model["required_rule_types"],
+        [
+            "workflows",
+            "pull_request",
+            "required_status_checks",
+            "non_fast_forward",
+            "deletion",
+        ],
+        "GRAPH_RULESET",
+        "required ruleset rule types changed",
+    )
     require(
         repository["github_actions_integration_id"] == 15368,
         "GRAPH_CHECK",
@@ -1525,8 +1827,7 @@ def validate_approval_graph(graph: Mapping[str, Any]) -> None:
     require(
         dedicated_check["integration_id"] is None
         or (
-            isinstance(dedicated_check["integration_id"], int)
-            and dedicated_check["integration_id"] > 0
+            is_positive_id(dedicated_check["integration_id"])
             and dedicated_check["integration_id"]
             != repository["github_actions_integration_id"]
         ),
@@ -1597,6 +1898,22 @@ def validate_approval_graph(graph: Mapping[str, Any]) -> None:
         )
         require(SHA1_RE.fullmatch(spec["blob"]) is not None, "GRAPH_HELPER_BLOB", path)
         require(spec["mode"] in {"100644", "100755"}, "GRAPH_HELPER_MODE", path)
+        require(
+            isinstance(spec["capabilities"], list),
+            "GRAPH_HELPER_CAPABILITY",
+            path,
+        )
+        unknown = set(spec["capabilities"]) - CAPABILITY_VOCABULARY
+        require(
+            not unknown,
+            "GRAPH_HELPER_CAPABILITY",
+            f"{path} declares capabilities outside the vocabulary: {sorted(unknown)}",
+        )
+        require(
+            len(set(spec["capabilities"])) == len(spec["capabilities"]),
+            "GRAPH_HELPER_CAPABILITY",
+            f"{path} repeats a capability",
+        )
         for dependency in spec["dependencies"]:
             require(dependency in graph["helpers"], "GRAPH_HELPER_DEPENDENCY", dependency)
     locks = graph["locks"]
@@ -1781,7 +2098,7 @@ def verify_artifact_lock(
         "repository",
     )
     require(REPOSITORY_RE.fullmatch(repository["full_name"]) is not None, "LOCK_REPOSITORY", "")
-    require(isinstance(repository["id"], int) and repository["id"] > 0, "LOCK_REPOSITORY", "")
+    require(is_positive_id(repository["id"]), "LOCK_REPOSITORY", "")
     assert_bound_url(repository["api_url"], f"https://api.github.com/repos/{repository['full_name']}", "repository API URL")
     assert_bound_url(repository["html_url"], f"https://github.com/{repository['full_name']}", "repository HTML URL")
     live_repository = api.get(f"/repos/{repository['full_name']}")
@@ -1798,7 +2115,7 @@ def verify_artifact_lock(
     require_exact_keys(
         workflow, {"id", "path", "ref", "sha"}, "ARTIFACT_WORKFLOW", "workflow"
     )
-    require(isinstance(workflow["id"], int) and workflow["id"] > 0, "ARTIFACT_WORKFLOW", "id")
+    require(is_positive_id(workflow["id"]), "ARTIFACT_WORKFLOW", "id")
     normalize_policy_path(workflow["path"])
     require(workflow["ref"].startswith("refs/heads/"), "ARTIFACT_WORKFLOW", "ref")
     require(SHA1_RE.fullmatch(workflow["sha"]) is not None, "ARTIFACT_WORKFLOW", "sha")
@@ -1819,9 +2136,9 @@ def verify_artifact_lock(
         "ARTIFACT_RUN",
         "run",
     )
-    require(isinstance(run_lock["id"], int) and run_lock["id"] > 0, "ARTIFACT_RUN", "id")
+    require(is_positive_id(run_lock["id"]), "ARTIFACT_RUN", "id")
     require(
-        isinstance(run_lock["attempt"], int) and run_lock["attempt"] > 0,
+        is_positive_id(run_lock["attempt"]),
         "ARTIFACT_RUN",
         "attempt",
     )
@@ -1872,7 +2189,7 @@ def verify_artifact_lock(
     require_exact_keys(
         job_lock, {"id", "name", "run_attempt", "api_url"}, "ARTIFACT_JOB", "job"
     )
-    require(isinstance(job_lock["id"], int) and job_lock["id"] > 0, "ARTIFACT_JOB", "id")
+    require(is_positive_id(job_lock["id"]), "ARTIFACT_JOB", "id")
     require(job_lock["run_attempt"] == run_lock["attempt"], "ARTIFACT_JOB", "attempt")
     jobs = api.get_paginated(
         f"/repos/{repository['full_name']}/actions/runs/{run_lock['id']}"
@@ -1908,9 +2225,9 @@ def verify_artifact_lock(
         "ARTIFACT_FIELDS",
         "artifact",
     )
-    require(isinstance(artifact_lock["id"], int) and artifact_lock["id"] > 0, "ARTIFACT_ID", "")
+    require(is_positive_id(artifact_lock["id"]), "ARTIFACT_ID", "")
     require(SHA256_RE.fullmatch(artifact_lock["digest"]) is not None, "ARTIFACT_DIGEST", "")
-    require(isinstance(artifact_lock["size"], int) and artifact_lock["size"] >= 0, "ARTIFACT_SIZE", "")
+    require(is_nonnegative_size(artifact_lock["size"]), "ARTIFACT_SIZE", "")
     artifact = api.get(
         f"/repos/{repository['full_name']}/actions/artifacts/{artifact_lock['id']}"
     )
@@ -1992,7 +2309,7 @@ def verify_release_lock(
         "repository name",
     )
     require(
-        isinstance(repository["id"], int) and repository["id"] > 0,
+        is_positive_id(repository["id"]),
         "LOCK_REPOSITORY",
         "repository id",
     )
@@ -2075,7 +2392,7 @@ def verify_release_lock(
         "workflow",
     )
     require(
-        isinstance(workflow["id"], int) and workflow["id"] > 0,
+        is_positive_id(workflow["id"]),
         "RELEASE_PROVENANCE_WORKFLOW",
         "workflow id",
     )
@@ -2103,12 +2420,12 @@ def verify_release_lock(
         "run",
     )
     require(
-        isinstance(run_lock["id"], int) and run_lock["id"] > 0,
+        is_positive_id(run_lock["id"]),
         "RELEASE_PROVENANCE_RUN",
         "run id",
     )
     require(
-        isinstance(run_lock["attempt"], int) and run_lock["attempt"] > 0,
+        is_positive_id(run_lock["attempt"]),
         "RELEASE_PROVENANCE_RUN",
         "run attempt",
     )
@@ -2173,7 +2490,7 @@ def verify_release_lock(
         "job",
     )
     require(
-        isinstance(job_lock["id"], int) and job_lock["id"] > 0,
+        is_positive_id(job_lock["id"]),
         "RELEASE_PROVENANCE_JOB",
         "job id",
     )
@@ -2227,7 +2544,7 @@ def verify_release_lock(
         "RELEASE_FIELDS",
         "release",
     )
-    require(isinstance(release_lock["id"], int) and release_lock["id"] > 0, "RELEASE_ID", "")
+    require(is_positive_id(release_lock["id"]), "RELEASE_ID", "")
     release = api.get(
         f"/repos/{repository['full_name']}/releases/{release_lock['id']}"
     )
@@ -2289,7 +2606,7 @@ def verify_release_lock(
             "asset",
         )
         asset_id = asset_lock["id"]
-        require(isinstance(asset_id, int) and asset_id > 0, "RELEASE_ASSET_ID", "")
+        require(is_positive_id(asset_id), "RELEASE_ASSET_ID", "")
         require(asset_id not in locked_ids, "RELEASE_ASSET_MANIFEST", "duplicate lock id")
         locked_ids.add(asset_id)
         require(SHA256_RE.fullmatch(asset_lock["digest"]) is not None, "RELEASE_ASSET_DIGEST", "")
@@ -2301,7 +2618,7 @@ def verify_release_lock(
             "RELEASE_ASSET_NAME",
             "asset name",
         )
-        require(isinstance(asset_lock["size"], int) and asset_lock["size"] >= 0, "RELEASE_ASSET_SIZE", "")
+        require(is_nonnegative_size(asset_lock["size"]), "RELEASE_ASSET_SIZE", "")
         asset = live_by_id.get(asset_id)
         require(asset is not None, "RELEASE_ASSET_MANIFEST", f"missing {asset_id}")
         expected_asset = {

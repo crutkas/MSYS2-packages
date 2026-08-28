@@ -71,10 +71,18 @@ being success-shaped.
 
 The private root is created by a literal directory API with its restrictive,
 non-inherited ACL supplied to the create call itself, so it never exists with
-inherited permissions. The ACL is reverified after creation. Every temp and root
-operation uses literal path APIs. The root stores only an ephemeral local
-decision report. It is never uploaded or accepted as a payload lock; the
-required check conclusion is the admission signal.
+inherited permissions. The create also establishes exclusive absence: creating
+over an existing path fails, so an attacker who pre-plants the directory loses
+the race instead of inheriting our trust, and intermediates are created the same
+way. If the atomic API is unavailable the helper **fails closed** — there is no
+create-then-protect fallback, because that fallback is the race the design
+exists to remove. Afterwards the root is reverified for owner, protected DACL,
+exact principal set, full-control rights, inheritance and propagation flags,
+absence of inherited or non-allow ACEs, reparse points, and object identity.
+Existence alone is never treated as success. Every temp and root operation uses
+literal path APIs. The root stores only an ephemeral local decision report. It
+is never uploaded or accepted as a payload lock; the required check conclusion
+is the admission signal.
 
 The protected base checkout is the root of trust, so it is proven first: its
 origin, HEAD commit, tree, and cleanliness are verified before the approval
@@ -82,6 +90,40 @@ graph is parsed and before any live repository rule, ruleset, or manifest is
 read. The live base tree and the event base SHA are then required to equal the
 already-verified local values, and every commit and tree SHA is matched against
 `SHA1_RE` before it is interpolated into an API URL.
+
+Git itself is invoked only through an absolute, trusted executable — never
+resolved through `PATH` — with a fixed literal argument vector drawn from a
+closed command table. The child environment is rebuilt from scratch rather than
+filtered, so `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_CONFIG*`,
+`GIT_SSH*`, `GIT_PROXY_COMMAND`, `GIT_EXTERNAL_DIFF`,
+`GIT_ALTERNATE_OBJECT_DIRECTORIES`, and the rest cannot survive from the
+caller. Forced configuration supplied through that scrubbed environment
+neutralises every remaining command-execution vector — `core.fsmonitor`,
+`core.hooksPath`, `core.sshCommand`, `core.askPass`, `core.pager`,
+`core.editor`, `diff.external`, `uploadpack.packObjectsHook`,
+`credential.helper` — and disables system and per-user config entirely.
+
+Helper capabilities are a closed vocabulary (`github-api-read`,
+`git-read-local`, `dotnet-filesystem`, `dotnet-acl`, `dotnet-reflection`,
+`legacy-disabled`). Each helper is parsed — Python by AST, PowerShell by
+surface scan — and the surfaces it actually exercises must equal the surfaces
+it declares: an undeclared surface denies, and a declared-but-unused surface
+denies as dormant authority. Python helpers may not import or call the
+forbidden module and builtin sets, may not reach through dunder attributes, and
+may only spawn a literal, non-splatted `git` argument vector with an explicit
+scrubbed environment and `shell` disabled. PowerShell helpers may not reference
+network, package, dynamic-execution, or acquisition surfaces at all.
+
+Integer identities are exact: `is_exact_int` rejects `bool` everywhere, because
+Python treats `True` as `1`. Strict JSON parsing rejects duplicate keys and the
+non-JSON constants `NaN`, `Infinity`, and `-Infinity` through `parse_constant`.
+
+Path classification uses the name Windows would actually open. Trailing dots
+and spaces are folded on every component, so `.github./workflows/x` is still a
+controlled path and `evil.ps1.` is still a script. Alternate data streams,
+backslashes, absolute paths, and `..` traversal are refused when the manifest is
+built, before any classification runs. Shebangs are detected behind a UTF-8 or
+UTF-16 BOM and leading blanks.
 
 ## Approved actions
 
@@ -111,33 +153,80 @@ so it is audited authority rather than dormant authority.
 ## Bootstrap denial
 
 Commit `73248abe6bc25e73486c29f876094b3eeab79547` has no protected-base policy
-workflow and the repository currently has no enforcing branch rule. Therefore
-this bootstrap change cannot run or admit itself. Candidate-controlled runs are
-diagnostics only and are not admission evidence.
+workflow and the repository currently has no ruleset at all
+(`GET /repos/crutkas/MSYS2-packages/rulesets` returns `[]`). Therefore this
+change cannot run or admit itself. Candidate-controlled runs are diagnostics
+only and are not admission evidence.
 
-Landing requires independent source review/admission. After landing, an
-active ruleset for `master` must require pull requests and the exact diagnostic
-check `workflow-policy / verify` from the GitHub Actions integration
-(application ID `15368`), with strict up-to-date status checks. Admission also
-requires one independently anchored producer: either
-`.github/workflows/workflow-policy.yml` from repository ID `1333319488` at
-`refs/heads/master`, or `workflow-policy / anchored-admission` from a unique
-non-Actions app ID that has been rebound into this graph after independent
-review of its protected exact source. The validator cross-checks the branch
-rules against active ruleset IDs. Until the live APIs prove these properties,
-it returns `BOOTSTRAP_NOT_ACTIVATED`. This change does not modify branch
-protection, rules, releases, tags, or repository settings.
+## Activation authority
 
-GitHub currently limits required-workflow rules to organization or enterprise
-scope, while this repository is owned by the personal account `crutkas`.
-Therefore the gate intentionally remains blocked after landing under the
-current ownership: a named check tied only to the generic GitHub Actions app is
-not an acceptable substitute because a candidate workflow can spoof it. Secure
-activation requires a separately approved platform transition and source
-rebind to an organization-scoped required workflow, or a separately designed
-dedicated non-Actions check integration and graph update. The current dedicated
-integration ID is deliberately `null`; neither external transition is performed
-by this change.
+Authority is granted only by a **live, ACTIVE, repository-sourced branch
+ruleset**. GitHub exposes a repository ruleset rule of `type: workflows` with an
+exact `repository_id`, `path`, `ref`, and `sha`, and repository rulesets are
+available to this public user-owned repository. The validator accepts that path
+only when every one of the following holds:
+
+- the ruleset `enforcement` is exactly `active` (never `disabled` or
+  `evaluate`), and its `target` is exactly `branch`;
+- its `source_type` is exactly `Repository` and its `source` is this
+  repository. Organization, enterprise, and inherited rules are a different
+  trust domain and are not modelled, so they contribute no authority;
+- its `conditions.ref_name.include` is exactly `["refs/heads/master"]` with an
+  empty `exclude` and no other condition key. Wildcards such as `refs/heads/*`,
+  `~ALL`, and `~DEFAULT_BRANCH` are refused, as is any drift in spelling;
+- its `bypass_actors` list is empty. Any bypass actor, of any type or mode,
+  removes authority;
+- the branch carries, from that same ruleset, a `pull_request` rule, a
+  `non_fast_forward` rule, a `deletion` rule, and a `required_status_checks`
+  rule whose `strict_required_status_checks_policy` is exactly `true` and which
+  requires the context `workflow-policy / verify` from `integration_id` 15368;
+- no required rule type appears twice, so conflicting duplicates cannot be used
+  to shadow a weaker rule;
+- the `workflows` rule names exactly one entry with no extra keys, whose
+  `repository_id` is the exact integer `1333319488` (a JSON `true` is not an
+  ID), whose `path` is `.github/workflows/workflow-policy.yml`, whose `ref` is
+  `refs/heads/master`, and whose `sha` is a full 40-character lowercase commit
+  SHA. A `null`, short, uppercase, or missing SHA is refused, because a floating
+  rule would follow whatever `master` points at.
+- that pinned commit is verified live: it must be reachable from the protected
+  base, and the blob at the required workflow path in its tree must equal the
+  approved workflow blob in the graph.
+
+A dedicated non-Actions check app remains a supported alternative anchor: a
+`workflow-policy / anchored-admission` context from a unique `integration_id`
+that is not the GitHub Actions app and has been rebound into this graph after
+independent review. It is no longer the only viable path.
+
+A named status check tied only to the generic GitHub Actions app is **never** a
+substitute, because a candidate workflow can publish a check with that exact
+name and integration. Repository-level workflow execution protections are
+defense-in-depth actor/event controls with no documented public API; they are
+not treated as authority.
+
+Until the live APIs prove these properties the validator returns
+`BOOTSTRAP_NOT_ACTIVATED`. This change does not modify branch protection,
+rules, rulesets, releases, tags, or repository settings, and it does not claim
+activation.
+
+### Two-step activation after source audit
+
+Activation is deliberately a separate, human, post-audit operation:
+
+1. **Land the audited source.** After independent source review, fast-forward
+   or merge this policy to `master` with no other change. At this point the
+   policy is present but still inert, because no ruleset exists.
+2. **Create the exact-SHA ruleset.** Create an active, repository-sourced
+   branch ruleset targeting exactly `refs/heads/master`, with no bypass actors,
+   carrying the `pull_request`, `non_fast_forward`, `deletion`, strict
+   `required_status_checks`, and `workflows` rules described above. The
+   `workflows` rule must pin the exact commit SHA that contains the audited
+   workflow blob.
+
+Any later change to the policy or its configuration then arrives as a
+separately audited activation/config pull request, which is itself validated by
+the now-required protected-base workflow. The candidate is never able to create
+or amend the ruleset that authorizes it, so it can never become
+self-authorizing.
 
 ## Offline verification
 
