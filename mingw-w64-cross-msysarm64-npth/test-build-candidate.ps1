@@ -74,7 +74,11 @@ try {
   $stage = Join-Path $tmp 'pkgroot'
   New-Item -ItemType Directory -Force -Path $stage | Out-Null
   Set-Content -LiteralPath (Join-Path $stage '.PKGINFO') -Value "pkgname = demo`npkgver = 1.8-2`n" -Encoding ascii
-  Set-Content -LiteralPath (Join-Path $stage '.BUILDINFO') -Value "format = 2`nbuilddir = /build`n" -Encoding ascii
+  Set-Content -LiteralPath (Join-Path $stage '.BUILDINFO') -Value @"
+format = 2
+builddir = /usr/src/debug/mingw-w64-cross-msysarm64-npth-1.8/build
+startdir = /usr/src/debug/mingw-w64-cross-msysarm64-npth-1.8/recipe
+"@ -Encoding ascii
   Set-Content -LiteralPath (Join-Path $stage '.MTREE') -Value "#mtree`n./usr type=dir`n" -Encoding ascii
   $pkg = Join-Path $tmp 'demo-1.8-2-x86_64.pkg.tar.zst'
   & $tar -c --zstd -f $pkg -C $stage '.PKGINFO' '.BUILDINFO' '.MTREE'
@@ -95,6 +99,18 @@ try {
   # The extracted member bytes must hash to the sealed value.
   $reHash = (Get-FileHash -LiteralPath (Join-Path $metaDir 'PKGINFO') -Algorithm SHA256).Hash.ToLowerInvariant()
   Assert ($reHash -eq $seal.metadata['.PKGINFO'].sha256) 'extracted PKGINFO hash mismatch vs seal'
+
+  Set-Content -LiteralPath (Join-Path $stage '.BUILDINFO') `
+    -Value "format = 2`nbuilddir = C:\leaked\build`nstartdir = /home/builder/recipe`n" -Encoding ascii
+  $badPkg = Join-Path $tmp 'bad-1.8-2-x86_64.pkg.tar.zst'
+  & $tar -c --zstd -f $badPkg -C $stage '.PKGINFO' '.BUILDINFO' '.MTREE'
+  Assert ($LASTEXITCODE -eq 0) 'failed to build bad BUILDINFO package fixture'
+  $badBuildInfoRejected = $false
+  try {
+    Get-PackageSeal -Archive $badPkg -Bsdtar $tar -MetadataDir (Join-Path $tmp 'bad.metadata') | Out-Null
+  }
+  catch { $badBuildInfoRejected = $true }
+  Assert $badBuildInfoRejected 'package sealing accepted forbidden .BUILDINFO paths'
 }
 finally {
   Remove-Item -Recurse -Force -LiteralPath $tmp -ErrorAction SilentlyContinue

@@ -7,11 +7,13 @@
   The two build jobs upload their .pkg.tar.zst outputs as separate artifacts.
   This script discovers the package files common to both download directories,
   safely extracts each (reusing the fail-closed preflight in safe-extract.ps1),
-  and compares the extracted trees byte-for-byte including metadata.
+  requires identical archive SHA-256 values, safely extracts each (reusing the
+  fail-closed preflight in safe-extract.ps1), and compares the extracted trees
+  byte-for-byte including metadata.
 
-  The outer zstd framing is not admission evidence, but every extracted member -
-  including the complete compressed .MTREE, .PKGINFO and .BUILDINFO - is compared
-  as raw bytes. Any missing member, extra member, or content difference fails.
+  Both the complete package archive and every extracted member - including the
+  compressed .MTREE, .PKGINFO and .BUILDINFO - are compared as raw bytes. Any
+  archive, missing-member, extra-member, or content difference fails.
 #>
 [CmdletBinding()]
 param(
@@ -80,6 +82,17 @@ function Compare-PackagePair {
   )
   $destA = Join-Path $WorkDir "$Name.a"
   $destB = Join-Path $WorkDir "$Name.b"
+  $archiveShaA = (Get-FileHash -LiteralPath $PackageA -Algorithm SHA256).Hash.ToLowerInvariant()
+  $archiveShaB = (Get-FileHash -LiteralPath $PackageB -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($archiveShaA -ne $archiveShaB) {
+    return [pscustomobject]@{
+      Name    = $Name
+      Entries = 0
+      Diffs   = [Collections.Generic.List[string]]@(
+        "package archive differs (A=$archiveShaA B=$archiveShaB)"
+      )
+    }
+  }
   $manifestA = Get-PackageTreeManifest -Package $PackageA -Destination $destA -Bsdtar $Bsdtar
   $manifestB = Get-PackageTreeManifest -Package $PackageB -Destination $destB -Bsdtar $Bsdtar
 
@@ -149,7 +162,7 @@ foreach ($name in $namesA) {
 }
 
 if ($allDiffs.Count -gt 0) {
-  throw "Normalized package trees are not byte-for-byte identical ($($allDiffs.Count) difference(s))."
+  throw "Package outputs are not byte-for-byte identical ($($allDiffs.Count) difference(s))."
 }
 
-Write-Output "Both independent builds produced byte-for-byte identical normalized package trees."
+Write-Output "Both independent builds produced byte-for-byte identical package archives and inner trees."

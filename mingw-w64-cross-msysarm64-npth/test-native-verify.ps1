@@ -67,16 +67,32 @@ try {
 
   # --- Test-ModuleArchitecture: any non-arm64 module is an offender ---
   $clean = @(
-    [ordered]@{ name = 'msys-npth-0.dll'; machine = 'arm64' },
-    [ordered]@{ name = 'msys-2.0.dll'; machine = 'arm64' }
+    [ordered]@{ name = 'msys-npth-0.dll'; machine = 'arm64'; sha256 = ('a' * 64) },
+    [ordered]@{ name = 'msys-2.0.dll'; machine = 'arm64'; sha256 = ('b' * 64) }
   )
   $dirty = @(
-    [ordered]@{ name = 'msys-npth-0.dll'; machine = 'arm64' },
-    [ordered]@{ name = 'msys-2.0.dll'; machine = 'x64' }
+    [ordered]@{ name = 'msys-npth-0.dll'; machine = 'arm64'; sha256 = ('a' * 64) },
+    [ordered]@{ name = 'msys-2.0.dll'; machine = 'x64'; sha256 = ('b' * 64) }
+  )
+  $missingHash = @(
+    [ordered]@{ name = 'msys-npth-0.dll'; machine = 'arm64'; sha256 = $null }
   )
   Assert (@(Test-ModuleArchitecture -Modules $clean).Count -eq 0) 'clean modules flagged'
   $offenders = @(Test-ModuleArchitecture -Modules $dirty)
   Assert ($offenders.Count -eq 1 -and $offenders[0] -eq 'msys-2.0.dll=x64') 'x64 module not flagged'
+  $hashOffenders = @(Test-ModuleArchitecture -Modules $missingHash)
+  Assert ($hashOffenders.Count -eq 1 -and $hashOffenders[0] -eq 'msys-npth-0.dll=missing-or-invalid-sha256') `
+    'missing module hash not flagged'
+
+  # --- Assert-FileHashes: mutation after initial trust binding is rejected ---
+  $trusted = Join-Path $tmp 'trusted-tool.exe'
+  [IO.File]::WriteAllBytes($trusted, [byte[]](1..16))
+  $trustedHash = (Get-FileHash -LiteralPath $trusted -Algorithm SHA256).Hash.ToLowerInvariant()
+  Assert-FileHashes -ExpectedHashes ([ordered]@{ $trusted = $trustedHash })
+  [IO.File]::WriteAllBytes($trusted, [byte[]](2..17))
+  Assert-Throws {
+    Assert-FileHashes -ExpectedHashes ([ordered]@{ $trusted = $trustedHash })
+  } 'trusted file mutation was accepted'
 
   # --- Get-Wow64Evidence: returns a consistent shape on any Windows host ---
   $wow = Get-Wow64Evidence

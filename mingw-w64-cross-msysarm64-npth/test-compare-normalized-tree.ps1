@@ -82,13 +82,22 @@ try {
   New-SyntheticPackage -Directory $a -Name 'npth-devel' -MtreeMtime 111 -Files @{
     'opt/aarch64-pc-msys/usr/lib/libnpth.a'      = $libA
     'opt/aarch64-pc-msys/usr/include/npth.h'     = $hdrA } | Out-Null
-  New-SyntheticPackage -Directory $b -Name 'npth' -MtreeMtime 111 -Files @{
-    'opt/aarch64-pc-msys/usr/bin/msys-npth-0.dll' = $dllA } | Out-Null
-  New-SyntheticPackage -Directory $b -Name 'npth-devel' -MtreeMtime 111 -Files @{
-    'opt/aarch64-pc-msys/usr/lib/libnpth.a'      = $libA
-    'opt/aarch64-pc-msys/usr/include/npth.h'     = $hdrA } | Out-Null
+  New-Item -ItemType Directory -Force $b | Out-Null
+  Copy-Item -Path (Join-Path $a '*.pkg.tar.zst') -Destination $b
   if (-not (Invoke-Compare -A $a -B $b)) {
-    $failures.Add('identical inner package trees were reported as a mismatch')
+    $failures.Add('byte-identical package archives were reported as a mismatch')
+  }
+
+  # --- outer archive byte differs -> FAIL ---
+  $bArchive = Join-Path $root 'buildB-archive'
+  New-Item -ItemType Directory -Force $bArchive | Out-Null
+  Copy-Item -Path (Join-Path $a '*.pkg.tar.zst') -Destination $bArchive
+  $changedArchive = Join-Path $bArchive 'npth-1.8-2-x86_64.pkg.tar.zst'
+  $archiveBytes = [IO.File]::ReadAllBytes($changedArchive)
+  $archiveBytes[10] = $archiveBytes[10] -bxor 1
+  [IO.File]::WriteAllBytes($changedArchive, $archiveBytes)
+  if (Invoke-Compare -A $a -B $bArchive) {
+    $failures.Add('an outer package archive byte difference was not detected')
   }
 
   # --- even a gzip .MTREE framing difference is an inner-byte mismatch -> FAIL ---
@@ -173,4 +182,4 @@ if ($failures.Count -gt 0) {
   exit 1
 }
 
-Write-Output 'compare-normalized-tree fixtures passed (identical trees accepted; payload, raw .MTREE, extra-member, and package-set differences all rejected).'
+Write-Output 'compare-normalized-tree fixtures passed (identical archives accepted; archive, payload, raw .MTREE, extra-member, and package-set differences rejected).'

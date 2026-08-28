@@ -253,10 +253,8 @@ function Get-ProcessModuleEvidence {
   $records = [Collections.Generic.List[object]]::new()
   foreach ($module in @($process.Modules)) {
     $path = $module.FileName
-    $machine = try { (Get-PeMachineType -Path $path).machine_name } catch { 'unreadable' }
-    $sha = try {
-      (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
-    } catch { $null }
+    $machine = (Get-PeMachineType -Path $path).machine_name
+    $sha = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
     $records.Add([ordered]@{
         name    = $module.ModuleName
         path    = $path
@@ -272,11 +270,28 @@ function Test-ModuleArchitecture {
      machine could not be read are treated as violations. #>
   param([Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Modules)
 
-  $offenders = @(
-    $Modules | Where-Object { $_.machine -ne 'arm64' } |
-      ForEach-Object { "$($_.name)=$($_.machine)" }
-  )
+  $offenders = [Collections.Generic.List[string]]::new()
+  foreach ($module in $Modules) {
+    if ($module.machine -ne 'arm64') {
+      $offenders.Add("$($module.name)=$($module.machine)")
+    }
+    if ([string]::IsNullOrWhiteSpace($module.sha256) -or
+        $module.sha256 -notmatch '^[0-9a-f]{64}$') {
+      $offenders.Add("$($module.name)=missing-or-invalid-sha256")
+    }
+  }
   return $offenders
+}
+
+function Assert-FileHashes {
+  param([Parameter(Mandatory)] [Collections.IDictionary] $ExpectedHashes)
+
+  foreach ($path in $ExpectedHashes.Keys) {
+    $currentSha = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($currentSha -ne $ExpectedHashes[$path]) {
+      throw "Trusted admission file changed after initial verification: $path"
+    }
+  }
 }
 
 function Invoke-NativeVerification {
@@ -293,6 +308,17 @@ function Invoke-NativeVerification {
 
   Assert-NativeArm64 -Architecture $Architecture | Out-Null
 
+  # Resolve and hash all scanner inputs before any candidate-linked code runs.
+  $scannerPath = (Resolve-Path -LiteralPath $Scanner).Path
+  $objdumpPath = (Resolve-Path -LiteralPath $Objdump).Path
+  $nmPath = (Resolve-Path -LiteralPath $Nm).Path
+  $scannerSha = (Get-FileHash -LiteralPath $scannerPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($scannerSha -ne '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9') {
+    throw "Canonical scanner identity mismatch: $scannerSha"
+  }
+  $objdumpSha = (Get-FileHash -LiteralPath $objdumpPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  $nmSha = (Get-FileHash -LiteralPath $nmPath -Algorithm SHA256).Hash.ToLowerInvariant()
+
   $bundle = (Resolve-Path -LiteralPath $BundlePath).Path
   $dynamic = Join-Path $bundle 'npth-dynamic-smoke.exe'
   $static = Join-Path $bundle 'npth-static-smoke.exe'
@@ -304,6 +330,14 @@ function Invoke-NativeVerification {
     if (-not (Test-Path -LiteralPath $required)) {
       throw "Native bundle is missing $([IO.Path]::GetFileName($required))."
     }
+  }
+  $trustedHashes = [ordered]@{
+    $scannerPath = $scannerSha
+    $objdumpPath = $objdumpSha
+    $nmPath = $nmSha
+    $dynamic = (Get-FileHash -LiteralPath $dynamic -Algorithm SHA256).Hash.ToLowerInvariant()
+    $static = (Get-FileHash -LiteralPath $static -Algorithm SHA256).Hash.ToLowerInvariant()
+    $dll[0].FullName = (Get-FileHash -LiteralPath $dll[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
   }
 
   # The dynamic consumer resolves msys-npth / msys-2.0 from the bundle.
@@ -358,15 +392,10 @@ function Invoke-NativeVerification {
       throw 'Dynamic consumer module capture is missing msys-2.0.dll or msys-npth.'
     }
 
-    $scannerPath = (Resolve-Path -LiteralPath $Scanner).Path
-    $objdumpPath = (Resolve-Path -LiteralPath $Objdump).Path
-    $nmPath = (Resolve-Path -LiteralPath $Nm).Path
-    $scannerSha = (Get-FileHash -LiteralPath $scannerPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($scannerSha -ne '888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9') {
-      throw "Canonical scanner identity mismatch: $scannerSha"
-    }
+    Assert-FileHashes -ExpectedHashes $trustedHashes
     $scanRecords = @()
     foreach ($input in @($dll[0].FullName, $dynamic, $static)) {
+      Assert-FileHashes -ExpectedHashes $trustedHashes
       $scannerOutput = Join-Path $bundle "$([IO.Path]::GetFileName($input)).pseudo-reloc.json"
       & (Get-Process -Id $PID).Path -NoLogo -NoProfile -NonInteractive `
         -File $scannerPath -PePath $input -OutputPath $scannerOutput `
@@ -390,9 +419,9 @@ function Invoke-NativeVerification {
     $evidence.scanner = [ordered]@{
       sha256        = $scannerSha
       objdump_path  = $objdumpPath
-      objdump_sha256 = (Get-FileHash -LiteralPath $objdumpPath -Algorithm SHA256).Hash.ToLowerInvariant()
+      objdump_sha256 = $objdumpSha
       nm_path       = $nmPath
-      nm_sha256     = (Get-FileHash -LiteralPath $nmPath -Algorithm SHA256).Hash.ToLowerInvariant()
+      nm_sha256     = $nmSha
       inputs        = $scanRecords
     }
     $evidence.result = 'pass'

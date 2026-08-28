@@ -153,6 +153,8 @@ function Get-PackageSeal {
       [Security.Cryptography.SHA256]::Create().ComputeHash($bytes)).Replace('-', '').ToLowerInvariant()
     $seal.metadata[$member] = [ordered]@{ bytes = $bytes.Length; sha256 = $sha }
   }
+  & (Join-Path $PSScriptRoot 'validate-buildinfo-path.ps1') `
+    -Path (Join-Path $MetadataDir 'BUILDINFO') | Out-Null
   return $seal
 }
 
