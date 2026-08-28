@@ -1,0 +1,10 @@
+# Deterministic source: makepkg hashes these verbatim, so pin them to LF and
+# forbid CRLF/end-of-line rewriting on checkout across every runner.
+*.c            text eol=lf
+*.sh           text eol=lf
+*.m4           text eol=lf
+PKGBUILD       text eol=lf
+*.ps1          text eol=lf
+*.json         text eol=lf
+*.patch        text eol=lf whitespace=-blank-at-eol,-space-before-tab
+*.SHA256SUMS   -text

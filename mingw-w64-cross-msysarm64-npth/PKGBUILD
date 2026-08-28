@@ -1,29 +1,43 @@
 # Maintainer: Chris Reddington <crutkas@microsoft.com>
 
+_realname=npth
+_target=aarch64-pc-msys
+_runtime_version=3.6.10.r0.ga527ace21
+_runtime_pkgrel=1
+_binutils_version=2.44.50
+_binutils_pkgrel=2
+_gcc_version=15.0.1dev
+_gcc_pkgrel=1
+
+# The a527 runtime is immutable. Candidate packages remain provisional until the
+# coordinator-approved fixed-binutils build passes native ARM64 admission CI.
 pkgbase=mingw-w64-cross-msysarm64-npth
 pkgname=(
   mingw-w64-cross-msysarm64-npth
   mingw-w64-cross-msysarm64-npth-devel
 )
 pkgver=1.8
-pkgrel=1
-pkgdesc="nPth library for aarch64-pc-msys"
+pkgrel=2
+pkgdesc="nPth library for aarch64-pc-msys (shared runtime and static/devel)"
 arch=('x86_64')
 url="https://gnupg.org/software/npth/index.html"
 msys2_repository_url="https://git.gnupg.org/cgi-bin/gitweb.cgi?p=npth.git"
-license=('LGPL')
+msys2_pgp_keys_url="https://gnupg.org/signature_key.html"
+license=('spdx:LGPL-2.1-or-later')
 groups=('mingw-w64-cross-toolchain' 'mingw-w64-cross')
-depends=()
 makedepends=(
-  'autotools'
   'gcc'
-  'mingw-w64-cross-cygwinarm64-binutils'
-  'mingw-w64-cross-msysarm64-gcc=15.0.1dev-1'
-  'mingw-w64-cross-msysarm64-gcc-libs=15.0.1dev-1'
-  'mingw-w64-cross-msysarm64-sysroot=3.6.10.r0.ga527ace21-1'
-  'pkgconf'
+  'make'
+  'patch'
+  "mingw-w64-cross-cygwinarm64-binutils=${_binutils_version}-${_binutils_pkgrel}"
+  "mingw-w64-cross-msysarm64-gcc=${_gcc_version}-${_gcc_pkgrel}"
+  "mingw-w64-cross-msysarm64-gcc-libs=${_gcc_version}-${_gcc_pkgrel}"
+  "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
+  "mingw-w64-cross-msysarm64-sysroot=${_runtime_version}-${_runtime_pkgrel}"
 )
-options=('!strip' '!buildflags' '!emptydirs')
+# 'libtool' keeps the generated .la; 'staticlibs' keeps libnpth.a. Both are
+# deliberately retained so genuine static consumers can link the archive.
+options=('!strip' '!buildflags' '!emptydirs' 'libtool' 'staticlibs')
 validpgpkeys=(
   '5B80C5754298F0CB55D8ED6ABCEF7E294B092E28' # Andre Heinecke (Release Signing Key)
   '6DAA6E64A76D2840571B4902528897B826403ADA' # Werner Koch (dist signing 2020)
@@ -33,184 +47,199 @@ validpgpkeys=(
 source=(
   "npth-${pkgver}.tar.bz2::https://github.com/crutkas/MSYS2-packages/releases/download/npth-1.8-source/npth-${pkgver}.tar.bz2"
   "npth-${pkgver}.tar.bz2.sig::https://github.com/crutkas/MSYS2-packages/releases/download/npth-1.8-source/npth-${pkgver}.tar.bz2.sig"
+  msys-libtool.patch
+  npth-dynamic-smoke.c
+  npth-static-smoke.c
 )
 sha256sums=(
   '8bd24b4f23a3065d6e5b26e98aba9ce783ea4fd781069c1b35d149694e90ca3e'
   'SKIP'
+  'dfe9fa551f7e44508466158099f85b93997a14fc3f5cf7da7c768909ddac08e1'
+  '48453666d8f2b210239547daa4e64cdd0c2180551cdfb3795237863ecd31ead2'
+  '5eec9c3423f6ee7ea3f354ea06b9ee6f40af88425a8e5294c6a4f6db085cb008'
 )
 
-_target=aarch64-pc-msys
 _prefix="/opt/${_target}"
+_target_usr="${_prefix}/usr"
+_debug_prefix="/usr/src/debug/${pkgbase}-${pkgver}"
+
+# Rewrite an ar archive so its member headers and armap carry no timestamps,
+# uid, gid, or mode entropy. Uses the target ar/ranlib deterministic mode so the
+# two independent build jobs emit byte-identical libnpth.a and libnpth.dll.a.
+_seal_archive() {
+  local archive="$1"
+  local work="${srcdir}/ar-reseal"
+  local -a members
+
+  [[ -f "${archive}" ]] || return 0
+  mapfile -t members < <("${_target}-ar" t "${archive}")
+  rm -rf "${work}"
+  mkdir -p "${work}"
+  ( cd "${work}" && "${_target}-ar" x "${archive}" )
+  rm -f "${archive}"
+  ( cd "${work}" && "${_target}-ar" rcsD "${archive}" "${members[@]}" )
+  "${_target}-ranlib" -D "${archive}"
+  rm -rf "${work}"
+}
 
 prepare() {
   cd "${srcdir}/npth-${pkgver}"
 
-  autoreconf -fiv
+  # Teach the signed release's generated libtool that *-*-msys is a Cygwin-class
+  # shared-library host and emits msys-<name>-<soname>.dll. Regenerating the
+  # build system outside the signed tag would rewrite PACKAGE_VERSION, so apply
+  # the exact checked-in patch to the shipped generated files.
+  patch -Np1 -i "${srcdir}/msys-libtool.patch"
+  grep -Fq 's/^lib/msys-/' configure
+  ! grep -Fq 's/^lib/cyg/' configure
 }
 
 build() {
-  local build_dir="${srcdir}/build-${_target}"
-  local _sysroot_include="-isystem ${_prefix}/include"
-  local _sysroot_lib="-L${_prefix}/lib"
-  local _prefix_map="-ffile-prefix-map=${srcdir}=. -fdebug-prefix-map=${srcdir}=. -fmacro-prefix-map=${srcdir}=."
+  cd "${srcdir}/npth-${pkgver}"
 
-  rm -rf "${build_dir}" "${srcdir}/dest"
-  mkdir -p "${build_dir}" "${srcdir}/dest"
+  export PATH="${_target_usr}/bin:/opt/bin:${PATH}"
+  export CPPFLAGS="-isystem ${_target_usr}/include"
+  # -g0 keeps the release deterministic and free of debug build-path records.
+  export CFLAGS="-O2 -g0 -pipe -ffile-prefix-map=${srcdir}=${_debug_prefix} -fdebug-prefix-map=${srcdir}=${_debug_prefix} -fmacro-prefix-map=${srcdir}=${_debug_prefix}"
+  export LDFLAGS="-L${_target_usr}/lib -Wl,--no-insert-timestamp"
+  export lt_cv_deplibs_check_method=pass_all
+  export lt_cv_archive_cmds_need_lc=no
 
-  export PATH="/opt/bin:${PATH}"
-  export CC='aarch64-pc-msys-gcc'
-  export CXX='aarch64-pc-msys-g++'
-  export AR='aarch64-pc-msys-ar'
-  export AS='aarch64-pc-msys-as'
-  export NM='aarch64-pc-msys-nm'
-  export RANLIB='aarch64-pc-msys-ranlib'
-  export STRIP='aarch64-pc-msys-strip'
-  export CPPFLAGS="${CPPFLAGS:-} -D__MSYS__ ${_sysroot_include}"
-  export CFLAGS="${CFLAGS:-} -O2 -pipe -D__MSYS__ ${_sysroot_include} ${_prefix_map}"
-  export CXXFLAGS="${CXXFLAGS:-} -O2 -pipe -D__MSYS__ ${_sysroot_include} ${_prefix_map}"
-  export LDFLAGS="${LDFLAGS:-} ${_sysroot_lib}"
+  ./configure \
+    CC="${_target}-gcc" \
+    AR="${_target}-ar" \
+    RANLIB="${_target}-ranlib" \
+    LD="${_target}-ld" \
+    NM="${_target}-nm" \
+    STRIP="${_target}-strip" \
+    DLLTOOL="${_target}-dlltool" \
+    CC_FOR_BUILD=gcc \
+    --prefix=/usr \
+    --build=x86_64-pc-msys \
+    --host="${_target}" \
+    --enable-shared \
+    --enable-static \
+    --enable-install-npth-config
 
-  (
-    cd "${build_dir}"
-    "${srcdir}/npth-${pkgver}/configure" \
-      --build="${CHOST}" \
-      --host="${_target}" \
-      --target="${_target}" \
-      --prefix="${_prefix}" \
-      --disable-shared \
-      --enable-static \
-      --enable-install-npth-config
-  )
+  make no_undefined="-no-undefined"
+  make DESTDIR="${srcdir}/dest" install
 
-  make -C "${build_dir}" no_undefined=-no-undefined
-  make -C "${build_dir}" DESTDIR="${srcdir}/dest" install
+  # Both the static archive and the import library are ar archives; normalize
+  # their armaps deterministically after install.
+  _seal_archive "${srcdir}/dest/usr/lib/libnpth.a"
+  _seal_archive "${srcdir}/dest/usr/lib/libnpth.dll.a"
+
+  # Make npth-config relocatable against the installed sysroot so it never bakes
+  # in the build machine's /usr paths.
+  local _config="${srcdir}/dest/usr/bin/npth-config"
+  local _metadata_root="\${NPTH_SYSROOT:-${_prefix}}"
+  sed -i \
+    -e "s|^prefix=.*|prefix=\"${_metadata_root}/usr\"|" \
+    -e "s|^exec_prefix=.*|exec_prefix=\"\${prefix}\"|" \
+    -e "s|^includedir=.*|includedir=\"\${prefix}/include\"|" \
+    -e "s|^libdir=.*|libdir=\"\${exec_prefix}/lib\"|" \
+    "${_config}"
+
+  # Deterministic release must never reference the transient build root.
+  ! grep -R -Fq "${srcdir}" \
+    "${srcdir}/dest/usr/include" \
+    "${srcdir}/dest/usr/lib/pkgconfig" \
+    "${_config}"
 }
 
 check() {
-  local pkgroot="${srcdir}/dest${_prefix}"
-  local config_script="${pkgroot}/bin/npth-config"
-  local pcdir="${pkgroot}/lib/pkgconfig"
-  local smoke_c="${srcdir}/npth-smoke.c"
-  local smoke_o="${srcdir}/npth-smoke.o"
-  local cfg_flags pc_flags
+  cd "${srcdir}/npth-${pkgver}"
 
-  test -x "${config_script}"
-  test -f "${pcdir}/npth.pc"
-  test -f "${pkgroot}/share/aclocal/npth.m4"
-  test -f "${pkgroot}/include/npth.h"
-  test -f "${pkgroot}/lib/libnpth.a"
-  test -n "$(aarch64-pc-msys-ar t "${pkgroot}/lib/libnpth.a")"
+  local _dest="${srcdir}/dest/usr"
+  local _smoke="${srcdir}/smoke"
+  local _include="-isystem ${_dest}/include"
+  local _libdir="-L${_dest}/lib"
 
-  grep -Fq "${_prefix}" "${config_script}"
-  grep -Fq "prefix=${_prefix}" "${pcdir}/npth.pc"
-  grep -Fq "libdir=\${exec_prefix}/lib" "${pcdir}/npth.pc"
-  grep -Fq "includedir=\${prefix}/include" "${pcdir}/npth.pc"
+  rm -rf "${_smoke}"
+  mkdir -p "${_smoke}"
 
-  cfg_flags="$("${config_script}" --cflags --libs)"
-  case "${cfg_flags}" in
-    *"${_prefix}/include"* ) ;;
-    *)
-      printf 'ERROR: npth-config missing include flags: %s\n' "${cfg_flags}" >&2
-      return 1
-      ;;
-  esac
-  case "${cfg_flags}" in
-    *"${_prefix}/lib"* ) ;;
-    *)
-      printf 'ERROR: npth-config missing library flags: %s\n' "${cfg_flags}" >&2
-      return 1
-      ;;
-  esac
+  test -x "${_dest}/bin/npth-config"
+  test -f "${_dest}/include/npth.h"
+  test -f "${_dest}/lib/libnpth.a"
+  test -f "${_dest}/lib/libnpth.dll.a"
+  test -f "${_dest}/lib/pkgconfig/npth.pc"
+  test -f "${_dest}/share/aclocal/npth.m4"
+  ls "${_dest}"/bin/msys-npth-*.dll >/dev/null
 
-  pc_flags="$(PKG_CONFIG_PATH="${pcdir}" \
-    PKG_CONFIG_SYSROOT_DIR="${srcdir}/dest" \
-    pkg-config --cflags --libs npth)"
-  case "${pc_flags}" in
-    *"${srcdir}/dest${_prefix}/include"* ) ;;
-    *)
-      printf 'ERROR: pkg-config missing sysrooted include flags: %s\n' "${pc_flags}" >&2
-      return 1
-      ;;
-  esac
-  case "${pc_flags}" in
-    *"${srcdir}/dest${_prefix}/lib"* ) ;;
-    *)
-      printf 'ERROR: pkg-config missing sysrooted library flags: %s\n' "${pc_flags}" >&2
-      return 1
-      ;;
-  esac
-
-  cat > "${smoke_c}" <<'EOF'
-#include <npth.h>
-
-int main(void) {
-  npth_init();
-  return 0;
-}
-EOF
-
-  aarch64-pc-msys-gcc -c \
-    -D__MSYS__ \
-    $(PKG_CONFIG_PATH="${pcdir}" \
-      PKG_CONFIG_SYSROOT_DIR="${srcdir}/dest" \
-      pkg-config --cflags npth) \
-    "${smoke_c}" \
-    -o "${smoke_o}"
-
-  aarch64-pc-msys-gcc \
-    "${smoke_o}" \
-    $(PKG_CONFIG_PATH="${pcdir}" \
-      PKG_CONFIG_SYSROOT_DIR="${srcdir}/dest" \
-      pkg-config --libs npth) \
-    -o "${srcdir}/npth-smoke.exe"
-
-  aarch64-pc-msys-objdump -f "${srcdir}/npth-smoke.exe" \
-    | grep -F "file format pei-aarch64-little"
-  aarch64-pc-msys-objdump -p "${srcdir}/npth-smoke.exe" \
-    | grep -F "DLL Name: msys-2.0.dll"
-  if aarch64-pc-msys-objdump -p "${srcdir}/npth-smoke.exe" \
-      | grep -Ei 'DLL Name: cygwin1\.dll'; then
-    printf 'ERROR: npth smoke executable imports cygwin1.dll\n' >&2
+  # Deterministic armap: every member must be recorded with 0/0 ownership and a
+  # zeroed timestamp, proving the sealed archive carries no build entropy.
+  if "${_target}-ar" tv "${_dest}/lib/libnpth.a" | grep -Ev ' 0/0 ' | grep -q .; then
+    printf 'ERROR: libnpth.a retains non-deterministic member ownership\n' >&2
     return 1
   fi
+
+  # Dynamic consumer: links the import library and loads msys-npth-0.dll.
+  "${_target}-gcc" ${_include} "${srcdir}/npth-dynamic-smoke.c" \
+    ${_libdir} -lnpth -o "${_smoke}/npth-dynamic-smoke.exe"
+  # Static consumer: links libnpth.a directly, no npth DLL import.
+  "${_target}-gcc" ${_include} "${srcdir}/npth-static-smoke.c" \
+    "${_dest}/lib/libnpth.a" -o "${_smoke}/npth-static-smoke.exe"
+
+  "${_target}-objdump" -f "${_smoke}/npth-dynamic-smoke.exe" \
+    | grep -F "file format pei-aarch64-little"
+  "${_target}-objdump" -f "${_smoke}/npth-static-smoke.exe" \
+    | grep -F "file format pei-aarch64-little"
+
+  "${_target}-objdump" -p "${_smoke}/npth-dynamic-smoke.exe" \
+    | grep -F "DLL Name: msys-2.0.dll"
+  "${_target}-objdump" -p "${_smoke}/npth-dynamic-smoke.exe" \
+    | grep -Ei 'DLL Name: msys-npth-[0-9]+\.dll'
+  if "${_target}-objdump" -p "${_smoke}/npth-static-smoke.exe" \
+      | grep -Eiq 'DLL Name: msys-npth-[0-9]+\.dll'; then
+    printf 'ERROR: static consumer unexpectedly imports the npth DLL\n' >&2
+    return 1
+  fi
+  if "${_target}-objdump" -p "${_smoke}/npth-dynamic-smoke.exe" \
+      | grep -Ei 'DLL Name: cygwin1\.dll'; then
+    printf 'ERROR: dynamic consumer imports cygwin1.dll\n' >&2
+    return 1
+  fi
+
+  # Stage a self-contained bundle the native ARM64 job executes as-is.
+  cp "${_dest}/bin/"msys-npth-*.dll "${_smoke}/"
 }
 
 package_mingw-w64-cross-msysarm64-npth() {
-  local pkgroot="${srcdir}/dest${_prefix}"
-  local license_dir="${pkgdir}/usr/share/licenses/${pkgname}"
-
-  pkgdesc="nPth static archive for aarch64-pc-msys"
-  depends=("mingw-w64-cross-msysarm64-runtime=3.6.10.r0.ga527ace21-1")
+  pkgdesc="nPth shared runtime library for aarch64-pc-msys"
+  groups=('libraries')
+  depends=("aarch64-pc-msys-runtime=${_runtime_version}")
   provides=("aarch64-pc-msys-npth=${pkgver}")
-  conflicts=("aarch64-pc-msys-npth")
+  conflicts=('aarch64-pc-msys-npth')
 
-  install -d "${pkgdir}/opt/${_target}/lib"
-  install -Dm644 "${pkgroot}/lib/libnpth.a" \
-    "${pkgdir}/opt/${_target}/lib/libnpth.a"
+  install -d "${pkgdir}${_target_usr}/bin"
+  install -m755 "${srcdir}/dest/usr/bin/"msys-npth-*.dll \
+    "${pkgdir}${_target_usr}/bin/"
   install -Dm644 "${srcdir}/npth-${pkgver}/COPYING.LIB" \
-    "${license_dir}/COPYING.LIB"
+    "${pkgdir}/usr/share/licenses/${pkgname}/COPYING.LIB"
 }
 
 package_mingw-w64-cross-msysarm64-npth-devel() {
-  local pkgroot="${srcdir}/dest${_prefix}"
-  local license_dir="${pkgdir}/usr/share/licenses/${pkgname}"
-
-  pkgdesc="nPth headers, config script, and pkg-config files for aarch64-pc-msys"
+  pkgdesc="nPth headers, import/static libraries, config script and pkg-config data for aarch64-pc-msys"
+  groups=('development')
   depends=(
     "mingw-w64-cross-msysarm64-npth=${pkgver}-${pkgrel}"
-    "mingw-w64-cross-msysarm64-runtime=3.6.10.r0.ga527ace21-1"
-    "mingw-w64-cross-msysarm64-sysroot=3.6.10.r0.ga527ace21-1"
+    "aarch64-pc-msys-runtime=${_runtime_version}"
+    "aarch64-pc-msys-sysroot=${_runtime_version}"
   )
   provides=("aarch64-pc-msys-npth-devel=${pkgver}")
-  conflicts=("aarch64-pc-msys-npth-devel")
+  conflicts=('aarch64-pc-msys-npth-devel')
+  options=('!strip' '!buildflags' '!emptydirs' 'staticlibs' 'libtool')
 
-  install -d "${pkgdir}/opt/${_target}"
-  cp -a "${pkgroot}/include" "${pkgdir}/opt/${_target}/"
-  install -d "${pkgdir}/opt/${_target}/lib"
-  cp -a "${pkgroot}/lib/pkgconfig" "${pkgdir}/opt/${_target}/lib/"
-  cp -a "${pkgroot}/share" "${pkgdir}/opt/${_target}/"
-  install -Dm755 "${pkgroot}/bin/npth-config" \
-    "${pkgdir}/opt/${_target}/bin/npth-config"
+  install -d "${pkgdir}${_target_usr}"/{include,lib,share}
+  cp -a "${srcdir}/dest/usr/include/." "${pkgdir}${_target_usr}/include/"
+  cp -a "${srcdir}/dest/usr/lib/libnpth.a" "${pkgdir}${_target_usr}/lib/"
+  cp -a "${srcdir}/dest/usr/lib/libnpth.dll.a" "${pkgdir}${_target_usr}/lib/"
+  test -f "${srcdir}/dest/usr/lib/libnpth.la"
+  cp -a "${srcdir}/dest/usr/lib/libnpth.la" "${pkgdir}${_target_usr}/lib/"
+  cp -a "${srcdir}/dest/usr/lib/pkgconfig" "${pkgdir}${_target_usr}/lib/"
+  cp -a "${srcdir}/dest/usr/share/aclocal" "${pkgdir}${_target_usr}/share/"
+  install -Dm755 "${srcdir}/dest/usr/bin/npth-config" \
+    "${pkgdir}${_target_usr}/bin/npth-config"
   install -Dm644 "${srcdir}/npth-${pkgver}/COPYING.LIB" \
-    "${license_dir}/COPYING.LIB"
+    "${pkgdir}/usr/share/licenses/${pkgname}/COPYING.LIB"
 }

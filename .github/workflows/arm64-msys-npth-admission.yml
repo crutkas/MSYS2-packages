@@ -1,0 +1,714 @@
+name: ARM64 MSYS npth admission
+
+# Dedicated exact-head admission workflow for the aarch64-pc-msys npth candidate.
+# Two independent deterministic build jobs feed a byte-for-byte comparison; only
+# comparison-approved packages reach the private-base pacman lifecycle audit and
+# the genuine native windows-11-arm verification. Every input is immutable and
+# content-addressed (see mingw-w64-cross-msysarm64-npth/input-manifest.json), no
+# transaction ever reaches a live repository, and C:\msys64 is only ever sealed
+# and compared, never used for package work.
+
+on:
+  push:
+    branches:
+      - crutkas-finalize-arm64-npth-admission
+    paths:
+      - mingw-w64-cross-msysarm64-npth/**
+      - .github/workflows/arm64-msys-npth-admission.yml
+  pull_request:
+    paths:
+      - mingw-w64-cross-msysarm64-npth/**
+      - .github/workflows/arm64-msys-npth-admission.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: arm64-msys-npth-admission-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SOURCE_DATE_EPOCH: 1787847603
+  PKG_DIR: mingw-w64-cross-msysarm64-npth
+  ADMISSION_HEAD: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  static-policy:
+    if: ${{ github.repository == 'crutkas/MSYS2-packages' }}
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.ADMISSION_HEAD }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run offline unit tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = Join-Path $env:GITHUB_WORKSPACE $env:PKG_DIR
+          $tests = @(
+            'test-input-manifest.ps1',
+            'test-buildinfo-path.ps1',
+            'test-safe-extract.ps1',
+            'test-workflow-policy.ps1',
+            'test-compare-normalized-tree.ps1',
+            'test-lifecycle-audit.ps1',
+            'test-native-verify.ps1',
+            'test-build-candidate.ps1',
+            'test-receive-pinned.ps1'
+          )
+          foreach ($test in $tests) {
+            Write-Host "== $test =="
+            $global:LASTEXITCODE = 0
+            & (Join-Path $dir $test)
+            if ($LASTEXITCODE -ne 0) { throw "Offline test failed: $test" }
+          }
+
+      - name: Validate manifest, script AST, and shell syntax
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = Join-Path $env:GITHUB_WORKSPACE $env:PKG_DIR
+
+          # input-manifest.json must be valid JSON.
+          Get-Content -Raw (Join-Path $dir 'input-manifest.json') | ConvertFrom-Json | Out-Null
+
+          # Every package PowerShell script must parse.
+          $errors = $null
+          foreach ($script in Get-ChildItem -LiteralPath $dir -Filter '*.ps1') {
+            [System.Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) { throw "Parse errors in $($script.Name): $($errors -join '; ')" }
+          }
+
+          # Every package shell script must pass `bash -n`.
+          $bash = 'C:\Program Files\Git\bin\bash.exe'
+          if (Test-Path -LiteralPath $bash) {
+            foreach ($sh in Get-ChildItem -LiteralPath $dir -Filter '*.sh') {
+              & $bash -n $sh.FullName
+              if ($LASTEXITCODE -ne 0) { throw "Shell syntax error in $($sh.Name)" }
+            }
+          }
+
+      - name: Scan workflow policy and verify source ancestry
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = Join-Path $env:GITHUB_WORKSPACE $env:PKG_DIR
+          . (Join-Path $dir 'workflow-policy.ps1')
+          Assert-WorkflowPolicy -Path (Join-Path $env:GITHUB_WORKSPACE '.github/workflows/arm64-msys-npth-admission.yml')
+
+          # Bind the event's exact source head: it must descend from (or equal) the expected
+          # parent so this admission commit and later commits stay possible. The
+          # workflow never requires github.sha to equal the parent.
+          $manifest = Get-Content -Raw (Join-Path $dir 'input-manifest.json') | ConvertFrom-Json
+          $parent = $manifest.source.expectedParent
+          $actualHead = (& git rev-parse HEAD).Trim()
+          if ($actualHead -ne $env:ADMISSION_HEAD) {
+            throw "Checked-out HEAD $actualHead does not equal event head $env:ADMISSION_HEAD"
+          }
+          $PSNativeCommandUseErrorActionPreference = $false
+          & git merge-base --is-ancestor $parent HEAD
+          if ($LASTEXITCODE -ne 0) {
+            throw "HEAD is not a descendant of the expected parent $parent"
+          }
+          Write-Host "Exact event head $actualHead descends from $parent"
+
+  build:
+    needs: static-policy
+    if: ${{ github.repository == 'crutkas/MSYS2-packages' }}
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [a, b]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.ADMISSION_HEAD }}
+          persist-credentials: false
+
+      - name: Download immutable inputs and materialize the private base
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version 3
+          $env:MSYS = 'winsymlinks:sys'
+          $recipe = Join-Path $env:GITHUB_WORKSPACE $env:PKG_DIR
+          $manifestPath = Join-Path $recipe 'input-manifest.json'
+          $inputs = Join-Path $env:RUNNER_TEMP 'npth-inputs'
+          $privateBase = Join-Path $env:RUNNER_TEMP 'npth-private-base'
+          New-Item -ItemType Directory -Force $privateBase | Out-Null
+
+          $global:ReceivePinnedDotSource = $true
+          . (Join-Path $recipe 'receive-pinned.ps1')
+          Remove-Variable -Name ReceivePinnedDotSource -Scope Global
+          Receive-ManifestInputs -Manifest $manifestPath -InputsDir $inputs `
+            -Include @('host', 'target', 'source', 'scanner', 'signingkey', 'base') | Out-Null
+          $m = Get-Content -Raw $manifestPath | ConvertFrom-Json
+          Assert-PinnedDetachedSignature `
+            -Archive (Join-Path $inputs $m.privateBase.archive.name) `
+            -Signature (Join-Path $inputs $m.privateBase.signature.name) `
+            -PublicKey (Join-Path $inputs $m.privateBase.signerKey.name) `
+            -Fingerprint $m.privateBase.signer
+          & (Join-Path $recipe 'safe-extract.ps1') `
+            -Archive (Join-Path $inputs $m.privateBase.archive.name) `
+            -Bsdtar 'C:\Windows\System32\tar.exe' -PreflightOnly -AllowInternalLinks
+
+          # The base is hash- and byte-pinned and contains standard distribution
+          # symlinks, so it is unpacked with bsdtar's own absolute/traversal
+          # guards; safe-extract.ps1 is reserved for the untrusted candidate and
+          # tool payloads unpacked elsewhere.
+          $base = Join-Path $inputs 'msys2-base-x86_64-20260611.tar.xz'
+          & 'C:\Windows\System32\tar.exe' -xf $base -C $privateBase
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to extract the pinned msys2 base archive' }
+          foreach ($tool in @('usr\bin\pacman.exe', 'usr\bin\bash.exe', 'usr\bin\cygpath.exe')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $privateBase (Join-Path 'msys64' $tool)))) {
+              throw "Pinned base archive is missing $tool"
+            }
+          }
+
+      - name: Build and seal the deterministic npth candidate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version 3
+          $recipe = Join-Path $env:GITHUB_WORKSPACE $env:PKG_DIR
+          $manifest = Join-Path $recipe 'input-manifest.json'
+          $inputs = Join-Path $env:RUNNER_TEMP 'npth-inputs'
+          $root = Join-Path $env:RUNNER_TEMP 'npth-private-base\msys64'
+          $output = Join-Path $env:RUNNER_TEMP 'npth-build-out'
+
+          & (Join-Path $recipe 'build-candidate.ps1') `
+            -Manifest $manifest -InputsDir $inputs -Root $root `
+            -Workspace $env:GITHUB_WORKSPACE -OutputDir $output `
+            -SourceDateEpoch ([long]$env:SOURCE_DATE_EPOCH)
+
+      - name: Scan pseudo-relocs, audit path leaks, and stage the native bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version 3
+          $recipe = Join-Path $env:GITHUB_WORKSPACE $env:PKG_DIR
+          $inputs = Join-Path $env:RUNNER_TEMP 'npth-inputs'
+          $root = Join-Path $env:RUNNER_TEMP 'npth-private-base\msys64'
+          $output = Join-Path $env:RUNNER_TEMP 'npth-build-out'
+          $smoke = Join-Path $output 'native-smoke'
+
+          # Package-owned target binutils (never a shared-runner tool).
+          $objdump = Join-Path $root 'opt\bin\aarch64-pc-msys-objdump.exe'
+          $nm = Join-Path $root 'opt\bin\aarch64-pc-msys-nm.exe'
+          $objcopy = Join-Path $root 'opt\bin\aarch64-pc-msys-objcopy.exe'
+          $ar = Join-Path $root 'opt\bin\aarch64-pc-msys-ar.exe'
+          foreach ($tool in @($objdump, $nm)) {
+            if (-not (Test-Path -LiteralPath $tool)) { throw "Package-owned tool missing: $tool" }
+          }
+
+          $dll = @(Get-ChildItem -LiteralPath $smoke -Filter 'msys-npth-*.dll')
+          if ($dll.Count -ne 1) { throw "Expected exactly one staged npth DLL, found $($dll.Count)" }
+
+          # Canonical pseudo-reloc scanner over the shipped DLL and both consumers.
+          $scanner = Join-Path $inputs 'check-aarch64-pseudo-relocs.ps1'
+          $scanDir = Join-Path $output 'scanner'
+          New-Item -ItemType Directory -Force $scanDir | Out-Null
+          foreach ($pe in @(
+              $dll[0].FullName,
+              (Join-Path $smoke 'npth-dynamic-smoke.exe'),
+              (Join-Path $smoke 'npth-static-smoke.exe'))) {
+            $out = Join-Path $scanDir ([IO.Path]::GetFileName($pe) + '.json')
+            & (Get-Process -Id $PID).Path -NoLogo -NoProfile -NonInteractive `
+              -File $scanner -PePath $pe -OutputPath $out -Objdump $objdump -Nm $nm
+            if ($LASTEXITCODE -ne 0) { throw "Canonical pseudo-reloc scanner rejected $pe" }
+          }
+
+          # Path-leak evidence over the shipped runtime DLL and both consumers.
+          $bash = Join-Path $root 'usr\bin\bash.exe'
+          $leakDir = Join-Path $output 'path-leak'
+          New-Item -ItemType Directory -Force $leakDir | Out-Null
+          $repoPosix = (& $bash -lc "/usr/bin/cygpath -u '$env:GITHUB_WORKSPACE'").Trim()
+          $smokePosix = (& $bash -lc "/usr/bin/cygpath -u '$smoke'").Trim()
+          $leakPosix = (& $bash -lc "/usr/bin/cygpath -u '$leakDir'").Trim()
+          foreach ($input in @($dll[0].Name, 'npth-dynamic-smoke.exe', 'npth-static-smoke.exe')) {
+            $leakScript = @"
+            set -euo pipefail
+            export PATH=/opt/bin:/opt/aarch64-pc-msys/usr/bin:/usr/bin
+            '$repoPosix/mingw-w64-cross-msysarm64-npth/audit-path-leaks.sh' \
+              '$smokePosix/$input' '$input' '$leakPosix' \
+              /opt/bin/aarch64-pc-msys-objdump \
+              /opt/bin/aarch64-pc-msys-objcopy \
+              /opt/bin/aarch64-pc-msys-strings \
+              no
+            "@
+            & $bash -lc $leakScript
+            if ($LASTEXITCODE -ne 0) { throw "Path-leak audit rejected $input" }
+          }
+
+          # Package/source/tool hashes recorded alongside the build seal.
+          $toolHashes = [ordered]@{}
+          foreach ($tool in @($objdump, $nm, $objcopy, $ar)) {
+            if (Test-Path -LiteralPath $tool) {
+              $toolHashes[[IO.Path]::GetFileName($tool)] =
+                (Get-FileHash -LiteralPath $tool -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+          }
+          $toolHashes | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $output 'tool-hashes.json')
+
+          # Complete the uploaded native smoke bundle with the a527 msys-2.0
+          # runtime the dynamic consumer resolves at load time.
+          $msys2 = Join-Path $root 'opt\aarch64-pc-msys\bin\msys-2.0.dll'
+          if (-not (Test-Path -LiteralPath $msys2)) {
+            throw 'a527 msys-2.0.dll runtime was not installed into the private root'
+          }
+          Copy-Item -LiteralPath $msys2 -Destination $smoke
+
+      - name: Upload sealed build candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: npth-build-${{ matrix.variant }}
+          if-no-files-found: error
+          path: ${{ runner.temp }}/npth-build-out/**
+
+  compare:
+    needs: build
+    if: ${{ github.repository == 'crutkas/MSYS2-packages' }}
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.ADMISSION_HEAD }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: npth-build-a
+          path: ${{ runner.temp }}/builds/a
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: npth-build-b
+          path: ${{ runner.temp }}/builds/b
+
+      - name: Compare normalized inner package trees byte-for-byte
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $recipe = Join-Path $env:GITHUB_WORKSPACE $env:PKG_DIR
+          $report = Join-Path $env:RUNNER_TEMP 'npth-compare-report'
+          New-Item -ItemType Directory -Force $report | Out-Null
+
+          $sealA = Get-Content -Raw (Join-Path $env:RUNNER_TEMP 'builds\a\build-seal.json') | ConvertFrom-Json
+          $sealB = Get-Content -Raw (Join-Path $env:RUNNER_TEMP 'builds\b\build-seal.json') | ConvertFrom-Json
+          if ($sealA.source_head -ne $env:ADMISSION_HEAD -or
+              $sealB.source_head -ne $env:ADMISSION_HEAD) {
+            throw 'Build seals are not bound to the exact admission head'
+          }
+          if ($sealA.source_date_epoch -ne $sealB.source_date_epoch) {
+            throw 'Build SOURCE_DATE_EPOCH values differ'
+          }
+          $downloadSealA = Join-Path $env:RUNNER_TEMP 'builds\a\input-download-seal.json'
+          $downloadSealB = Join-Path $env:RUNNER_TEMP 'builds\b\input-download-seal.json'
+          if ((Get-FileHash -LiteralPath $downloadSealA).Hash -ne
+              (Get-FileHash -LiteralPath $downloadSealB).Hash) {
+            throw 'Verified immutable input seals differ between builds'
+          }
+
+          & (Join-Path $recipe 'compare-normalized-tree.ps1') `
+            -BuildA (Join-Path $env:RUNNER_TEMP 'builds\a') `
+            -BuildB (Join-Path $env:RUNNER_TEMP 'builds\b') `
+            -Bsdtar 'C:\Windows\System32\tar.exe' `
+            -WorkDir (Join-Path $env:RUNNER_TEMP 'npth-compare-work') |
+            Tee-Object -FilePath (Join-Path $report 'compare.log')
+
+          function Get-DirectoryManifest([string] $Path) {
+            $root = (Resolve-Path -LiteralPath $Path).Path
+            return @(
+             Get-ChildItem -LiteralPath $root -Recurse -File |
+               Sort-Object FullName |
+               ForEach-Object {
+                 $relative = $_.FullName.Substring($root.Length + 1).Replace('\', '/')
+                 "$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $relative"
+               }
+            )
+          }
+          $smokeA = Get-DirectoryManifest (Join-Path $env:RUNNER_TEMP 'builds\a\native-smoke')
+          $smokeB = Get-DirectoryManifest (Join-Path $env:RUNNER_TEMP 'builds\b\native-smoke')
+          if (Compare-Object $smokeA $smokeB) {
+            throw 'Native smoke inputs differ between independent builds'
+          }
+
+          $approved = Join-Path $env:RUNNER_TEMP 'npth-approved'
+          New-Item -ItemType Directory -Force $approved | Out-Null
+          Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP 'builds\a') `
+            -File -Filter '*.pkg.tar.zst' | Copy-Item -Destination $approved
+          Copy-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'builds\a\native-smoke') `
+            -Destination (Join-Path $approved 'native-smoke') -Recurse
+
+          # Bind the runtime DLL used by the smoke bundle to the compared runtime
+          # package, rather than trusting an unchecked pre-package byproduct.
+          $runtime = Get-ChildItem -LiteralPath $approved -File `
+            -Filter 'mingw-w64-cross-msysarm64-npth-1.8-2-*.pkg.tar.zst'
+          if (@($runtime).Count -ne 1) { throw 'Approved runtime package set is incomplete' }
+          $runtimeExtract = Join-Path $env:RUNNER_TEMP 'npth-approved-runtime'
+          & (Join-Path $recipe 'safe-extract.ps1') -Archive $runtime.FullName `
+            -Destination $runtimeExtract -Bsdtar 'C:\Windows\System32\tar.exe'
+          $packageDll = Get-ChildItem -LiteralPath `
+            (Join-Path $runtimeExtract 'opt\aarch64-pc-msys\usr\bin') `
+            -File -Filter 'msys-npth-*.dll'
+          $smokeDll = Get-ChildItem -LiteralPath (Join-Path $approved 'native-smoke') `
+            -File -Filter 'msys-npth-*.dll'
+          if (@($packageDll).Count -ne 1 -or @($smokeDll).Count -ne 1 -or
+             (Get-FileHash $packageDll.FullName).Hash -ne (Get-FileHash $smokeDll.FullName).Hash) {
+            throw 'Native smoke DLL is not byte-identical to the compared runtime package DLL'
+          }
+
+          [ordered]@{
+            inner_trees_equal = $true
+            input_download_seals_equal = $true
+            native_smoke_equal = $true
+            package_dll_bound = $true
+            build_a = $sealA
+            build_b = $sealB
+          } | ConvertTo-Json -Depth 10 |
+            Set-Content -Encoding utf8 (Join-Path $report 'comparison-evidence.json')
+
+      - name: Upload comparison report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: npth-compare-report
+          if-no-files-found: error
+          path: ${{ runner.temp }}/npth-compare-report/**
+
+      - name: Upload comparison-approved packages and consumers
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: npth-compare-approved
+          if-no-files-found: error
+          path: ${{ runner.temp }}/npth-approved/**
+
+  lifecycle:
+    needs: compare
+    if: ${{ github.repository == 'crutkas/MSYS2-packages' }}
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.ADMISSION_HEAD }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: npth-compare-approved
+          path: ${{ runner.temp }}/approved
+
+      - name: Private-base pacman lifecycle audit
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version 3
+          $env:MSYS = 'winsymlinks:sys'
+          $recipe = Join-Path $env:GITHUB_WORKSPACE $env:PKG_DIR
+          $manifestPath = Join-Path $recipe 'input-manifest.json'
+          $inputs = Join-Path $env:RUNNER_TEMP 'npth-lifecycle-inputs'
+          $privateBase = Join-Path $env:RUNNER_TEMP 'npth-lifecycle-base'
+          $report = Join-Path $env:RUNNER_TEMP 'npth-lifecycle-report'
+          New-Item -ItemType Directory -Force $privateBase, $report | Out-Null
+
+          $global:ReceivePinnedDotSource = $true
+          . (Join-Path $recipe 'receive-pinned.ps1')
+          Remove-Variable -Name ReceivePinnedDotSource -Scope Global
+          Receive-ManifestInputs -Manifest $manifestPath -InputsDir $inputs `
+            -Include @('target', 'base') | Out-Null
+
+          # Record the base provenance from the already hash- and byte-verified
+          # download (archive + detached signature + signer fingerprint).
+          $m = Get-Content -Raw $manifestPath | ConvertFrom-Json
+          Assert-PinnedDetachedSignature `
+            -Archive (Join-Path $inputs $m.privateBase.archive.name) `
+            -Signature (Join-Path $inputs $m.privateBase.signature.name) `
+            -PublicKey (Join-Path $inputs $m.privateBase.signerKey.name) `
+            -Fingerprint $m.privateBase.signer
+          & (Join-Path $recipe 'safe-extract.ps1') `
+            -Archive (Join-Path $inputs $m.privateBase.archive.name) `
+            -Bsdtar 'C:\Windows\System32\tar.exe' -PreflightOnly -AllowInternalLinks
+          $sig = Get-Item -LiteralPath (Join-Path $inputs $m.privateBase.signature.name)
+          if ($sig.Length -ne $m.privateBase.signature.bytes) { throw 'Private base signature size mismatch' }
+          [ordered]@{
+            archive = $m.privateBase.archive.name
+            archive_sha256 = $m.privateBase.archive.sha256
+            archive_bytes = $m.privateBase.archive.bytes
+            signature_sha256 = (Get-FileHash -LiteralPath $sig.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            signature_bytes = $sig.Length
+            signer = $m.privateBase.signer
+          } | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $report 'private-base-provenance.json')
+
+          & 'C:\Windows\System32\tar.exe' -xf (Join-Path $inputs $m.privateBase.archive.name) -C $privateBase
+          if ($LASTEXITCODE -ne 0) { throw 'Unable to extract the pinned msys2 base archive' }
+          $root = Join-Path $privateBase 'msys64'
+
+          # The a527 runtime dependency closure the candidates resolve against.
+          $depNames = @(
+            'mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+            'mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+            'mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+            'mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+            'mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst',
+            'mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst'
+          )
+          $deps = $depNames | ForEach-Object { Join-Path $inputs $_ }
+          $candidates = @(Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP 'approved') `
+              -Filter '*.pkg.tar.zst' | Select-Object -ExpandProperty FullName)
+
+          & (Join-Path $recipe 'lifecycle-audit.ps1') `
+            -Pacman (Join-Path $root 'usr\bin\pacman.exe') `
+            -Bsdtar (Join-Path $root 'usr\bin\bsdtar.exe') `
+            -TransactionRoot (Join-Path $env:RUNNER_TEMP 'npth-transaction-root') `
+            -DependencyArchive $deps `
+            -CandidateArchive $candidates `
+            -ReportDirectory $report `
+            -PrivateBaseLocalDb (Join-Path $root 'var\lib\pacman\local')
+
+      - name: Upload lifecycle report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: npth-lifecycle-report
+          if-no-files-found: error
+          path: ${{ runner.temp }}/npth-lifecycle-report/**
+
+  native:
+    needs: compare
+    if: ${{ github.repository == 'crutkas/MSYS2-packages' }}
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.ADMISSION_HEAD }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: npth-compare-approved
+          path: ${{ runner.temp }}/approved
+
+      - name: Genuine native ARM64 verification
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version 3
+          $recipe = Join-Path $env:GITHUB_WORKSPACE $env:PKG_DIR
+          $manifestPath = Join-Path $recipe 'input-manifest.json'
+          $inputs = Join-Path $env:RUNNER_TEMP 'npth-native-inputs'
+          $report = Join-Path $env:RUNNER_TEMP 'npth-native-report'
+          New-Item -ItemType Directory -Force $inputs, $report | Out-Null
+
+          $global:ReceivePinnedDotSource = $true
+          . (Join-Path $recipe 'receive-pinned.ps1')
+          Remove-Variable -Name ReceivePinnedDotSource -Scope Global
+          $m = Get-Content -Raw $manifestPath | ConvertFrom-Json
+          $denyRules = @(Get-DenyRule -ManifestObject $m)
+
+          # Materialize the pinned x64 private host only for the canonical scanner
+          # tools. The compared consumers and every loaded target module remain
+          # native ARM64 and are rejected if emulated.
+          $fb = $m.targetInputs | Where-Object { $_.role -eq 'fixed-binutils' }
+          Receive-PinnedFile -Url $fb.url -Filename $fb.name -Sha256 $fb.sha256 `
+            -Bytes ([long]$fb.bytes) -Destination $inputs -DenyRules $denyRules | Out-Null
+          Receive-PinnedFile -Url $m.scanner.url -Filename $m.scanner.name `
+            -Sha256 $m.scanner.sha256 -Destination $inputs -DenyRules $denyRules | Out-Null
+          Receive-PinnedFile -Url $m.privateBase.archive.url `
+            -Filename $m.privateBase.archive.name -Sha256 $m.privateBase.archive.sha256 `
+            -Bytes ([long]$m.privateBase.archive.bytes) -Destination $inputs `
+            -DenyRules $denyRules | Out-Null
+          Receive-PinnedFile -Url $m.privateBase.signature.url `
+            -Filename $m.privateBase.signature.name -Sha256 $m.privateBase.signature.sha256 `
+            -Bytes ([long]$m.privateBase.signature.bytes) -Destination $inputs `
+            -DenyRules $denyRules | Out-Null
+          Receive-PinnedFile -Url $m.privateBase.signerKey.url `
+            -Filename $m.privateBase.signerKey.name -Sha256 $m.privateBase.signerKey.sha256 `
+            -Bytes ([long]$m.privateBase.signerKey.bytes) -Destination $inputs `
+            -DenyRules $denyRules | Out-Null
+          Assert-PinnedDetachedSignature `
+            -Archive (Join-Path $inputs $m.privateBase.archive.name) `
+            -Signature (Join-Path $inputs $m.privateBase.signature.name) `
+            -PublicKey (Join-Path $inputs $m.privateBase.signerKey.name) `
+            -Fingerprint $m.privateBase.signer
+          & (Join-Path $recipe 'safe-extract.ps1') `
+            -Archive (Join-Path $inputs $m.privateBase.archive.name) `
+            -Bsdtar 'C:\Windows\System32\tar.exe' -PreflightOnly -AllowInternalLinks
+
+          $hostParent = Join-Path $env:RUNNER_TEMP 'npth-native-private-host'
+          New-Item -ItemType Directory -Force $hostParent | Out-Null
+          & 'C:\Windows\System32\tar.exe' -xf `
+            (Join-Path $inputs $m.privateBase.archive.name) -C $hostParent
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned native scanner host extraction failed' }
+          $hostRoot = Join-Path $hostParent 'msys64'
+          $pacman = Join-Path $hostRoot 'usr\bin\pacman.exe'
+          $config = Join-Path $hostRoot 'etc\pacman-native-scanner.conf'
+          $hooks = Join-Path $hostRoot 'etc\pacman.d\hooks-native-scanner'
+          $gpg = Join-Path $hostRoot 'etc\pacman.d\gnupg-native-scanner'
+          New-Item -ItemType Directory -Force $hooks, $gpg | Out-Null
+          @'
+          [options]
+          Architecture = x86_64
+          SigLevel = Never
+          LocalFileSigLevel = Never
+          '@ | Set-Content -Encoding ascii $config
+          $common = @(
+            '--root', $hostRoot,
+            '--dbpath', (Join-Path $hostRoot 'var\lib\pacman'),
+            '--cachedir', (Join-Path $hostRoot 'var\cache\pacman\pkg'),
+            '--logfile', (Join-Path $hostRoot 'var\log\pacman-native-scanner.log'),
+            '--config', $config,
+            '--hookdir', $hooks,
+            '--gpgdir', $gpg,
+            '--noconfirm'
+          )
+          & $pacman @common -U (Join-Path $inputs $fb.name)
+          if ($LASTEXITCODE -ne 0) { throw 'Fixed-binutils private scanner install failed' }
+
+          # Extract the compared runtime package and replace the build-stage DLL
+          # with that package-owned byte before native execution.
+          $extract = Join-Path $env:RUNNER_TEMP 'npth-approved-runtime'
+          $runtime = Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP 'approved') `
+            -File -Filter 'mingw-w64-cross-msysarm64-npth-1.8-2-*.pkg.tar.zst'
+          if (@($runtime).Count -ne 1) { throw 'Comparison-approved runtime package is missing' }
+          & (Join-Path $recipe 'safe-extract.ps1') `
+            -Archive $runtime.FullName -Destination $extract `
+            -Bsdtar 'C:\Windows\System32\tar.exe'
+          $bundle = Join-Path $env:RUNNER_TEMP 'npth-package-native-smoke'
+          Copy-Item -LiteralPath (Join-Path $env:RUNNER_TEMP 'approved\native-smoke') `
+            -Destination $bundle -Recurse
+          Get-ChildItem -LiteralPath $bundle -File -Filter 'msys-npth-*.dll' |
+            Remove-Item -Force
+          Copy-Item -Path `
+            (Join-Path $extract 'opt\aarch64-pc-msys\usr\bin\msys-npth-*.dll') `
+            -Destination $bundle
+
+          $objdump = Join-Path $hostRoot 'opt\aarch64-pc-cygwin\bin\objdump.exe'
+          $nm = Join-Path $hostRoot 'opt\aarch64-pc-cygwin\bin\nm.exe'
+          foreach ($tool in @($objdump, $nm)) {
+            if (-not (Test-Path -LiteralPath $tool)) { throw "fixed-binutils is missing $tool" }
+            $owner = & $pacman @common -Qo $tool
+            if ($LASTEXITCODE -ne 0 -or
+                $owner -notmatch 'mingw-w64-cross-cygwinarm64-binutils 2\.44\.50-2') {
+              throw "Fixed-binutils package does not own $tool"
+            }
+          }
+          $env:PATH = "$(Join-Path $hostRoot 'usr\bin');$env:PATH"
+
+          & (Join-Path $recipe 'native-verify.ps1') `
+            -BundlePath $bundle `
+            -Objdump $objdump -Nm $nm `
+            -Scanner (Join-Path $inputs $m.scanner.name) `
+            -OutputPath (Join-Path $report 'native-evidence.json')
+
+      - name: Upload native evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: npth-native-evidence
+          if-no-files-found: error
+          path: ${{ runner.temp }}/npth-native-report/**
+
+  evidence:
+    needs: [compare, lifecycle, native]
+    if: ${{ github.repository == 'crutkas/MSYS2-packages' }}
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.ADMISSION_HEAD }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          path: ${{ runner.temp }}/evidence-inputs
+
+      - name: Bind durable admission evidence bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-StrictMode -Version 3
+          $recipe = Join-Path $env:GITHUB_WORKSPACE $env:PKG_DIR
+          $manifest = Join-Path $recipe 'input-manifest.json'
+          $downloads = Join-Path $env:RUNNER_TEMP 'evidence-inputs'
+          $bundle = Join-Path $env:RUNNER_TEMP 'npth-admission-evidence'
+          New-Item -ItemType Directory -Force $bundle | Out-Null
+
+          # Prove the safe-extraction preflight fails closed on hostile members
+          # (absolute, drive, traversal, link, and device entries) before binding.
+          $global:LASTEXITCODE = 0
+          & (Join-Path $recipe 'test-safe-extract.ps1')
+          if ($LASTEXITCODE -ne 0) { throw 'Safe-extraction fail-closed negative tests failed' }
+
+          $m = Get-Content -Raw $manifest | ConvertFrom-Json
+          $parent = $m.source.expectedParent
+          $PSNativeCommandUseErrorActionPreference = $false
+          & git merge-base --is-ancestor $parent HEAD
+          $ancestry = ($LASTEXITCODE -eq 0)
+
+          $sealA = Get-Content -Raw (Join-Path $downloads 'npth-build-a\build-seal.json') | ConvertFrom-Json
+          $sealB = Get-Content -Raw (Join-Path $downloads 'npth-build-b\build-seal.json') | ConvertFrom-Json
+          $comparison = Get-Content -Raw `
+            (Join-Path $downloads 'npth-compare-report\comparison-evidence.json') |
+            ConvertFrom-Json
+          if (-not $comparison.inner_trees_equal -or
+              -not $comparison.input_download_seals_equal -or
+              -not $comparison.native_smoke_equal -or
+              -not $comparison.package_dll_bound) {
+            throw 'Comparison evidence is incomplete or not green'
+          }
+
+          $native = Get-Content -Raw (Join-Path $downloads 'npth-native-evidence\native-evidence.json') | ConvertFrom-Json
+          if ($native.result -ne 'pass') { throw "Native evidence result is $($native.result)" }
+          $actualHead = (& git rev-parse HEAD).Trim()
+          if ($actualHead -ne $env:ADMISSION_HEAD) {
+            throw "Evidence checkout $actualHead does not equal admission head $env:ADMISSION_HEAD"
+          }
+
+          Copy-Item -LiteralPath $manifest -Destination $bundle
+          foreach ($sub in @('npth-build-a', 'npth-build-b', 'npth-compare-report',
+              'npth-lifecycle-report', 'npth-native-evidence')) {
+            $src = Join-Path $downloads $sub
+            if (Test-Path -LiteralPath $src) {
+              Copy-Item -LiteralPath $src -Destination (Join-Path $bundle $sub) -Recurse
+            }
+          }
+
+          [ordered]@{
+            schema = 1
+            source = [ordered]@{
+              repository = $env:GITHUB_REPOSITORY
+              admission_head = $env:ADMISSION_HEAD
+              event_sha = $env:GITHUB_SHA
+              expected_parent = $parent
+              descends_from_parent = $ancestry
+            }
+            source_date_epoch = [long]$env:SOURCE_DATE_EPOCH
+            inner_package_trees_equal = $comparison.inner_trees_equal
+            input_download_seals_equal = $comparison.input_download_seals_equal
+            native_smoke_inputs_equal = $comparison.native_smoke_equal
+            package_dll_bound = $comparison.package_dll_bound
+            build_a_seal = $sealA
+            build_b_seal = $sealB
+            native_result = $native.result
+            inputs = [ordered]@{
+              target = @($m.targetInputs | ForEach-Object { [ordered]@{ name = $_.name; url = $_.url; bytes = $_.bytes; sha256 = $_.sha256 } })
+              host = @($m.hostPackages | ForEach-Object { [ordered]@{ name = $_.name; url = $_.url; bytes = $_.bytes; sha256 = $_.sha256 } })
+              npth_source = $m.npthSource
+              private_base = $m.privateBase
+              scanner = $m.scanner
+            }
+            deny_list = $m.denyList
+            action_pins = $m.actionPins
+          } | ConvertTo-Json -Depth 10 |
+            Set-Content -Encoding utf8 (Join-Path $bundle 'admission-evidence.json')
+
+          if (-not $ancestry) { throw "HEAD is not a descendant of the expected parent $parent" }
+
+      - name: Upload admission evidence bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: npth-admission-evidence
+          if-no-files-found: error
+          path: ${{ runner.temp }}/npth-admission-evidence/**

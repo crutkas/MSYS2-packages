@@ -1,0 +1,295 @@
+{
+  "schema": 1,
+  "description": "Immutable admission inputs for the aarch64-pc-msys npth candidate. Every entry is content-addressed; the workflow verifies size and SHA-256 before use and refuses to proceed on any mismatch.",
+  "source": {
+    "repository": "crutkas/MSYS2-packages",
+    "branch": "crutkas-finalize-arm64-npth-admission",
+    "stackedBase": "crutkas-native-arm64-npth",
+    "expectedParent": "9efb4cb79a6921f405c8a6dabc7cc0b55c6f8cd4",
+    "parentBinding": "ancestor",
+    "note": "github.sha must be a descendant of, or equal to, expectedParent. It is never required to equal expectedParent so that this admission commit and later commits remain possible."
+  },
+  "package": {
+    "pkgbase": "mingw-w64-cross-msysarm64-npth",
+    "pkgver": "1.8",
+    "pkgrel": 2,
+    "arch": "x86_64",
+    "sourceDateEpoch": 1787847603,
+    "runtimePackage": "mingw-w64-cross-msysarm64-npth-1.8-2-x86_64.pkg.tar.zst",
+    "develPackage": "mingw-w64-cross-msysarm64-npth-devel-1.8-2-x86_64.pkg.tar.zst"
+  },
+  "npthSource": {
+    "releaseTag": "npth-1.8-source",
+    "tarball": {
+      "name": "npth-1.8.tar.bz2",
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/npth-1.8-source/npth-1.8.tar.bz2",
+      "bytes": 317739,
+      "sha256": "8bd24b4f23a3065d6e5b26e98aba9ce783ea4fd781069c1b35d149694e90ca3e"
+    },
+    "signature": {
+      "name": "npth-1.8.tar.bz2.sig",
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/npth-1.8-source/npth-1.8.tar.bz2.sig",
+      "bytes": 238,
+      "sha256": "eb9314cf3867a438cb0fdd371125d44c57ba66086f152199ad5f40a9c9679acb"
+    }
+  },
+  "privateBase": {
+    "purpose": "Immutable msys2-base x86_64 20260611 root for the pacman -U lifecycle job. Never synced against a live repository.",
+    "archive": {
+      "name": "msys2-base-x86_64-20260611.tar.xz",
+      "url": "https://repo.msys2.org/distrib/x86_64/msys2-base-x86_64-20260611.tar.xz",
+      "bytes": 53555380,
+      "sha256": "a2d047e8ee213c3c6a49a8de427eb1069df12207c0422ff1b3cbb5c905c34221"
+    },
+    "signature": {
+      "name": "msys2-base-x86_64-20260611.tar.xz.sig",
+      "url": "https://repo.msys2.org/distrib/x86_64/msys2-base-x86_64-20260611.tar.xz.sig",
+      "bytes": 566,
+      "sha256": "076f5623b702d5016cf0253e1d14a6bd4870a90243243e96409b227f0d5bf70f"
+    },
+    "signerKey": {
+      "name": "msys2-base-signer-E0AA0F031DBD80FFBA57B06D5A62D0CAB6264964.asc",
+      "url": "https://keyserver.ubuntu.com/pks/lookup?op=get&options=mr&search=0x0EBF782C5D53F7E5FB02A66746BD761F7A49B0EC",
+      "bytes": 52107,
+      "sha256": "a247a92716ab322770e800793c10136dd22a6ea4691fdd2b9c72d4cfc5221082"
+    },
+    "signer": "E0AA0F031DBD80FFBA57B06D5A62D0CAB6264964",
+    "localDbEntryCount": 1178
+  },
+  "scanner": {
+    "purpose": "Canonical AArch64 pseudo-relocation scanner, downloaded (never vendored) from an immutable raw commit.",
+    "name": "check-aarch64-pseudo-relocs.ps1",
+    "commit": "3356eec1411983cc252b04afac32bca5f3b8d824",
+    "url": "https://raw.githubusercontent.com/crutkas/MSYS2-packages/3356eec1411983cc252b04afac32bca5f3b8d824/.ci/check-aarch64-pseudo-relocs.ps1",
+    "sha256": "888939b57d1bce2e3c119e7c4824703e893bd449d49a5142f040dd935741ddb9"
+  },
+  "targetInputs": [
+    {
+      "role": "runtime-headers",
+      "releaseTag": "msysarm64-runtime-pr10-a527-20260824",
+      "name": "mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-runtime-pr10-a527-20260824/mingw-w64-cross-msysarm64-headers-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "bytes": 9319013,
+      "sha256": "263f8f7e3614ac41337ce3a223f2bb26b6459aef6f34670525cdd4c03ec3ae21"
+    },
+    {
+      "role": "runtime",
+      "releaseTag": "msysarm64-runtime-pr10-a527-20260824",
+      "name": "mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-runtime-pr10-a527-20260824/mingw-w64-cross-msysarm64-runtime-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "bytes": 9893043,
+      "sha256": "158c505f45025a466950faa7c85c9fd85e9d32384dd27b53586ffc75d71ca78e"
+    },
+    {
+      "role": "runtime-devel",
+      "releaseTag": "msysarm64-runtime-pr10-a527-20260824",
+      "name": "mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-runtime-pr10-a527-20260824/mingw-w64-cross-msysarm64-runtime-devel-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "bytes": 4426157,
+      "sha256": "c18b51e483991770b8e06cc2d8f7002d06784d3071ac213a8fee24bb831267d1"
+    },
+    {
+      "role": "sysroot",
+      "releaseTag": "msysarm64-runtime-pr10-a527-20260824",
+      "name": "mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-runtime-pr10-a527-20260824/mingw-w64-cross-msysarm64-sysroot-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "bytes": 86822,
+      "sha256": "e30609e09eab2fa07aba2e6196b05f34e5e9107abc4ab8832966684758c743ca"
+    },
+    {
+      "role": "windows-default-manifest",
+      "releaseTag": "msysarm64-runtime-pr10-a527-20260824",
+      "name": "mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-runtime-pr10-a527-20260824/mingw-w64-cross-msysarm64-windows-default-manifest-3.6.10.r0.ga527ace21-1-x86_64.pkg.tar.zst",
+      "bytes": 4743,
+      "sha256": "33861708e7f981b4eef5b93ef135ab3a43d2757533f64df6f61a146d823c355f"
+    },
+    {
+      "role": "gcc",
+      "releaseTag": "msysarm64-gcc-pr13-20260826",
+      "name": "mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst",
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-gcc-pr13-20260826/mingw-w64-cross-msysarm64-gcc-15.0.1dev-1-x86_64.pkg.tar.zst",
+      "bytes": 83876291,
+      "sha256": "a74887c76a933ec424933bf662729d94975b83138af783bd93f2e7acd95c3a22"
+    },
+    {
+      "role": "gcc-libs",
+      "releaseTag": "msysarm64-gcc-pr13-20260826",
+      "name": "mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst",
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-gcc-pr13-20260826/mingw-w64-cross-msysarm64-gcc-libs-15.0.1dev-1-x86_64.pkg.tar.zst",
+      "bytes": 4963824,
+      "sha256": "990f163cacf9ffce1b58445be91fedc57f135cc26a88d7dba109806446b41438"
+    },
+    {
+      "role": "libstdc++-headers",
+      "releaseTag": "msysarm64-gcc-pr13-support-20260826",
+      "name": "mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst",
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-gcc-pr13-support-20260826/mingw-w64-cross-msysarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst",
+      "bytes": 1520166,
+      "sha256": "9715aab6894379bf5ab936a3a559f286fb4aedbb64f0774d7457182e00648e08"
+    },
+    {
+      "role": "w32api-runtime",
+      "releaseTag": "msysarm64-gcc-pr13-support-20260826",
+      "name": "mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst",
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/msysarm64-gcc-pr13-support-20260826/mingw-w64-cross-msysarm64-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst",
+      "bytes": 2349635,
+      "sha256": "7727936f4212e5af04e9739eca60f157c0875796c1e82fcfb79fd4398b111e24"
+    },
+    {
+      "role": "fixed-binutils",
+      "releaseTag": "cygwinarm64-binutils-pr21-3356eec-20260827",
+      "name": "mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst",
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/cygwinarm64-binutils-pr21-3356eec-20260827/mingw-w64-cross-cygwinarm64-binutils-2.44.50-2-x86_64.pkg.tar.zst",
+      "bytes": 6545114,
+      "sha256": "3c7b47529181dab726d22cf6ed045184260af915eea583488c13c07e478ac02b"
+    },
+    {
+      "role": "cygwin-gcc-stage1",
+      "releaseTag": "cygwinarm64-gcc-static-runtime-20260815",
+      "name": "mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-2-x86_64.pkg.tar.zst",
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/cygwinarm64-gcc-static-runtime-20260815/mingw-w64-cross-cygwinarm64-gcc-stage1-15.0.1dev-2-x86_64.pkg.tar.zst",
+      "bytes": 43966034,
+      "sha256": "063579211851ed69370a6362f2795e39d9be0235a2bfe2f58da1bbd73a1d108e"
+    },
+    {
+      "role": "cygwin-gcc-libs-stage1",
+      "releaseTag": "cygwinarm64-gcc-static-runtime-20260815",
+      "name": "mingw-w64-cross-cygwinarm64-gcc-libs-stage1-15.0.1dev-2-x86_64.pkg.tar.zst",
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/cygwinarm64-gcc-static-runtime-20260815/mingw-w64-cross-cygwinarm64-gcc-libs-stage1-15.0.1dev-2-x86_64.pkg.tar.zst",
+      "bytes": 357954,
+      "sha256": "17a8fbc22227c541ff3179179d307045302f6b18fbc6207cf9d863a9e4dad98c"
+    },
+    {
+      "role": "cygwin-libstdc++-headers",
+      "releaseTag": "cygwinarm64-libstdcxx-headers-pr7-20260815",
+      "name": "mingw-w64-cross-cygwinarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst",
+      "url": "https://github.com/crutkas/MSYS2-packages/releases/download/cygwinarm64-libstdcxx-headers-pr7-20260815/mingw-w64-cross-cygwinarm64-libstdc++-headers-15.0.1dev-1-x86_64.pkg.tar.zst",
+      "bytes": 2184212,
+      "sha256": "1e018d384e5e16b76524b69677819b660e6611480a85a7f7b8a412403bf15ea6",
+      "note": "Satisfies the cygwinarm64-gcc-stage1 / msysarm64-gcc dependency on libstdc++ headers as a real archive so the build never relies on --assume-installed."
+    }
+  ],
+  "hostPackages": [
+    {
+      "role": "make",
+      "name": "make-4.4.1-2-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/make-4.4.1-2-x86_64.pkg.tar.zst",
+      "bytes": 519783,
+      "sha256": "2408af61717dae87b00c855b132769a125c708907fc94a46bb16dae076113e5c"
+    },
+    {
+      "role": "patch",
+      "name": "patch-2.7.6-3-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/patch-2.7.6-3-x86_64.pkg.tar.zst",
+      "bytes": 98395,
+      "sha256": "dd75ca0f715dd9c71a43af6a0ff3d068faeee1d768e02282d319671201cd5d45"
+    },
+    {
+      "role": "diffutils",
+      "name": "diffutils-3.12-1-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/diffutils-3.12-1-x86_64.pkg.tar.zst",
+      "bytes": 394515,
+      "sha256": "7902c8ce3d4dd69a0f5e98dc9d5c83c17b23314ba486169db57ef6e2835ce3b6"
+    },
+    {
+      "role": "binutils",
+      "name": "binutils-2.46.1-1-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/binutils-2.46.1-1-x86_64.pkg.tar.zst",
+      "bytes": 6186031,
+      "sha256": "6b20ffd521c04ae4151ed3c92cdff02051cd2139ab07db5ce4f50974bf232736"
+    },
+    {
+      "role": "isl",
+      "name": "isl-0.27-1-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/isl-0.27-1-x86_64.pkg.tar.zst",
+      "bytes": 768472,
+      "sha256": "cdd0a4ce0bf0d9e3f3eff2b770b8143e09e126a614de8b55bb5d30fc596b92d1"
+    },
+    {
+      "role": "mpc",
+      "name": "mpc-1.3.1-1-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/mpc-1.3.1-1-x86_64.pkg.tar.zst",
+      "bytes": 80415,
+      "sha256": "904191df540722d4fa5e7380f83374f1ac078e32dbd85bf79c9a99ed66bd7a37"
+    },
+    {
+      "role": "msys2-runtime-devel",
+      "name": "msys2-runtime-devel-3.6.9-2-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/msys2-runtime-devel-3.6.9-2-x86_64.pkg.tar.zst",
+      "bytes": 5900068,
+      "sha256": "5de8fd8930e166070c88667b69914418c04b571e34f065016ab40a7e9b4a76ef"
+    },
+    {
+      "role": "msys2-w32api-headers",
+      "name": "msys2-w32api-headers-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/msys2-w32api-headers-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst",
+      "bytes": 6203022,
+      "sha256": "fcadf735fb214d33c64e145f82490c8693aeb6cb6a20ee8479e9f408aa832613"
+    },
+    {
+      "role": "msys2-w32api-runtime",
+      "name": "msys2-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/msys2-w32api-runtime-14.0.0.r0.g9b3dd0125-1-x86_64.pkg.tar.zst",
+      "bytes": 3042471,
+      "sha256": "a9c5c922f5191f7e73333ea2d5392811282387986b9cb7f94a7c9156f717d4b3"
+    },
+    {
+      "role": "windows-default-manifest",
+      "name": "windows-default-manifest-6.4-2-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/windows-default-manifest-6.4-2-x86_64.pkg.tar.zst",
+      "bytes": 3073,
+      "sha256": "865a33d80d4e88f9aee66a755c51fa4bb0d4241063fcf72e6d0738b7c90b6a33"
+    },
+    {
+      "role": "gcc",
+      "name": "gcc-15.2.0-1-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/gcc-15.2.0-1-x86_64.pkg.tar.zst",
+      "bytes": 53958994,
+      "sha256": "1470497cced1a6b0ab23db0322474e668db470763b6353a545a749d5c5cff391"
+    },
+    {
+      "role": "pkgconf",
+      "name": "pkgconf-2.5.1-1-x86_64.pkg.tar.zst",
+      "url": "https://repo.msys2.org/msys/x86_64/pkgconf-2.5.1-1-x86_64.pkg.tar.zst",
+      "bytes": 76390,
+      "sha256": "38efd4928ac0cb06e9bd558baa533fc923c0592115bf9bd44970250f3ae2cb7e"
+    }
+  ],
+  "denyList": {
+    "description": "Artifacts that must never be admitted as build inputs or candidates. The revoked hand-built packages lack .MTREE/full .BUILDINFO and are matched by SHA-256 prefix and exact byte size.",
+    "revoked": [
+      {
+        "role": "revoked-hand-built-runtime",
+        "sha256Prefix": "97237a",
+        "bytes": 13629,
+        "reason": "Hand-built runtime missing .MTREE and full .BUILDINFO; never an input."
+      },
+      {
+        "role": "revoked-hand-built-devel",
+        "sha256Prefix": "1145de",
+        "bytes": 13865,
+        "reason": "Hand-built devel missing .MTREE and full .BUILDINFO; never an input."
+      }
+    ],
+    "historicalOnly": [
+      {
+        "role": "prior-ci-runtime",
+        "sha256": "efd7b15ac02b735cb3ae26618ed0d64b001e939fc0e9488cfdf49666630ac4a0",
+        "bytes": 15262,
+        "note": "Prior CI runtime, retained for provenance only; not an admission input."
+      },
+      {
+        "role": "prior-ci-devel",
+        "sha256": "6427cecf0fa3875cd5e77e55e574792fb6c70ece94e701561f796be4dd44c547",
+        "bytes": 18549,
+        "note": "Prior CI devel, retained for provenance only; not an admission input."
+      }
+    ]
+  },
+  "actionPins": {
+    "checkout": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+    "uploadArtifact": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+    "downloadArtifact": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+  }
+}
