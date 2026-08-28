@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "approved": false,
+  "replacesRuntime": "3.6.10.r0.ga527ace21-1",
+  "releaseId": null,
+  "releaseTag": null,
+  "tagObject": null,
+  "producerCommit": null,
+  "runtimeAssetId": null,
+  "runtimeUrl": null,
+  "runtimeFilename": null,
+  "runtimeBytes": null,
+  "runtimeSha256": null,
+  "runtimeDllSha256": null
+}

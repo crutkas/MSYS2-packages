@@ -1,0 +1,16 @@
+--- a/src/assuan-handler.c
++++ b/src/assuan-handler.c
+@@ -967,7 +967,12 @@ assuan_get_active_fds (assuan_context_t ctx, int what,
+ /* Two simple wrappers to make the expected function types match. */
+ #ifdef HAVE_FUNOPEN
++#ifdef __CYGWIN__
++typedef size_t funopen_size_t;
++#else
++typedef int funopen_size_t;
++#endif
+ static int
+-fun1_cookie_write (void *cookie, const char *buffer, int orig_size)
++fun1_cookie_write (void *cookie, const char *buffer, funopen_size_t orig_size)
+ {
+   return _assuan_cookie_write_data (cookie, buffer, orig_size);
+ }

@@ -1,0 +1,249 @@
+# Maintainer: Chris Reddington <crutkas@microsoft.com>
+
+_realname=libassuan
+_target=aarch64-pc-msys
+_runtime_version=3.6.10.r0.ga527ace21
+_runtime_pkgrel=1
+_binutils_version=2.44.50
+_binutils_pkgrel=2
+_gcc_version=15.0.1dev
+_gcc_pkgrel=1
+_libgpg_error_version=1.56
+_libgpg_error_pkgrel=1
+
+# The a527 runtime is diagnostic only. Candidate packages remain provisional
+# until a coordinator-approved replacement passes final native ARM64 proof.
+pkgbase=mingw-w64-cross-msysarm64-libassuan
+pkgname=(
+  mingw-w64-cross-msysarm64-libassuan
+  mingw-w64-cross-msysarm64-libassuan-devel
+  mingw-w64-cross-msysarm64-libassuan-tools
+)
+pkgver=3.0.2
+pkgrel=1
+pkgdesc="ARM64 MSYS IPC library for GnuPG components"
+arch=('x86_64')
+url="https://gnupg.org/related_software/libassuan"
+msys2_repository_url="https://git.gnupg.org/cgi-bin/gitweb.cgi?p=libassuan.git"
+msys2_pgp_keys_url="https://gnupg.org/signature_key.html"
+license=('spdx:LGPL-2.1-or-later' 'spdx:GPL-3.0-or-later')
+makedepends=(
+  'diffutils'
+  'gcc'
+  'perl'
+  'pkgconf'
+  "mingw-w64-cross-cygwinarm64-binutils=${_binutils_version}-${_binutils_pkgrel}"
+  "mingw-w64-cross-msysarm64-gcc=${_gcc_version}-${_gcc_pkgrel}"
+  "mingw-w64-cross-msysarm64-gcc-libs=${_gcc_version}-${_gcc_pkgrel}"
+  "mingw-w64-cross-msysarm64-runtime-devel=${_runtime_version}-${_runtime_pkgrel}"
+  "mingw-w64-cross-msysarm64-sysroot=${_runtime_version}-${_runtime_pkgrel}"
+  "mingw-w64-cross-msysarm64-libgpg-error=${_libgpg_error_version}-${_libgpg_error_pkgrel}"
+  "mingw-w64-cross-msysarm64-libgpg-error-devel=${_libgpg_error_version}-${_libgpg_error_pkgrel}"
+)
+options=('!strip' '!buildflags' '!emptydirs' 'libtool')
+source=(
+  "https://gnupg.org/ftp/gcrypt/${_realname}/${_realname}-${pkgver}.tar.bz2"{,.sig}
+  funopen-size_t.patch
+  audit-msysarm64.sh
+  audit-path-leaks.sh
+  context-smoke.c
+  pipe-smoke.c
+  module-smoke.c
+)
+sha256sums=('d2931cdad266e633510f9970e1a2f346055e351bb19f9b78912475b8074c36f6'
+            '5aa3c5cea6f42bcb96be9e1dd922b33ccb05e2f0565e93674e85ddcf8cd78e86'
+            '9837396b27c840ae0dc100ec17e197600d63f6c2bf81a4c4dafd2aee26a0c08d'
+            'e7333b6e0cfab4098996bc483faaf713e57dfc7e5a5ffcc95d02094287bf32d9'
+            '17151b44d554b9d5c7937e1180f63679a98c1c8743645caf2a138808929bf0d9'
+            'e5821e9cb0da1fc74f07228364d4186c7ae09d06288a69f54c6483ada11fc8aa'
+            '17fa138b275c075a44d11aed14a43a0cb78dc5e07924f614b4b632b516134632'
+            'b50ffa14e47fea70f6d3ea8567b0a0c69d14a09d7b75930d0d01d830891051f9')
+validpgpkeys=('6DAA6E64A76D2840571B4902528897B826403ADA'
+              'AC8E115BF73E2D8D47FA9908E98E9B2D19C6C8BD')
+
+prepare() {
+  cd "${srcdir}/${_realname}-${pkgver}"
+
+  patch -Np1 -i "${srcdir}/funopen-size_t.patch"
+  # Patch the signed release's generated build system directly. Regenerating it
+  # outside the signed release tag changes PACKAGE_VERSION to 3.0.2-unknown.
+  perl -0pi -e 's/\*cygwin\*,\*lai,yes,no,\*\.dll/*cygwin*,*lai,yes,no,*.dll | *msys*,*lai,yes,no,*.dll/g; s/\*-\*-cygwin\*(?!\s*\|\s*\*-\*-msys\*)/*-*-cygwin* | *-*-msys*/g; s/(?<!-)cygwin\*(?!,|\s*\|\s*msys\*)/cygwin* | msys*/g' \
+    m4/libtool.m4 configure build-aux/ltmain.sh
+  sed -i 's@s/\^lib/cyg/@s/\^lib/msys-/@g' m4/libtool.m4 configure
+  sed -i "s/${pkgver}-unknown/${pkgver}/g" configure
+  grep -Fq 's/^lib/msys-/' configure
+  ! grep -Fq 's/^lib/cyg/' configure
+  grep -Fq "PACKAGE_VERSION='${pkgver}'" configure
+  ! grep -Fq "${pkgver}-unknown" configure
+}
+
+build() {
+  cd "${srcdir}/${_realname}-${pkgver}"
+
+  local _target_usr="/opt/${_target}/usr"
+  local _cross_root="/opt/${_target}"
+  local _dependency_version
+  local _preflight="${srcdir}/dependency-preflight"
+  local _debug_prefix="/usr/src/debug/${pkgbase}-${pkgver}"
+
+  export PATH="/opt/${_target}/usr/bin:/opt/bin:${PATH}"
+  export PKG_CONFIG_SYSROOT_DIR="/opt/${_target}"
+  export PKG_CONFIG_LIBDIR="${_target_usr}/lib/pkgconfig"
+  export GPGRT_CONFIG=no
+  export GPG_ERROR_CONFIG="${_target_usr}/bin/gpg-error-config"
+  export CPPFLAGS="-isystem ${_target_usr}/include"
+  export CFLAGS="-O2 -g0 -ffile-prefix-map=${srcdir}=${_debug_prefix} -fdebug-prefix-map=${srcdir}=${_debug_prefix} -fmacro-prefix-map=${srcdir}=${_debug_prefix}"
+  export LDFLAGS="-L${_target_usr}/lib"
+  export lt_cv_deplibs_check_method=pass_all
+  export lt_cv_archive_cmds_need_lc=no
+
+  test -x "${GPG_ERROR_CONFIG}"
+  test -f "${_target_usr}/include/gpg-error.h"
+  test -f "${_target_usr}/lib/libgpg-error.dll.a"
+  _dependency_version="$("${GPG_ERROR_CONFIG}" --version)"
+  [[ "${_dependency_version%%-*}" == "${_libgpg_error_version}" ]]
+
+  rm -rf "${_preflight}"
+  mkdir -p "${_preflight}"
+  printf '#include <gpg-error.h>\n' |
+    "${_target}-gcc" -isystem "${_target_usr}/include" \
+      -E -H -x c - -o /dev/null 2> "${_preflight}/include-trace.txt"
+  grep -Fq "${_target_usr}/include/gpg-error.h" \
+    "${_preflight}/include-trace.txt"
+
+  printf '#include <gpg-error.h>\nint main(void) { return gpg_error_check_version(0) ? 0 : 1; }\n' |
+    "${_target}-gcc" -isystem "${_target_usr}/include" -x c - \
+      -L"${_target_usr}/lib" -Wl,--trace -lgpg-error \
+      -o "${_preflight}/gpg-error-link.exe" \
+      > "${_preflight}/link-trace.txt" 2>&1
+  grep -Fq "${_target_usr}/lib/libgpg-error.dll.a" \
+    "${_preflight}/link-trace.txt"
+  printf '%s\n' "${_dependency_version}" > "${_preflight}/version.txt"
+
+  ./configure \
+    CC="${_target}-gcc" \
+    AR="${_target}-ar" \
+    RANLIB="${_target}-ranlib" \
+    LD="${_target}-ld" \
+    NM="${_target}-nm" \
+    STRIP="${_target}-strip" \
+    DLLTOOL="${_target}-dlltool" \
+    WINDRES="${_target}-windres" \
+    CC_FOR_BUILD=gcc \
+    --prefix=/usr \
+    --build=x86_64-pc-msys \
+    --host="${_target}" \
+    --with-libgpg-error-prefix="/opt/${_target}/usr" \
+    --enable-shared \
+    --enable-static
+
+  sed -n '/global:/,/local:/{
+    s/^[[:space:]]*\([_A-Za-z][_A-Za-z0-9]*\);[[:space:]]*$/\1/p
+  }' src/libassuan.vers > src/libassuan.exports
+  if [[ ! -s src/libassuan.exports ]]; then
+    printf 'error: sealed source export map produced no symbols\n' >&2
+    return 1
+  fi
+
+  make \
+    no_undefined="-no-undefined" \
+    export_symbols="-export-symbols ${srcdir}/${_realname}-${pkgver}/src/libassuan.exports"
+  make DESTDIR="${srcdir}/dest" install
+  # Libtool's import archive leaves the armap timestamp wall-clock dependent.
+  # Reindex both archives in GNU deterministic mode before any audit or package.
+  "${_target}-ranlib" -D "${srcdir}/dest/usr/lib/libassuan.dll.a"
+  "${_target}-ranlib" -D "${srcdir}/dest/usr/lib/libassuan.a"
+
+  local _config="${srcdir}/dest/usr/bin/libassuan-config"
+  local _la="${srcdir}/dest/usr/lib/libassuan.la"
+  local _metadata_root="\${LIBASSUAN_SYSROOT:-${_cross_root}}"
+  sed -i \
+    -e "s|^gpg_error_cflags=.*|gpg_error_cflags=\"-I${_metadata_root}/usr/include\"|" \
+    -e "s|^gpg_error_libs=.*|gpg_error_libs=\"-L${_metadata_root}/usr/lib -lgpg-error\"|" \
+    -e "s|^lib=.*|lib=\"-L${_metadata_root}/usr/lib -lassuan\"|" \
+    -e "s|^cflags=.*|cflags=\"-I${_metadata_root}/usr/include\"|" \
+    -e "s|^prefix=.*|prefix=${_metadata_root}/usr|" \
+    "${_config}"
+  sed -i \
+    -e "s|^dependency_libs=.*|dependency_libs=' -L${_target_usr}/lib -lgpg-error'|" \
+    -e "s|^libdir=.*|libdir='${_target_usr}/lib'|" \
+    "${_la}"
+
+  grep -Fq "#define ASSUAN_VERSION \"${pkgver}\"" \
+    "${srcdir}/dest/usr/include/assuan.h"
+  grep -Fxq "Version: ${pkgver}" \
+    "${srcdir}/dest/usr/lib/pkgconfig/libassuan.pc"
+  [[ "$(LIBASSUAN_SYSROOT="${_cross_root}" "${_config}" --version)" == "${pkgver}" ]]
+  [[ "$(LIBASSUAN_SYSROOT="${_cross_root}" "${_config}" --prefix)" == "${_target_usr}" ]]
+  ! grep -R -Fq "${pkgver}-unknown" \
+    "${srcdir}/dest/usr/include" \
+    "${srcdir}/dest/usr/lib/pkgconfig" \
+    "${_config}"
+}
+
+check() {
+  "${srcdir}/audit-msysarm64.sh" \
+    "${srcdir}/dest" \
+    "${srcdir}/audit-report" \
+    "${srcdir}/context-smoke.c" \
+    "${srcdir}/pipe-smoke.c" \
+    "${srcdir}/module-smoke.c" \
+    "/opt/${_target}" \
+    "${srcdir}/${_realname}-${pkgver}/src/libassuan.vers" \
+    "${srcdir}/dest"
+  mkdir -p "${srcdir}/audit-report/dependency-preflight"
+  cp -a "${srcdir}/dependency-preflight/." \
+    "${srcdir}/audit-report/dependency-preflight/"
+}
+
+package_mingw-w64-cross-msysarm64-libassuan() {
+  pkgdesc="ARM64 MSYS libassuan runtime library"
+  groups=('libraries')
+  depends=(
+    "aarch64-pc-msys-runtime=${_runtime_version}"
+    "aarch64-pc-msys-libgpg-error=${_libgpg_error_version}"
+  )
+  provides=("aarch64-pc-msys-libassuan=${pkgver}")
+  conflicts=('aarch64-pc-msys-libassuan')
+
+  install -d "${pkgdir}/opt/${_target}/usr/bin"
+  install -m755 "${srcdir}/dest/usr/bin/"*.dll \
+    "${pkgdir}/opt/${_target}/usr/bin/"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING.LIB" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/COPYING.LIB"
+}
+
+package_mingw-w64-cross-msysarm64-libassuan-devel() {
+  pkgdesc="ARM64 MSYS libassuan headers and libraries"
+  groups=('development')
+  depends=(
+    "aarch64-pc-msys-libassuan=${pkgver}"
+    "aarch64-pc-msys-libgpg-error-devel=${_libgpg_error_version}"
+  )
+  provides=("aarch64-pc-msys-libassuan-devel=${pkgver}")
+  conflicts=('aarch64-pc-msys-libassuan-devel')
+  options=('!strip' '!buildflags' '!emptydirs' 'staticlibs' 'libtool')
+
+  install -d "${pkgdir}/opt/${_target}/usr/share"
+  cp -a "${srcdir}/dest/usr/include" "${pkgdir}/opt/${_target}/usr/"
+  cp -a "${srcdir}/dest/usr/lib" "${pkgdir}/opt/${_target}/usr/"
+  cp -a "${srcdir}/dest/usr/share/aclocal" "${pkgdir}/opt/${_target}/usr/share/"
+  cp -a "${srcdir}/dest/usr/share/info" "${pkgdir}/opt/${_target}/usr/share/"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING.LIB" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/COPYING.LIB"
+}
+
+package_mingw-w64-cross-msysarm64-libassuan-tools() {
+  pkgdesc="ARM64 MSYS libassuan development helper"
+  depends=(
+    'sh'
+    "aarch64-pc-msys-libassuan-devel=${pkgver}"
+  )
+  provides=("aarch64-pc-msys-libassuan-tools=${pkgver}")
+  conflicts=('aarch64-pc-msys-libassuan-tools')
+
+  install -Dm755 "${srcdir}/dest/usr/bin/libassuan-config" \
+    "${pkgdir}/opt/${_target}/usr/bin/libassuan-config"
+  install -Dm644 "${srcdir}/${_realname}-${pkgver}/COPYING.LIB" \
+    "${pkgdir}/usr/share/licenses/${pkgname}/COPYING.LIB"
+}
