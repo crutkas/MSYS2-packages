@@ -1,0 +1,10 @@
+[
+  {"id": "python-lexical-delete", "runtime": "python", "guard": "LEXICAL_LOCAL", "operator": "delete"},
+  {"id": "python-lexical-invert", "runtime": "python", "guard": "LEXICAL_LOCAL", "operator": "invert"},
+  {"id": "python-target-delete", "runtime": "python", "guard": "TARGET_MATCH", "operator": "delete"},
+  {"id": "python-target-invert", "runtime": "python", "guard": "TARGET_MATCH", "operator": "invert"},
+  {"id": "powershell-lexical-delete", "runtime": "powershell", "guard": "LEXICAL_LOCAL", "operator": "delete"},
+  {"id": "powershell-lexical-invert", "runtime": "powershell", "guard": "LEXICAL_LOCAL", "operator": "invert"},
+  {"id": "powershell-target-delete", "runtime": "powershell", "guard": "TARGET_MATCH", "operator": "delete"},
+  {"id": "powershell-target-invert", "runtime": "powershell", "guard": "TARGET_MATCH", "operator": "invert"}
+]

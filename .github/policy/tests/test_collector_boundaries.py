@@ -1033,10 +1033,8 @@ class TrustedGitImageTests(unittest.TestCase):
             validator.TRUSTED_GIT_IMAGES = saved
             pathlib.Path(forged).unlink(missing_ok=True)
 
-    def test_noncanonical_allowlist_entry_is_refused(self):
-        # A path that resolves somewhere other than its own spelling -- via
-        # ".." traversal, a junction, or a case alias -- must not be accepted,
-        # because the resolved target is not the audited binary.
+    def test_dot_traversal_normalizes_to_the_same_fixed_location(self):
+        # Lexical aliases are normalized before the fixed location is compared.
         try:
             real = validator._git_image()
         except PolicyError:
@@ -1044,18 +1042,212 @@ class TrustedGitImageTests(unittest.TestCase):
         directory, name = os.path.split(real)
         noncanonical = os.path.join(directory, "..", os.path.basename(directory), name)
         self.assertTrue(os.path.isfile(noncanonical))
-        self.assertNotEqual(
-            os.path.normcase(os.path.realpath(noncanonical)),
-            os.path.normcase(noncanonical),
-        )
         saved = validator.TRUSTED_GIT_IMAGES
         try:
             validator.TRUSTED_GIT_IMAGES = (noncanonical,)
-            with self.assertRaises(PolicyError) as raised:
-                validator._git_image()
-            self.assertEqual(raised.exception.code, "BASE_CHECKOUT_GIT")
+            self.assertEqual(validator._git_image(), real)
         finally:
             validator.TRUSTED_GIT_IMAGES = saved
+
+    def test_identity_normalizes_case_short_name_and_device_prefixes(self):
+        try:
+            real = validator._git_image()
+        except PolicyError:
+            self.skipTest("no trusted git image on this host")
+        expected = validator._canonical_file_identity(real)
+        variants = {
+            "case": real.swapcase(),
+            "extended": "\\\\?\\" + real,
+            "device": "\\\\.\\" + real,
+        }
+
+        kernel32 = validator.ctypes.WinDLL("kernel32", use_last_error=True)
+        get_short_path = kernel32.GetShortPathNameW
+        get_short_path.argtypes = (
+            validator.wintypes.LPCWSTR,
+            validator.wintypes.LPWSTR,
+            validator.wintypes.DWORD,
+        )
+        get_short_path.restype = validator.wintypes.DWORD
+        buffer = validator.ctypes.create_unicode_buffer(32768)
+        length = get_short_path(real, buffer, len(buffer))
+        if length and length < len(buffer):
+            variants["8.3"] = buffer.value
+
+        for label, candidate in variants.items():
+            with self.subTest(label=label):
+                actual = validator._canonical_file_identity(candidate)
+                self.assertEqual(actual.path, expected.path)
+                self.assertEqual(actual.volume_serial, expected.volume_serial)
+                self.assertEqual(actual.file_index, expected.file_index)
+
+    def test_junctioned_directory_resolves_but_is_not_a_trusted_location(self):
+        try:
+            real = validator._git_image()
+        except PolicyError:
+            self.skipTest("no trusted git image on this host")
+        with tempfile.TemporaryDirectory() as directory:
+            physical = pathlib.Path(directory, "physical")
+            junction = pathlib.Path(directory, "junction")
+            physical.mkdir()
+            target = physical / "git.exe"
+            shutil.copyfile(real, target)
+            linked = junction / "git.exe"
+            completed = subprocess.run(
+                [
+                    os.path.join(os.environ["SystemRoot"], "System32", "cmd.exe"),
+                    "/d",
+                    "/c",
+                    "mklink",
+                    "/J",
+                    str(junction),
+                    str(physical),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            if completed.returncode:
+                self.skipTest(f"junction creation unavailable: {completed.stderr}")
+            direct_identity = validator._canonical_file_identity(str(target))
+            linked_identity = validator._canonical_file_identity(str(linked))
+            self.assertEqual(linked_identity.path, direct_identity.path)
+            self.assertEqual(linked_identity[2:], direct_identity[2:])
+            saved = validator.TRUSTED_GIT_IMAGES
+            try:
+                validator.TRUSTED_GIT_IMAGES = (str(linked),)
+                with self.assertRaises(PolicyError) as raised:
+                    validator._git_image()
+                self.assertIn("filesystem redirects", raised.exception.message)
+            finally:
+                validator.TRUSTED_GIT_IMAGES = saved
+
+    def test_symlinked_git_resolves_but_is_not_a_trusted_location(self):
+        try:
+            real = validator._git_image()
+        except PolicyError:
+            self.skipTest("no trusted git image on this host")
+        with tempfile.TemporaryDirectory() as directory:
+            target = pathlib.Path(directory, "physical-git.exe")
+            link = pathlib.Path(directory, "linked-git.exe")
+            shutil.copyfile(real, target)
+            try:
+                os.symlink(target, link)
+            except OSError as error:
+                self.skipTest(f"file symlink creation unavailable: {error}")
+            direct_identity = validator._canonical_file_identity(str(target))
+            linked_identity = validator._canonical_file_identity(str(link))
+            self.assertEqual(linked_identity.path, direct_identity.path)
+            self.assertEqual(linked_identity[2:], direct_identity[2:])
+            saved = validator.TRUSTED_GIT_IMAGES
+            try:
+                validator.TRUSTED_GIT_IMAGES = (str(link),)
+                with self.assertRaises(PolicyError) as raised:
+                    validator._git_image()
+                self.assertIn("filesystem redirects", raised.exception.message)
+            finally:
+                validator.TRUSTED_GIT_IMAGES = saved
+
+    def test_subst_alias_resolves_but_is_not_a_trusted_location_when_available(self):
+        try:
+            real = validator._git_image()
+        except PolicyError:
+            self.skipTest("no trusted git image on this host")
+        with tempfile.TemporaryDirectory() as directory:
+            target = pathlib.Path(directory, "git.exe")
+            shutil.copyfile(real, target)
+            drive = next(
+                (
+                    f"{letter}:"
+                    for letter in reversed("DEFGHIJKLMNOPQRSTUVWXYZ")
+                    if not os.path.exists(f"{letter}:\\")
+                ),
+                None,
+            )
+            if drive is None:
+                self.skipTest("no drive letter is available for subst")
+            subst = os.path.join(os.environ["SystemRoot"], "System32", "subst.exe")
+            completed = subprocess.run(
+                [subst, drive, directory],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            if completed.returncode:
+                self.skipTest(f"subst unavailable: {completed.stderr}")
+            try:
+                alias = drive + "\\git.exe"
+                direct_identity = validator._canonical_file_identity(str(target))
+                alias_identity = validator._canonical_file_identity(alias)
+                self.assertEqual(alias_identity.path, direct_identity.path)
+                self.assertEqual(alias_identity[2:], direct_identity[2:])
+                saved = validator.TRUSTED_GIT_IMAGES
+                try:
+                    validator.TRUSTED_GIT_IMAGES = (alias,)
+                    with self.assertRaises(PolicyError) as raised:
+                        validator._git_image()
+                    self.assertIn("filesystem redirects", raised.exception.message)
+                finally:
+                    validator.TRUSTED_GIT_IMAGES = saved
+            finally:
+                subprocess.run(
+                    [subst, drive, "/d"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+
+    def test_missing_and_inaccessible_targets_have_explicit_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            missing = os.path.join(directory, "missing-git.exe")
+            saved = validator.TRUSTED_GIT_IMAGES
+            try:
+                validator.TRUSTED_GIT_IMAGES = (missing,)
+                with self.assertRaises(PolicyError) as raised:
+                    validator._git_image()
+                self.assertIn(repr(missing), raised.exception.message)
+                self.assertIn("cannot find", raised.exception.message.casefold())
+
+                locked = os.path.join(directory, "locked-git.exe")
+                pathlib.Path(locked).write_bytes(b"MZ")
+                kernel32 = validator.ctypes.WinDLL("kernel32", use_last_error=True)
+                kernel32.CreateFileW.argtypes = (
+                    validator.wintypes.LPCWSTR,
+                    validator.wintypes.DWORD,
+                    validator.wintypes.DWORD,
+                    validator.ctypes.c_void_p,
+                    validator.wintypes.DWORD,
+                    validator.wintypes.DWORD,
+                    validator.wintypes.HANDLE,
+                )
+                kernel32.CreateFileW.restype = validator.wintypes.HANDLE
+                kernel32.CloseHandle.argtypes = (validator.wintypes.HANDLE,)
+                kernel32.CloseHandle.restype = validator.wintypes.BOOL
+                handle = kernel32.CreateFileW(
+                    locked,
+                    0x80000000,
+                    0,
+                    None,
+                    3,
+                    0,
+                    None,
+                )
+                self.assertNotEqual(handle, validator.wintypes.HANDLE(-1).value)
+                try:
+                    validator.TRUSTED_GIT_IMAGES = (locked,)
+                    with self.assertRaises(PolicyError) as raised:
+                        validator._git_image()
+                    self.assertIn(repr(locked), raised.exception.message)
+                    self.assertIn(
+                        "being used by another process",
+                        raised.exception.message.casefold(),
+                    )
+                finally:
+                    kernel32.CloseHandle(handle)
+            finally:
+                validator.TRUSTED_GIT_IMAGES = saved
 
     def test_git_capture_rejects_an_unmodelled_token(self):
         try:
@@ -1102,13 +1294,7 @@ class TrustedGitImageTests(unittest.TestCase):
         finally:
             validator.TRUSTED_GIT_IMAGES = saved
 
-    def test_unc_and_extended_length_entries_are_refused(self):
-        """A UNC image would be served by a remote host over the redirector.
-
-        Both UNC and extended-length forms resolve to themselves, so
-        "resolves to itself" is not sufficient canonicality; a drive-letter
-        root is required.
-        """
+    def test_unc_entries_are_refused_before_the_filesystem_is_opened(self):
         try:
             real = validator._git_image()
         except PolicyError:
@@ -1116,8 +1302,6 @@ class TrustedGitImageTests(unittest.TestCase):
         cases = {
             "unc": "\\\\localhost\\C$" + real[2:],
             "unc-forward": "//localhost/C$" + real[2:].replace("\\", "/"),
-            "extended-length": "\\\\?\\" + real,
-            "device": "\\\\.\\" + real,
         }
         for label, candidate in cases.items():
             with self.subTest(label=label):
@@ -1127,7 +1311,7 @@ class TrustedGitImageTests(unittest.TestCase):
                     with self.assertRaises(PolicyError) as raised:
                         validator._git_image()
                     self.assertEqual(raised.exception.code, "BASE_CHECKOUT_GIT")
-                    self.assertIn("drive-letter", raised.exception.message)
+                    self.assertIn("drive-rooted", raised.exception.message)
                 finally:
                     validator.TRUSTED_GIT_IMAGES = saved
 
