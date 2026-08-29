@@ -1,6 +1,9 @@
 [CmdletBinding()]
 param(
-    [string] $ReportPath
+    [string] $ReportPath,
+
+    [ValidateSet('Arm64', 'X64', 'X86')]
+    [string] $RequireArchitecture
 )
 
 Set-StrictMode -Version Latest
@@ -1257,7 +1260,7 @@ try {
     $recorderBuild = New-PrivatePacmanRecorder -Directory (Join-Path $suiteRoot 'recorder')
     $recorderPath = $recorderBuild.Path
 
-    Invoke-PrivatePacmanTestCase -Name 'recorder build is native and provenance-attested' -Test {
+    Invoke-PrivatePacmanTestCase -Name 'recorder architecture is runner-consistent and provenance-attested' -Test {
         Assert-PrivatePacmanEqual `
             $harnessAttestation.ProcessArchitecture `
             $harnessAttestation.OSArchitecture `
@@ -1276,6 +1279,16 @@ try {
         Assert-PrivatePacmanTest `
             (-not [string]::IsNullOrWhiteSpace($recorderBuild.Sha256)) `
             'The recorder build has no byte provenance hash.'
+        if (-not [string]::IsNullOrWhiteSpace($RequireArchitecture)) {
+            Assert-PrivatePacmanEqual `
+                $RequireArchitecture `
+                $harnessAttestation.OSArchitecture `
+                'The contract host does not meet the explicit architecture requirement.'
+            Assert-PrivatePacmanEqual `
+                $RequireArchitecture `
+                $recorderBuild.Architecture `
+                'The recorder does not meet the explicit architecture requirement.'
+        }
     }
 
     Invoke-PrivatePacmanTestCase -Name 'repository contains no tracked package candidate bytes' -Test {
@@ -3168,6 +3181,12 @@ $report = [pscustomobject][ordered]@{
     AdmissionReady = $false
     StartedFrom = $PSScriptRoot
     PowerShell = $PSVersionTable.PSVersion.ToString()
+    ArchitectureRequirement = if ([string]::IsNullOrWhiteSpace($RequireArchitecture)) {
+        $null
+    }
+    else {
+        $RequireArchitecture
+    }
     Runtime = $harnessAttestation
     RecorderBuild = $recorderBuild
     RecorderAttestation = $script:recorderAttestation

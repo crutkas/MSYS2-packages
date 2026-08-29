@@ -86,7 +86,7 @@ jobs:
                  $report.Runtime.ProcessArchitecture -or
               $report.RecorderAttestation.OSArchitecture -cne
                  $report.Runtime.OSArchitecture) {
-            throw 'The harness, builder, or recorder architecture attestation is invalid.'
+            throw 'The runner, builder, and recorder architectures are not self-consistent.'
           }
 
           $summary = $report.Summary

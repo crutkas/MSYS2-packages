@@ -258,9 +258,12 @@ explicit launch block.
 The harness publishes the recorder as a RID-matched, framework-dependent,
 single-file executable with the installed .NET 10 SDK. It records the SDK
 version, target RID, builder and PE architectures, executable SHA-256, and
-runtime recorder attestation. The harness, `dotnet` host, recorder PE, and
-running recorder must all match the operating-system architecture; emulated
-recorders fail the contract.
+runtime recorder attestation. Every run requires the harness, `dotnet` host,
+recorder PE, and running recorder to match the runner operating-system
+architecture. This proves runner-architecture self-consistency, not ARM64 by
+itself. Hardware evidence and future ARM64 gating must additionally invoke the
+suite with `-RequireArchitecture Arm64`; an all-x64 run cannot satisfy that
+explicit requirement.
 
 ## Evidence and cleanup
 
@@ -345,6 +348,7 @@ Run the source-only contract with the .NET 10 SDK available:
 ```powershell
 pwsh -NoLogo -NoProfile -NonInteractive `
     -File .ci\Test-PrivatePacman.ps1 `
+    -RequireArchitecture Arm64 `
     -ReportPath "$env:TEMP\private-pacman-contract.json"
 ```
 
@@ -361,6 +365,11 @@ permanent and restored ACL/attribute drift, permanent and transient alternate
 data streams, transient protected-state races, a deterministic private
 snapshot barrier that injects mutation during baseline capture, child crashes,
 timeouts, parent-process crash recovery, and reparse-safe cleanup.
+
+The hosted compatibility workflow deliberately omits `-RequireArchitecture`;
+its architecture assertions prove only that the hosted runner, builder, and
+recorder agree. The report's `ArchitectureRequirement` field distinguishes an
+explicit ARM64 hardware run from compatibility CI.
 
 The JSON report and logs expose coverage status, `ExistedBefore`,
 `ExistedAfter`, entry counts, and pre/post content and canonical digests for
