@@ -12,6 +12,7 @@ $script:CanonicalSharedRoot = 'C:\msys64'
 $script:OwnerFileName = '.private-pacman-owner.json'
 $script:TestSnapshotBarrier = $null
 $script:TestChildEnvironment = $null
+$script:TestCanonicalSharedRootPhysicalPath = $null
 $script:RequiredIsolationSwitches = @(
     '--root',
     '--dbpath',
@@ -1297,6 +1298,7 @@ function Copy-PrivatePacmanSeed {
                 -ProtectedRoot @(
                     [pscustomobject][ordered]@{
                         Path = $Source
+                        FileSystemPath = $Source
                         Exists = $true
                     }
                 )
@@ -2128,30 +2130,52 @@ function Get-PrivatePacmanProtectedRoots {
     $candidates = @($script:CanonicalSharedRoot) + @($ProtectedRoot)
     foreach ($candidate in $candidates) {
         $normalized = ConvertTo-PrivatePacmanAbsolutePath -Path $candidate -Name 'ProtectedRoot'
-        if ([IO.Directory]::Exists($normalized)) {
-            $canonical = Resolve-PrivatePacmanExistingPath `
-                -Path $normalized `
+        $isCanonicalSharedRoot = [StringComparer]::OrdinalIgnoreCase.Equals(
+            $normalized,
+            $script:CanonicalSharedRoot
+        )
+        $physicalPath = if ($isCanonicalSharedRoot -and
+            -not [string]::IsNullOrWhiteSpace(
+                [string]$script:TestCanonicalSharedRootPhysicalPath
+            )) {
+            Resolve-PrivatePacmanExistingPath `
+                -Path ([string]$script:TestCanonicalSharedRootPhysicalPath) `
+                -Kind Directory `
+                -Name 'Private test canonical shared-root physical path'
+        }
+        else {
+            $normalized
+        }
+
+        if ([IO.Directory]::Exists($physicalPath)) {
+            $canonicalPhysicalPath = Resolve-PrivatePacmanExistingPath `
+                -Path $physicalPath `
                 -Kind Directory `
                 -Name 'ProtectedRoot'
+            $logicalPath = if ($isCanonicalSharedRoot) {
+                $script:CanonicalSharedRoot
+            }
+            else {
+                $canonicalPhysicalPath
+            }
             $exists = $true
         }
         else {
-            if (-not [StringComparer]::OrdinalIgnoreCase.Equals($normalized, $script:CanonicalSharedRoot)) {
+            if (-not $isCanonicalSharedRoot) {
                 throw "Additional ProtectedRoot must exist: $normalized"
             }
             Assert-PrivatePacmanFixedDrive -Path $normalized -Name 'ProtectedRoot'
-            $canonical = $normalized
+            $logicalPath = $script:CanonicalSharedRoot
+            $canonicalPhysicalPath = $normalized
             $exists = $false
         }
 
-        if ($seen.Add($canonical)) {
+        if ($seen.Add($logicalPath)) {
             $roots.Add([pscustomobject][ordered]@{
-                Path = $canonical
+                Path = $logicalPath
+                FileSystemPath = $canonicalPhysicalPath
                 Exists = $exists
-                IsCanonicalSharedRoot = [StringComparer]::OrdinalIgnoreCase.Equals(
-                    $canonical,
-                    $script:CanonicalSharedRoot
-                )
+                IsCanonicalSharedRoot = $isCanonicalSharedRoot
             })
         }
     }
@@ -2169,8 +2193,8 @@ function Assert-PrivatePacmanNoProtectedOverlap {
 
     foreach ($input in $InputPath) {
         foreach ($protected in $ProtectedRoot) {
-            if ((Test-PrivatePacmanPathWithin -Path $input -Root $protected.Path -AllowEqual) -or
-                (Test-PrivatePacmanPathWithin -Path $protected.Path -Root $input -AllowEqual)) {
+            if ((Test-PrivatePacmanPathWithin -Path $input -Root $protected.FileSystemPath -AllowEqual) -or
+                (Test-PrivatePacmanPathWithin -Path $protected.FileSystemPath -Root $input -AllowEqual)) {
                 throw "Private input overlaps protected package state: $input and $($protected.Path)"
             }
         }
@@ -2191,6 +2215,7 @@ function New-PrivatePacmanProtectedCaptureFailureEvidence {
             SnapshotSchema = $script:TreeSnapshotSchema
             ReparsePointPolicy = 'reject'
             Path = $protectedEntry.Path
+            FileSystemPath = $protectedEntry.FileSystemPath
             Exists = $null
             CoverageStatus = 'CaptureFailed'
             CaptureError = $Error
@@ -2360,6 +2385,7 @@ function Get-PrivatePacmanChildEnvironment {
     if ($null -ne $testEnvironment) {
         $expectedTestNames = @(
             'PRIVATE_PACMAN_TEST_ARGV',
+            'PRIVATE_PACMAN_TEST_ATTESTATION',
             'PRIVATE_PACMAN_TEST_CONFIG',
             'PRIVATE_PACMAN_TEST_ENVIRONMENT',
             'PRIVATE_PACMAN_TEST_GO',
@@ -2444,11 +2470,15 @@ function Start-PrivatePacmanWatchers {
     try {
         foreach ($protected in $ProtectedRoot) {
             if ($protected.Exists) {
-                $watcher = [PrivatePacmanV2.TreeWatcher]::new($protected.Path, '*', $true)
+                $watcher = [PrivatePacmanV2.TreeWatcher]::new(
+                    $protected.FileSystemPath,
+                    '*',
+                    $true
+                )
             }
             else {
-                $parent = [IO.Path]::GetDirectoryName($protected.Path)
-                $leaf = [IO.Path]::GetFileName($protected.Path)
+                $parent = [IO.Path]::GetDirectoryName($protected.FileSystemPath)
+                $leaf = [IO.Path]::GetFileName($protected.FileSystemPath)
                 $watcher = [PrivatePacmanV2.TreeWatcher]::new($parent, $leaf, $false)
             }
             $watcher.Start()
@@ -2503,7 +2533,7 @@ function Get-PrivatePacmanQuiescentSnapshotSet {
     for ($attempt = 1; $attempt -le $MaximumAttempts; $attempt++) {
         $snapshots = @(foreach ($protected in $ProtectedRoot) {
             Get-PrivatePacmanTreeSnapshotCore `
-                -Path $protected.Path `
+                -Path $protected.FileSystemPath `
                 -AllowMissing
         })
         $probeWatchers = @(Start-PrivatePacmanWatchers -ProtectedRoot $ProtectedRoot)
@@ -2883,7 +2913,7 @@ function Invoke-PrivatePacmanUpgrade {
             $protectedBefore = @(for ($index = 0; $index -lt $protected.Count; $index++) {
                 $protectedEntry = $protected[$index]
                 $snapshot = Get-PrivatePacmanTreeSnapshotCore `
-                    -Path $protectedEntry.Path `
+                    -Path $protectedEntry.FileSystemPath `
                     -AllowMissing
                 $fileName = "protected-$index-before.json"
                 Write-PrivatePacmanJson `
@@ -2892,7 +2922,8 @@ function Invoke-PrivatePacmanUpgrade {
                 [pscustomobject][ordered]@{
                     SnapshotSchema = $snapshot.Schema
                     ReparsePointPolicy = $snapshot.ReparsePointPolicy
-                    Path = $snapshot.Path
+                    Path = $protectedEntry.Path
+                    FileSystemPath = $snapshot.Path
                     Exists = $snapshot.Exists
                     CoverageStatus = if ($snapshot.Exists) { 'Covered' } else { 'NotCovered' }
                     CaptureError = $null
@@ -3069,7 +3100,7 @@ function Invoke-PrivatePacmanUpgrade {
             try {
                 $protectedAfter = @(foreach ($protectedEntry in $protected) {
                     $snapshot = Get-PrivatePacmanTreeSnapshotCore `
-                        -Path $protectedEntry.Path `
+                        -Path $protectedEntry.FileSystemPath `
                         -AllowMissing
                     $fileName = "protected-$([Array]::IndexOf($protected, $protectedEntry))-after.json"
                     Write-PrivatePacmanJson `
@@ -3078,7 +3109,8 @@ function Invoke-PrivatePacmanUpgrade {
                     [pscustomobject][ordered]@{
                         SnapshotSchema = $snapshot.Schema
                         ReparsePointPolicy = $snapshot.ReparsePointPolicy
-                        Path = $snapshot.Path
+                        Path = $protectedEntry.Path
+                        FileSystemPath = $snapshot.Path
                         Exists = $snapshot.Exists
                         CoverageStatus = if ($snapshot.Exists) { 'Covered' } else { 'NotCovered' }
                         CaptureError = $null

@@ -15,6 +15,7 @@ $createdJobs = [Collections.Generic.List[Management.Automation.Job]]::new()
 $createdProcesses = [Collections.Generic.List[Diagnostics.Process]]::new()
 $testEnvironmentNames = @(
     'PRIVATE_PACMAN_TEST_ARGV',
+    'PRIVATE_PACMAN_TEST_ATTESTATION',
     'PRIVATE_PACMAN_TEST_CONFIG',
     'PRIVATE_PACMAN_TEST_ENVIRONMENT',
     'PRIVATE_PACMAN_TEST_MODE',
@@ -185,8 +186,8 @@ function Set-PrivatePacmanTestCanonicalSharedRoot {
     )
 
     & $Module {
-        param([string] $CanonicalSharedRoot)
-        $script:CanonicalSharedRoot = $CanonicalSharedRoot
+        param([string] $PhysicalPath)
+        $script:TestCanonicalSharedRootPhysicalPath = $PhysicalPath
     } $Path
 }
 
@@ -244,6 +245,185 @@ function Read-PrivatePacmanRecordedEnvironment {
     )
 }
 
+function Get-PrivatePacmanRuntimeAttestation {
+    return [pscustomobject][ordered]@{
+        ProcessArchitecture = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+        OSArchitecture = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+        Framework = [Runtime.InteropServices.RuntimeInformation]::FrameworkDescription
+        ProcessPath = [Environment]::ProcessPath
+    }
+}
+
+function Get-PrivatePacmanPeArchitecture {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Path
+    )
+
+    $stream = [IO.File]::Open(
+        $Path,
+        [IO.FileMode]::Open,
+        [IO.FileAccess]::Read,
+        [IO.FileShare]::Read
+    )
+    $reader = [IO.BinaryReader]::new($stream)
+    try {
+        if ($reader.ReadUInt16() -ne 0x5a4d) {
+            throw "Executable has no DOS header: $Path"
+        }
+        $stream.Position = 0x3c
+        $peOffset = $reader.ReadUInt32()
+        $stream.Position = $peOffset
+        if ($reader.ReadUInt32() -ne 0x00004550) {
+            throw "Executable has no PE header: $Path"
+        }
+        switch ($reader.ReadUInt16()) {
+            0x014c { return 'X86' }
+            0x8664 { return 'X64' }
+            0xaa64 { return 'Arm64' }
+            default { throw "Executable has an unsupported PE machine: $Path" }
+        }
+    }
+    finally {
+        $reader.Dispose()
+        $stream.Dispose()
+    }
+}
+
+function Test-PrivatePacmanSymlinkPrivilegeUnavailable {
+    param(
+        [Parameter(Mandatory)]
+        [Exception] $Exception
+    )
+
+    $current = $Exception
+    while ($null -ne $current) {
+        if (($current.PSObject.Properties.Name -contains 'NativeErrorCode' -and
+             [int]$current.NativeErrorCode -eq 1314) -or
+            ($current.HResult -band 0xffff) -eq 1314) {
+            return $true
+        }
+        $current = $current.InnerException
+    }
+    return $Exception.Message -match 'privilege.*required|required.*privilege'
+}
+
+function Assert-PrivatePacmanRecordedChildEnvironment {
+    param(
+        [Parameter(Mandatory)]
+        [object[]] $Declared,
+
+        [Parameter(Mandatory)]
+        [object[]] $Observed,
+
+        [Parameter(Mandatory)]
+        [psobject] $RecorderAttestation
+    )
+
+    $declaredMap = [Collections.Generic.Dictionary[string, string]]::new(
+        [StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($entry in $Declared) {
+        $declaredMap.Add([string]$entry.Name, [string]$entry.Value)
+    }
+    $observedMap = [Collections.Generic.Dictionary[string, string]]::new(
+        [StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($entry in $Observed) {
+        $observedMap.Add([string]$entry.Name, [string]$entry.Value)
+    }
+    foreach ($entry in $declaredMap.GetEnumerator()) {
+        Assert-PrivatePacmanTest `
+            $observedMap.ContainsKey($entry.Key) `
+            "Child environment omitted declared value $($entry.Key)."
+        Assert-PrivatePacmanEqual `
+            $entry.Value `
+            $observedMap[$entry.Key] `
+            "Child environment changed declared value $($entry.Key)."
+    }
+
+    $expectedProcessorArchitecture = switch (
+        [string]$RecorderAttestation.ProcessArchitecture
+    ) {
+        'Arm64' { 'ARM64' }
+        'X64' { 'AMD64' }
+        'X86' { 'x86' }
+        default {
+            throw "Recorder reported an unsupported process architecture: $_"
+        }
+    }
+    foreach ($entry in $observedMap.GetEnumerator()) {
+        if ($declaredMap.ContainsKey($entry.Key)) {
+            continue
+        }
+        if ($entry.Key -ceq 'PROCESSOR_ARCHITECTURE' -and
+            $entry.Value -ceq $expectedProcessorArchitecture) {
+            continue
+        }
+        throw "Child environment contains undeclared leakage: $($entry.Key)"
+    }
+}
+
+function Set-PrivatePacmanCanonicalTransactionEvidence {
+    param(
+        [Parameter(Mandatory)]
+        [psobject] $Result
+    )
+
+    $script:canonicalTransactionEvidence = [pscustomobject][ordered]@{
+        Path = 'C:\msys64'
+        FileSystemPath = $null
+        CoverageStatus = 'CaptureFailed'
+        ExistedBefore = $null
+        ExistedAfter = $null
+        EntryCountBefore = $null
+        EntryCountAfter = $null
+        BeforeDigest = $null
+        AfterDigest = $null
+        BeforeContentDigest = $null
+        AfterContentDigest = $null
+        ByteAndMetadataIdentical = $null
+    }
+
+    $before = @($Result.ProtectedBefore | Where-Object IsCanonicalSharedRoot)
+    $after = @($Result.ProtectedAfter | Where-Object IsCanonicalSharedRoot)
+    Assert-PrivatePacmanEqual 1 $before.Count 'Canonical C:\msys64 before evidence is missing or duplicated.'
+    Assert-PrivatePacmanEqual 1 $after.Count 'Canonical C:\msys64 after evidence is missing or duplicated.'
+    Assert-PrivatePacmanEqual 'C:\msys64' $before[0].Path 'The production canonical root was not protected by the transaction.'
+    Assert-PrivatePacmanEqual $before[0].Path $after[0].Path 'Canonical transaction paths changed.'
+    Assert-PrivatePacmanEqual $before[0].FileSystemPath $after[0].FileSystemPath 'Canonical filesystem boundary changed.'
+
+    $coverageStatus = if ($before[0].Exists -and $after[0].Exists) {
+        'Covered'
+    }
+    else {
+        'NotCovered'
+    }
+    $script:canonicalTransactionEvidence = [pscustomobject][ordered]@{
+        Path = [string]$before[0].Path
+        FileSystemPath = [string]$before[0].FileSystemPath
+        CoverageStatus = $coverageStatus
+        ExistedBefore = [bool]$before[0].Exists
+        ExistedAfter = [bool]$after[0].Exists
+        EntryCountBefore = [int64]$before[0].EntryCount
+        EntryCountAfter = [int64]$after[0].EntryCount
+        BeforeDigest = [string]$before[0].Digest
+        AfterDigest = [string]$after[0].Digest
+        BeforeContentDigest = [string]$before[0].ContentDigest
+        AfterContentDigest = [string]$after[0].ContentDigest
+        ByteAndMetadataIdentical = if ($coverageStatus -ceq 'Covered') {
+            (
+                $before[0].Digest -ceq $after[0].Digest -and
+                $before[0].ContentDigest -ceq $after[0].ContentDigest -and
+                [int64]$before[0].EntryCount -eq [int64]$after[0].EntryCount
+            )
+        }
+        else {
+            $null
+        }
+    }
+}
+
 function New-PrivatePacmanRecorder {
     param(
         [Parameter(Mandatory)]
@@ -252,13 +432,15 @@ function New-PrivatePacmanRecorder {
 
     [void][IO.Directory]::CreateDirectory($Directory)
     $sourcePath = Join-Path $Directory 'PrivatePacmanRecorder.cs'
-    $executablePath = Join-Path $Directory 'PrivatePacmanRecorder.exe'
+    $projectPath = Join-Path $Directory 'PrivatePacmanRecorder.csproj'
     $source = @'
 using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.Json;
 using System.Threading;
 
 public static class PrivatePacmanRecorder
@@ -318,6 +500,22 @@ public static class PrivatePacmanRecorder
 
     public static int Main(string[] args)
     {
+        string attestationPath = Env("PRIVATE_PACMAN_TEST_ATTESTATION");
+        if (!String.IsNullOrEmpty(attestationPath))
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(attestationPath));
+            File.WriteAllText(
+                attestationPath,
+                JsonSerializer.Serialize(new
+                {
+                    Schema = "private-pacman-recorder-attestation/v1",
+                    ProcessArchitecture = RuntimeInformation.ProcessArchitecture.ToString(),
+                    OSArchitecture = RuntimeInformation.OSArchitecture.ToString(),
+                    Framework = RuntimeInformation.FrameworkDescription,
+                    ProcessPath = Environment.ProcessPath
+                }),
+                new UTF8Encoding(false));
+        }
         string argvPath = Env("PRIVATE_PACMAN_TEST_ARGV");
         if (!String.IsNullOrEmpty(argvPath))
         {
@@ -370,21 +568,63 @@ public static class PrivatePacmanRecorder
 }
 '@
     [IO.File]::WriteAllText($sourcePath, $source, [Text.UTF8Encoding]::new($false))
+    $project = @'
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>false</SelfContained>
+    <DebugType>None</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+</Project>
+'@
+    [IO.File]::WriteAllText($projectPath, $project, [Text.UTF8Encoding]::new($false))
 
-    $compilerCandidates = @(
-        "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe",
-        "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\csc.exe"
-    )
-    $compiler = $compilerCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-    if ($null -eq $compiler) {
-        throw 'The inbox .NET Framework C# compiler is required for the source-only argv recorder.'
+    $dotnet = Get-Command dotnet -CommandType Application -ErrorAction Stop
+    $processArchitecture = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+    $runtimeIdentifier = switch ($processArchitecture) {
+        'Arm64' { 'win-arm64' }
+        'X64' { 'win-x64' }
+        'X86' { 'win-x86' }
+        default { throw "Unsupported recorder build architecture: $processArchitecture" }
     }
-
-    & $compiler /nologo /target:exe "/out:$executablePath" $sourcePath
-    if ($LASTEXITCODE -ne 0 -or -not [IO.File]::Exists($executablePath)) {
-        throw "Unable to compile the source-only argv recorder (exit $LASTEXITCODE)."
+    $sdkVersion = (& $dotnet.Source --version).Trim()
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to query the .NET SDK for the native recorder (exit $LASTEXITCODE)."
     }
-    return $executablePath
+    & $dotnet.Source publish $projectPath `
+        --configuration Release `
+        --runtime $runtimeIdentifier `
+        --self-contained false `
+        --nologo `
+        --verbosity quiet
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to publish the native recorder (exit $LASTEXITCODE)."
+    }
+    $executablePath = Join-Path `
+        $Directory `
+        "bin\Release\net10.0\$runtimeIdentifier\publish\PrivatePacmanRecorder.exe"
+    if (-not [IO.File]::Exists($executablePath)) {
+        throw "The native recorder was not published: $executablePath"
+    }
+    return [pscustomobject][ordered]@{
+        Path = $executablePath
+        BuildTool = $dotnet.Source
+        BuildToolArchitecture = Get-PrivatePacmanPeArchitecture -Path $dotnet.Source
+        SdkVersion = $sdkVersion
+        TargetFramework = 'net10.0'
+        RuntimeIdentifier = $runtimeIdentifier
+        Architecture = Get-PrivatePacmanPeArchitecture -Path $executablePath
+        Sha256 = [Convert]::ToHexString(
+            [Security.Cryptography.SHA256]::HashData(
+                [IO.File]::ReadAllBytes($executablePath)
+            )
+        ).ToLowerInvariant()
+    }
 }
 
 function New-PrivatePacmanFixture {
@@ -479,6 +719,7 @@ function New-PrivatePacmanFixture {
         SharedFile = $sharedFile
         Layout = $layout
         ArgvPath = Join-Path $base 'argv.txt'
+        AttestationPath = Join-Path $base 'recorder-attestation.json'
         ConfigCapturePath = Join-Path $base 'pacman.conf'
         EnvironmentPath = Join-Path $base 'environment.txt'
         ReadyPath = Join-Path $base 'ready.txt'
@@ -496,6 +737,7 @@ function Set-PrivatePacmanFixtureEnvironment {
 
     $environment = [ordered]@{
         PRIVATE_PACMAN_TEST_ARGV = $Fixture.ArgvPath
+        PRIVATE_PACMAN_TEST_ATTESTATION = $Fixture.AttestationPath
         PRIVATE_PACMAN_TEST_CONFIG = $Fixture.ConfigCapturePath
         PRIVATE_PACMAN_TEST_ENVIRONMENT = $Fixture.EnvironmentPath
         PRIVATE_PACMAN_TEST_GO = $Fixture.GoPath
@@ -708,6 +950,7 @@ function Start-PrivatePacmanFixtureJob {
             $Fixture.Owner,
             $Fixture.ProtectedRoot,
             $Fixture.ArgvPath,
+            $Fixture.AttestationPath,
             $Fixture.ConfigCapturePath,
             $Fixture.EnvironmentPath,
             $Fixture.ReadyPath,
@@ -732,6 +975,7 @@ function Start-PrivatePacmanFixtureJob {
                 $ExpectedOwner,
                 $ProtectedRoot,
                 $ArgvPath,
+                $AttestationPath,
                 $ConfigCapturePath,
                 $EnvironmentPath,
                 $ReadyPath,
@@ -750,6 +994,7 @@ function Start-PrivatePacmanFixtureJob {
                 $script:TestChildEnvironment = $Values
             } ([ordered]@{
                 PRIVATE_PACMAN_TEST_ARGV = $ArgvPath
+                PRIVATE_PACMAN_TEST_ATTESTATION = $AttestationPath
                 PRIVATE_PACMAN_TEST_CONFIG = $ConfigCapturePath
                 PRIVATE_PACMAN_TEST_ENVIRONMENT = $EnvironmentPath
                 PRIVATE_PACMAN_TEST_GO = $GoPath
@@ -758,7 +1003,7 @@ function Start-PrivatePacmanFixtureJob {
             })
             & $jobModule {
                 param([string] $Path)
-                $script:CanonicalSharedRoot = $Path
+                $script:TestCanonicalSharedRootPhysicalPath = $Path
             } $CanonicalSharedRoot
             if (-not [string]::IsNullOrEmpty($BarrierRoot)) {
                 & $jobModule {
@@ -886,6 +1131,9 @@ function Invoke-PrivatePacmanStrictSnapshotReparseCase {
             $null = New-Item -ItemType $ItemType -Path $link -Target $target
         }
         catch {
+            if (-not (Test-PrivatePacmanSymlinkPrivilegeUnavailable -Exception $_.Exception)) {
+                throw
+            }
             Add-PrivatePacmanSkippedTestCase `
                 -Name $Name `
                 -Reason "$ItemType $TargetKind creation is unavailable: $($_.Exception.Message)"
@@ -924,6 +1172,59 @@ function Invoke-PrivatePacmanStrictSnapshotReparseCase {
     }
 }
 
+function Invoke-PrivatePacmanCleanupFileSymlinkCase {
+    param(
+        [Parameter(Mandatory)]
+        [string] $SuiteRoot
+    )
+
+    $name = 'cleanup never follows injected file symlinks'
+    $caseRoot = Join-Path $SuiteRoot "cleanup-symlink-$([guid]::NewGuid().ToString('N'))"
+    $privateRoot = Join-Path $caseRoot 'private-root'
+    $outsideRoot = Join-Path $caseRoot 'outside'
+    [void][IO.Directory]::CreateDirectory($privateRoot)
+    [void][IO.Directory]::CreateDirectory($outsideRoot)
+    $outsideFile = Join-Path $outsideRoot 'canary'
+    $link = Join-Path $privateRoot 'file-link'
+    [IO.File]::WriteAllText($outsideFile, 'preserve-cleanup-target')
+    try {
+        try {
+            $null = New-Item -ItemType SymbolicLink -Path $link -Target $outsideFile
+        }
+        catch {
+            if (-not (Test-PrivatePacmanSymlinkPrivilegeUnavailable -Exception $_.Exception)) {
+                throw
+            }
+            Add-PrivatePacmanSkippedTestCase `
+                -Name $name `
+                -Reason "SymbolicLink File creation is unavailable: $($_.Exception.Message)"
+            return
+        }
+
+        Invoke-PrivatePacmanTestCase -Name $name -Test {
+            & $module {
+                param([string] $Path)
+                Remove-PrivatePacmanTreeEntry -Path $Path
+            } $privateRoot
+            Assert-PrivatePacmanEqual `
+                'preserve-cleanup-target' `
+                ([IO.File]::ReadAllText($outsideFile)) `
+                'Cleanup followed or changed a file-symlink target.'
+            Assert-PrivatePacmanTest `
+                (-not [IO.Directory]::Exists($privateRoot)) `
+                'Cleanup left the private test root.'
+        }
+    }
+    finally {
+        if ([IO.File]::Exists($link)) {
+            [IO.File]::Delete($link)
+        }
+        if ([IO.Directory]::Exists($caseRoot)) {
+            Remove-Item -LiteralPath $caseRoot -Recurse -Force
+        }
+    }
+}
+
 $temporaryBase = [PrivatePacmanV2.NativePath]::GetFinalPath(
     [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
 )
@@ -935,6 +1236,9 @@ $suiteCleanupError = $null
 $script:populatedSharedEvidence = $null
 $script:canonicalTransactionEvidence = $null
 $recorderPath = $null
+$recorderBuild = $null
+$script:recorderAttestation = $null
+$harnessAttestation = Get-PrivatePacmanRuntimeAttestation
 $script:testCanonicalSharedRoot = Join-Path $suiteRoot 'synthetic-canonical-shared-root'
 [void][IO.Directory]::CreateDirectory((Join-Path $script:testCanonicalSharedRoot 'var\lib\pacman'))
 [IO.File]::WriteAllText(
@@ -942,12 +1246,37 @@ $script:testCanonicalSharedRoot = Join-Path $suiteRoot 'synthetic-canonical-shar
     'synthetic-canonical-shared-state',
     [Text.UTF8Encoding]::new($false)
 )
+Set-PrivatePacmanTestCanonicalSharedRoot `
+    -Module $module `
+    -Path $script:testCanonicalSharedRoot
 $script:signingKey = [Security.Cryptography.ECDsa]::Create(
     [Security.Cryptography.ECCurve+NamedCurves]::nistP256
 )
 
 try {
-    $recorderPath = New-PrivatePacmanRecorder -Directory (Join-Path $suiteRoot 'recorder')
+    $recorderBuild = New-PrivatePacmanRecorder -Directory (Join-Path $suiteRoot 'recorder')
+    $recorderPath = $recorderBuild.Path
+
+    Invoke-PrivatePacmanTestCase -Name 'recorder build is native and provenance-attested' -Test {
+        Assert-PrivatePacmanEqual `
+            $harnessAttestation.ProcessArchitecture `
+            $harnessAttestation.OSArchitecture `
+            'The contract harness is running under architecture emulation.'
+        Assert-PrivatePacmanEqual `
+            $harnessAttestation.ProcessArchitecture `
+            $recorderBuild.BuildToolArchitecture `
+            'The .NET recorder build tool is not native to the harness.'
+        Assert-PrivatePacmanEqual `
+            $harnessAttestation.ProcessArchitecture `
+            $recorderBuild.Architecture `
+            'The published recorder executable architecture is not native.'
+        Assert-PrivatePacmanTest `
+            ($recorderBuild.SdkVersion -match '\A10\.') `
+            'The recorder was not built by the required .NET 10 SDK.'
+        Assert-PrivatePacmanTest `
+            (-not [string]::IsNullOrWhiteSpace($recorderBuild.Sha256)) `
+            'The recorder build has no byte provenance hash.'
+    }
 
     Invoke-PrivatePacmanTestCase -Name 'repository contains no tracked package candidate bytes' -Test {
         $repositoryRoot = Split-Path $PSScriptRoot -Parent
@@ -985,8 +1314,10 @@ try {
         Assert-PrivatePacmanTest `
             ($workflow -match 'self-reported-diagnostic-only' -and
              $workflow -match 'AdmissionReady -ne \$false' -and
-             $workflow -match 'CoverageStatus') `
-            'Candidate workflow does not validate diagnostic authority and coverage.'
+             $workflow -match 'CoverageStatus' -and
+             $workflow -match 'RecorderAttestation' -and
+             $workflow -match 'FileSystemPath') `
+            'Candidate workflow does not validate authority, architecture, and coverage.'
         Assert-PrivatePacmanTest `
             ($workflow -match 'path: \$\{\{ runner\.temp \}\}/private-pacman-contract\.json' -and
              $workflow -match 'if-no-files-found: error') `
@@ -1045,9 +1376,30 @@ try {
         try {
             $before = Get-PrivatePacmanTreeSnapshot -Path $fixture.ProtectedRoot
             $result = Invoke-PrivatePacmanFixture -Fixture $fixture
+            Set-PrivatePacmanCanonicalTransactionEvidence -Result $result
+            $script:recorderAttestation = Get-Content `
+                -Raw `
+                -LiteralPath $fixture.AttestationPath |
+                    ConvertFrom-Json
             $after = Get-PrivatePacmanTreeSnapshot -Path $fixture.ProtectedRoot
 
             Assert-PrivatePacmanTest $result.Success 'Successful recorder transaction was not reported as successful.'
+            Assert-PrivatePacmanEqual `
+                'private-pacman-recorder-attestation/v1' `
+                $script:recorderAttestation.Schema `
+                'Recorder attestation schema changed.'
+            Assert-PrivatePacmanEqual `
+                $recorderBuild.Architecture `
+                $script:recorderAttestation.ProcessArchitecture `
+                'The executed recorder architecture differs from the published PE.'
+            Assert-PrivatePacmanEqual `
+                $harnessAttestation.OSArchitecture `
+                $script:recorderAttestation.OSArchitecture `
+                'The recorder observed a different operating-system architecture.'
+            Assert-PrivatePacmanEqual `
+                $script:recorderAttestation.OSArchitecture `
+                $script:recorderAttestation.ProcessArchitecture `
+                'The recorder executed under architecture emulation.'
             Assert-PrivatePacmanEqual $before.Digest $after.Digest 'Protected test state changed.'
             Assert-PrivatePacmanEqual $fixture.Owner $result.Ownership.Owner 'Ownership evidence lost the expected owner.'
             Assert-PrivatePacmanEqual $fixture.Layout.SessionId $result.Ownership.SessionId 'Ownership evidence lost the session binding.'
@@ -1132,14 +1484,10 @@ try {
                 'private-pacman-child-environment/v1' `
                 $environmentEvidence.Schema `
                 'Child environment evidence schema changed.'
-            Assert-PrivatePacmanSequence `
-                @($environmentEvidence.Entries | ForEach-Object {
-                    "$($_.Name)=$($_.Value)"
-                }) `
-                @($recordedEnvironment | ForEach-Object {
-                    "$($_.Name)=$($_.Value)"
-                }) `
-                'Recorded child environment does not match complete invocation evidence.'
+            Assert-PrivatePacmanRecordedChildEnvironment `
+                -Declared @($environmentEvidence.Entries) `
+                -Observed $recordedEnvironment `
+                -RecorderAttestation $script:recorderAttestation
             $environmentNames = @($recordedEnvironment | ForEach-Object Name)
             $sortedEnvironmentNames = [string[]]$environmentNames.Clone()
             [Array]::Sort($sortedEnvironmentNames, [StringComparer]::Ordinal)
@@ -1176,6 +1524,7 @@ try {
                     )
                 )
                 PRIVATE_PACMAN_TEST_ARGV = $fixture.ArgvPath
+                PRIVATE_PACMAN_TEST_ATTESTATION = $fixture.AttestationPath
                 PRIVATE_PACMAN_TEST_CONFIG = $fixture.ConfigCapturePath
                 PRIVATE_PACMAN_TEST_ENVIRONMENT = $fixture.EnvironmentPath
                 PRIVATE_PACMAN_TEST_GO = $fixture.GoPath
@@ -1189,8 +1538,8 @@ try {
             }
             Assert-PrivatePacmanEqual `
                 $expectedEnvironment.Count `
-                $environmentMap.Count `
-                'Child environment contains inherited or missing names.'
+                $environmentEvidence.Entries.Count `
+                'Declared child environment contains inherited or missing names.'
             foreach ($entry in $expectedEnvironment.GetEnumerator()) {
                 Assert-PrivatePacmanTest `
                     $environmentMap.ContainsKey($entry.Key) `
@@ -1209,14 +1558,26 @@ try {
                     (-not $environmentMap.ContainsKey($name)) `
                     "Hostile inherited child environment variable survived: $name"
             }
+            $mutatedEnvironment = @($recordedEnvironment) + @(
+                [pscustomobject][ordered]@{
+                    Name = 'UNDECLARED_CONTRACT_MUTATION'
+                    Value = 'must-fail'
+                }
+            )
+            $null = Assert-PrivatePacmanThrows {
+                Assert-PrivatePacmanRecordedChildEnvironment `
+                    -Declared @($environmentEvidence.Entries) `
+                    -Observed $mutatedEnvironment `
+                    -RecorderAttestation $script:recorderAttestation
+            } 'undeclared leakage'
             $environmentCanonicalLines = [Collections.Generic.List[string]]::new()
             $environmentCanonicalLines.Add('private-pacman-child-environment/v1')
             $environmentCanonicalLines.Add(
-                $recordedEnvironment.Count.ToString(
+                $environmentEvidence.Entries.Count.ToString(
                     [Globalization.CultureInfo]::InvariantCulture
                 )
             )
-            foreach ($entry in $recordedEnvironment) {
+            foreach ($entry in $environmentEvidence.Entries) {
                 $environmentCanonicalLines.Add(
                     [Convert]::ToBase64String(
                         [Text.Encoding]::UTF8.GetBytes($entry.Name)
@@ -1242,45 +1603,6 @@ try {
                 $environmentEvidence.Sha256 `
                 'Child environment evidence hash is not canonical.'
 
-            $canonicalEvidence = @($result.ProtectedBefore | Where-Object IsCanonicalSharedRoot)
-            Assert-PrivatePacmanEqual 1 $canonicalEvidence.Count 'Canonical C:\msys64 evidence is missing or duplicated.'
-            $canonicalAfter = @($result.ProtectedAfter | Where-Object IsCanonicalSharedRoot)
-            Assert-PrivatePacmanEqual 'C:\msys64' $canonicalEvidence[0].Path 'The production canonical root was not protected by the argv transaction.'
-            Assert-PrivatePacmanEqual $canonicalEvidence[0].Digest $canonicalAfter[0].Digest 'Canonical C:\msys64 state changed.'
-            Assert-PrivatePacmanEqual $canonicalEvidence[0].EntryCount $canonicalAfter[0].EntryCount 'Canonical C:\msys64 entry count changed.'
-            $coverageStatus = if (
-                $canonicalEvidence[0].Exists -and
-                $canonicalAfter[0].Exists
-            ) {
-                'Covered'
-            }
-            else {
-                'NotCovered'
-            }
-            $script:canonicalTransactionEvidence = [pscustomobject][ordered]@{
-                Path = [string]$canonicalEvidence[0].Path
-                CoverageStatus = $coverageStatus
-                ExistedBefore = [bool]$canonicalEvidence[0].Exists
-                ExistedAfter = [bool]$canonicalAfter[0].Exists
-                EntryCountBefore = [int64]$canonicalEvidence[0].EntryCount
-                EntryCountAfter = [int64]$canonicalAfter[0].EntryCount
-                BeforeDigest = [string]$canonicalEvidence[0].Digest
-                AfterDigest = [string]$canonicalAfter[0].Digest
-                BeforeContentDigest = [string]$canonicalEvidence[0].ContentDigest
-                AfterContentDigest = [string]$canonicalAfter[0].ContentDigest
-                ByteAndMetadataIdentical = if ($coverageStatus -ceq 'Covered') {
-                    (
-                        $canonicalEvidence[0].Digest -ceq $canonicalAfter[0].Digest -and
-                        $canonicalEvidence[0].ContentDigest -ceq
-                            $canonicalAfter[0].ContentDigest -and
-                        [int64]$canonicalEvidence[0].EntryCount -eq
-                            [int64]$canonicalAfter[0].EntryCount
-                    )
-                }
-                else {
-                    $null
-                }
-            }
         }
         finally {
             Clear-PrivatePacmanTestEnvironment
@@ -1314,6 +1636,10 @@ try {
                     'Covered' `
                     $script:canonicalTransactionEvidence.CoverageStatus `
                     'Literal transaction coverage status is invalid.'
+                Assert-PrivatePacmanEqual `
+                    $script:testCanonicalSharedRoot `
+                    $script:canonicalTransactionEvidence.FileSystemPath `
+                    'Literal transaction did not use the isolated filesystem boundary.'
                 Assert-PrivatePacmanTest `
                     ([int64]$script:canonicalTransactionEvidence.EntryCountBefore -ge 0) `
                     'Literal transaction before count is negative.'
@@ -1326,10 +1652,6 @@ try {
                     'Literal transaction snapshot evidence is not identical.'
             }
     }
-
-    Set-PrivatePacmanTestCanonicalSharedRoot `
-        -Module $module `
-        -Path $script:testCanonicalSharedRoot
 
     Invoke-PrivatePacmanTestCase -Name 'populated protected state exposes complete preservation evidence' -Test {
         $fixture = New-PrivatePacmanFixture -Name 'populated-shared' -SuiteRoot $suiteRoot -RecorderPath $recorderPath
@@ -2262,12 +2584,15 @@ try {
         }
     }
 
-    Invoke-PrivatePacmanTestCase -Name 'package symbolic links are rejected' -Test {
-        $fixture = New-PrivatePacmanFixture -Name 'symlink' -SuiteRoot $suiteRoot -RecorderPath $recorderPath
-        $target = Join-Path $fixture.PackageRoot 'target.pkg.tar.zst'
-        [IO.File]::WriteAllText($target, 'target')
+    Invoke-PrivatePacmanTestCase -Name 'package reparse escapes are rejected without target following' -Test {
+        $fixture = New-PrivatePacmanFixture -Name 'package-junction' -SuiteRoot $suiteRoot -RecorderPath $recorderPath
+        $outside = Join-Path $fixture.Base 'outside-package-root'
+        [void][IO.Directory]::CreateDirectory($outside)
+        $canary = Join-Path $outside 'escaped.pkg.tar.zst'
+        [IO.File]::WriteAllText($canary, 'preserve-package-target')
         [IO.File]::Delete($fixture.PackagePath)
-        $null = New-Item -ItemType SymbolicLink -Path $fixture.PackagePath -Target $target
+        $junction = Join-Path $fixture.PackageRoot 'junction'
+        $null = New-Item -ItemType Junction -Path $junction -Target $outside
         try {
             $null = Assert-PrivatePacmanThrows {
                 Invoke-PrivatePacmanUpgrade `
@@ -2281,11 +2606,17 @@ try {
                     -ExpectedPublicKeySha256 $fixture.ExpectedPublicKeySha256 `
                     -ExpectedOwner $fixture.Owner `
                     -ProtectedRoot @($fixture.ProtectedRoot)
-            } 'reparse|symbolic|alias'
-            Assert-PrivatePacmanTest (-not (Test-Path -LiteralPath $fixture.Layout.StateDirectory)) 'Symlink rejection created external state.'
+            } 'reparse|junction|alias'
+            Assert-PrivatePacmanTest (-not (Test-Path -LiteralPath $fixture.Layout.StateDirectory)) 'Package reparse rejection created external state.'
+            Assert-PrivatePacmanEqual `
+                'preserve-package-target' `
+                ([IO.File]::ReadAllText($canary)) `
+                'Package inventory followed or changed a junction target.'
         }
         finally {
-            [IO.File]::Delete($fixture.PackagePath)
+            if ([IO.Directory]::Exists($junction)) {
+                [IO.Directory]::Delete($junction, $false)
+            }
         }
     }
 
@@ -2500,7 +2831,7 @@ try {
         }
     }
 
-    Invoke-PrivatePacmanTestCase -Name 'cleanup never follows junctions or file symlinks' -Test {
+    Invoke-PrivatePacmanTestCase -Name 'cleanup never follows injected junctions' -Test {
         $fixture = New-PrivatePacmanFixture -Name 'cleanup-links' -SuiteRoot $suiteRoot -RecorderPath $recorderPath
         $outsideDirectory = Join-Path $fixture.Base 'outside-cleanup'
         [void][IO.Directory]::CreateDirectory($outsideDirectory)
@@ -2514,10 +2845,6 @@ try {
                 -ItemType Junction `
                 -Path (Join-Path $fixture.Layout.Root 'directory-link') `
                 -Target $outsideDirectory
-            $null = New-Item `
-                -ItemType SymbolicLink `
-                -Path (Join-Path $fixture.Layout.Root 'file-link') `
-                -Target $outsideFile
             [IO.File]::WriteAllText($fixture.GoPath, 'go')
             $null = Wait-PrivatePacmanFixtureJob -Job $job -ExpectedState Completed
             Assert-PrivatePacmanEqual 'preserve-me' ([IO.File]::ReadAllText($outsideFile)) 'Cleanup followed a reparse target.'
@@ -2529,6 +2856,7 @@ try {
             }
         }
     }
+    Invoke-PrivatePacmanCleanupFileSymlinkCase -SuiteRoot $suiteRoot
 
     Invoke-PrivatePacmanTestCase -Name 'parent-process crashes leave recoverable owned state' -Test {
         $fixture = New-PrivatePacmanFixture -Name 'parent-crash' -SuiteRoot $suiteRoot -RecorderPath $recorderPath
@@ -2549,6 +2877,7 @@ param(
     [string] $ProtectedRoot,
     [string] $CanonicalSharedRoot,
     [string] $ArgvPath,
+    [string] $AttestationPath,
     [string] $ConfigCapturePath,
     [string] $EnvironmentPath,
     [string] $ReadyPath,
@@ -2558,13 +2887,14 @@ $ErrorActionPreference = 'Stop'
 $privatePacmanModule = Import-Module $ModulePath -Force -PassThru
 & $privatePacmanModule {
     param([string] $Path)
-    $script:CanonicalSharedRoot = $Path
+    $script:TestCanonicalSharedRootPhysicalPath = $Path
 } $CanonicalSharedRoot
 & $privatePacmanModule {
     param([Collections.IDictionary] $Values)
     $script:TestChildEnvironment = $Values
 } ([ordered]@{
     PRIVATE_PACMAN_TEST_ARGV = $ArgvPath
+    PRIVATE_PACMAN_TEST_ATTESTATION = $AttestationPath
     PRIVATE_PACMAN_TEST_CONFIG = $ConfigCapturePath
     PRIVATE_PACMAN_TEST_ENVIRONMENT = $EnvironmentPath
     PRIVATE_PACMAN_TEST_GO = $GoPath
@@ -2609,6 +2939,7 @@ Invoke-PrivatePacmanUpgrade `
             '-ProtectedRoot', $fixture.ProtectedRoot,
             '-CanonicalSharedRoot', $script:testCanonicalSharedRoot,
             '-ArgvPath', $fixture.ArgvPath,
+            '-AttestationPath', $fixture.AttestationPath,
             '-ConfigCapturePath', $fixture.ConfigCapturePath,
             '-EnvironmentPath', $fixture.EnvironmentPath,
             '-ReadyPath', $fixture.ReadyPath,
@@ -2809,6 +3140,7 @@ if ($null -eq $script:populatedSharedEvidence) {
 if ($null -eq $script:canonicalTransactionEvidence) {
     $script:canonicalTransactionEvidence = [pscustomobject][ordered]@{
         Path = 'C:\msys64'
+        FileSystemPath = $null
         CoverageStatus = 'CaptureFailed'
         ExistedBefore = $null
         ExistedAfter = $null
@@ -2836,6 +3168,9 @@ $report = [pscustomobject][ordered]@{
     AdmissionReady = $false
     StartedFrom = $PSScriptRoot
     PowerShell = $PSVersionTable.PSVersion.ToString()
+    Runtime = $harnessAttestation
+    RecorderBuild = $recorderBuild
+    RecorderAttestation = $script:recorderAttestation
     CanonicalSharedState = [pscustomobject][ordered]@{
         Path = 'C:\msys64'
         CoverageStatus = $sharedCoverageStatus

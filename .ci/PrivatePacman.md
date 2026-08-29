@@ -64,6 +64,10 @@ The helper:
   entries prevents stream enumeration from following an external link target;
 - always includes canonical `C:\msys64` in the protected set, but records an
   absent root as `NotCovered`, never as successful literal-root coverage;
+- keeps that logical production path distinct from the filesystem observation
+  path so the private contract harness can substitute an isolated populated
+  tree without creating or mutating `C:\msys64`; production has no substitution
+  surface and observes the real path;
 - requires a complete preflight snapshot and a separate disposable watcher to
   observe a quiet interval before authoritative monitoring starts; only
   pre-monitor noise is discarded;
@@ -244,6 +248,20 @@ temporary variables are inside the disposable private root. Locale values are
 recorder-control set through private module state; production has no caller
 environment override surface.
 
+Windows may synthesize `PROCESSOR_ARCHITECTURE` when it creates the native
+process. The contract compares every declared entry exactly, permits only that
+documented OS-added name with the value implied by the recorder's attested
+process architecture (`ARM64`, `AMD64`, or `x86`), and rejects every other
+undeclared name. The canonical environment digest continues to bind only the
+explicit launch block.
+
+The harness publishes the recorder as a RID-matched, framework-dependent,
+single-file executable with the installed .NET 10 SDK. It records the SDK
+version, target RID, builder and PE architectures, executable SHA-256, and
+runtime recorder attestation. The harness, `dotnet` host, recorder PE, and
+running recorder must all match the operating-system architecture; emulated
+recorders fail the contract.
+
 ## Evidence and cleanup
 
 The external state directory contains:
@@ -252,7 +270,7 @@ The external state directory contains:
   protected roots, phase, and final result digest;
 - `evidence/invocation.json`: executable, exact argv, locked package hashes,
   signed ownership identity, seed-copy digest, managed-config digest, and
-  complete sorted effective child environment with canonical schema and
+  complete sorted declared child environment with canonical schema and
   SHA-256;
 - `evidence/protected-*-before.json` and
   `evidence/protected-*-after.json`: full byte, owner/group/DACL, attribute,
@@ -263,6 +281,13 @@ The external state directory contains:
 
 All module JSON evidence and the suite report are UTF-8 without BOM, LF-only,
 and terminated by exactly one LF.
+
+Protected-root summaries retain the logical `Path` and the actual
+`FileSystemPath` used for snapshots and watchers. They are identical in
+production. Only private harness state can map logical `C:\msys64` to a
+session-owned physical tree, making canonical transaction coverage countable
+without touching a machine installation. The report publishes both the direct
+literal-root snapshot and transaction-boundary evidence even when a test fails.
 
 `private-pacman-tree-snapshot/v3` records `ReparsePointPolicy = reject`.
 Covered before/after evidence must have nonnegative equal entry counts and
@@ -293,7 +318,8 @@ staging root, and writes `evidence/recovery.json`. Recovery always records
 `private-pacman-contract.yml` runs for every pull request. A fork pull request
 gets a visible failing job rather than a skipped result. A same-repository run
 checks out and verifies the exact PR head and uploads only its JSON diagnostic
-report.
+report. Upload uses an unconditional step, so the canonical and literal-root
+records remain available on both passing and failing runs.
 
 This workflow is defined by candidate-controlled source and is not an
 authoritative admission gate. Production use requires protected default-branch
@@ -314,7 +340,7 @@ revocation policy. Those gates are intentionally unresolved here.
 
 ## Contract tests
 
-Run the dependency-free source contract:
+Run the source-only contract with the .NET 10 SDK available:
 
 ```powershell
 pwsh -NoLogo -NoProfile -NonInteractive `
@@ -322,10 +348,10 @@ pwsh -NoLogo -NoProfile -NonInteractive `
     -ReportPath "$env:TEMP\private-pacman-contract.json"
 ```
 
-The test script compiles a small argv recorder from checked-in C# source with
-the Windows inbox .NET Framework compiler. It never invokes pacman or consumes
-a campaign candidate artifact; package-shaped test files contain only
-synthetic fixture text in a temporary directory. The suite covers canonical
+The test script publishes a small native argv recorder from generated C# source
+with the .NET 10 SDK. It never invokes pacman or consumes a campaign candidate
+artifact; package-shaped test files contain only synthetic fixture text in a
+temporary directory. The suite covers native process provenance, canonical
 manifest determinism, raw hash and key pinning, signature tampering,
 owner/session binding, complete package enumeration, signed traversal,
 argv completeness, repository absence, path aliases, drive mismatch,
