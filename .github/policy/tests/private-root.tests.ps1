@@ -19,6 +19,7 @@ $modulePath = (Resolve-Path (Join-Path $PSScriptRoot '..\PrivateRoot.psm1')).Pat
 Import-Module $modulePath -Force -ErrorAction Stop
 
 $script:assertions = 0
+$script:skips = 0
 
 function Assert-True {
     param(
@@ -55,6 +56,7 @@ function Assert-Throws {
     try {
         & $Action | Out-Null
     }
+
     catch {
         $threw = $true
         $reason = $_.Exception.Message
@@ -65,6 +67,19 @@ function Assert-Throws {
     if ($Match -and ($reason -notlike "*$Match*")) {
         throw "Rejected for the wrong reason: $Label -- wanted '$Match', got '$reason'"
     }
+}
+
+function Write-TestSkip {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Label,
+
+        [Parameter(Mandatory)]
+        [string] $Reason
+    )
+
+    $script:skips++
+    Write-Output "SKIP: $Label -- $Reason"
 }
 
 $canonicalTemp = (Get-Item -LiteralPath $env:TEMP -Force).FullName.TrimEnd('\')
@@ -262,35 +277,145 @@ try {
         Assert-PolicyPrivateAcl -Path $claimRoot -ExpectedNonce ('b' * 64)
     }
 
-    # A non-canonical trusted image entry must be refused.
+    # Git image identity is derived from the opened file, not its spelling.
     $psm = Get-Module PrivateRoot
     $psModule = $psm
     $savedImages = & $psModule { $script:PolicyTrustedGitImages }
     try {
-        $imageDir = Split-Path -Parent (Get-PolicyGitImage)
-        $imageLeaf = Split-Path -Leaf (Get-PolicyGitImage)
-        $noncanonical = Join-Path (Join-Path $imageDir '..') (Join-Path (Split-Path -Leaf $imageDir) $imageLeaf)
-        & $psModule { param($v) $script:PolicyTrustedGitImages = $v } @($noncanonical)
-        Assert-Throws -Label 'non-canonical git image is refused' -Action {
-            Get-PolicyGitImage
+        $real = Get-PolicyGitImage
+        $realIdentity = Get-PolicyCanonicalFileIdentity -Path $real
+
+        $imageDir = Split-Path -Parent $real
+        $imageLeaf = Split-Path -Leaf $real
+        $traversal = Join-Path (Join-Path $imageDir '..') (Join-Path (Split-Path -Leaf $imageDir) $imageLeaf)
+        & $psModule { param($v) $script:PolicyTrustedGitImages = $v } @($traversal)
+        Assert-True -Condition ((Get-PolicyGitImage) -ceq $real) -Label 'dot traversal normalizes to the canonical file'
+
+        foreach ($alias in @(
+                $real.ToUpperInvariant(),
+                ('\\?\' + $real),
+                ('\\.\' + $real))) {
+            $aliasIdentity = Get-PolicyCanonicalFileIdentity -Path $alias
+            Assert-True -Condition ($aliasIdentity.Path -ceq $realIdentity.Path) -Label 'case or prefix alias has the canonical path'
+            Assert-True -Condition ($aliasIdentity.VolumeSerial -ceq $realIdentity.VolumeSerial) -Label 'case or prefix alias has the canonical volume'
+            Assert-True -Condition ($aliasIdentity.FileIndex -ceq $realIdentity.FileIndex) -Label 'case or prefix alias has the canonical file index'
         }
+
+        if ($real.StartsWith('C:\Program Files\', [StringComparison]::OrdinalIgnoreCase)) {
+            $shortAlias = 'C:\PROGRA~1\' + $real.Substring('C:\Program Files\'.Length)
+            if ([IO.File]::Exists($shortAlias)) {
+                $shortIdentity = Get-PolicyCanonicalFileIdentity -Path $shortAlias
+                Assert-True -Condition ($shortIdentity.Path -ceq $realIdentity.Path) -Label '8.3 alias expands to the canonical path'
+                Assert-True -Condition ($shortIdentity.FileIndex -ceq $realIdentity.FileIndex) -Label '8.3 alias has the canonical file index'
+            }
+            else {
+                Write-TestSkip -Label '8.3 path normalization' -Reason 'short names are disabled on the Git volume'
+            }
+        }
+
         & $psModule { param($v) $script:PolicyTrustedGitImages = $v } @('git.exe', './git')
-        Assert-Throws -Label 'relative git image is refused' -Action {
+        Assert-Throws -Label 'relative git image is refused' -Match 'drive-rooted' -Action {
             Get-PolicyGitImage
         }
-        # A UNC image would be served by a remote host over the redirector, and
-        # an extended-length prefix bypasses normalisation. Both resolve to
-        # themselves, so a drive-letter root is required as well.
-        $real = $savedImages | Where-Object { [IO.File]::Exists($_) } | Select-Object -First 1
-        if ($real) {
-            foreach ($bad in @(
-                    ('\\localhost\C$' + $real.Substring(2)),
-                    ('\\?\' + $real),
-                    ('\\.\' + $real),
-                    ('//localhost/C$' + $real.Substring(2).Replace('\', '/')))) {
-                & $psModule { param($v) $script:PolicyTrustedGitImages = $v } @($bad)
-                Assert-Throws -Label 'UNC or device git image is refused' -Action {
-                    Get-PolicyGitImage
+
+        foreach ($bad in @(
+                ('\\localhost\C$' + $real.Substring(2)),
+                ('//localhost/C$' + $real.Substring(2).Replace('\', '/')))) {
+            & $psModule { param($v) $script:PolicyTrustedGitImages = $v } @($bad)
+            Assert-Throws -Label 'UNC git image is refused before open' -Match 'drive-rooted' -Action {
+                Get-PolicyGitImage
+            }
+        }
+
+        $missing = Join-Path $testRoot 'missing-git.exe'
+        & $psModule { param($v) $script:PolicyTrustedGitImages = $v } @($missing)
+        Assert-Throws -Label 'missing git image has an explicit diagnostic' -Match "cannot open '$missing'" -Action {
+            Get-PolicyGitImage
+        }
+
+        $locked = Join-Path $testRoot 'locked-git.exe'
+        [IO.File]::WriteAllBytes($locked, [byte[]] @(0x4d, 0x5a))
+        $exclusive = [IO.File]::Open(
+            $locked,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::ReadWrite,
+            [IO.FileShare]::None
+        )
+        try {
+            & $psModule { param($v) $script:PolicyTrustedGitImages = $v } @($locked)
+            Assert-Throws -Label 'inaccessible git image has an explicit diagnostic' -Match "cannot open '$locked'" -Action {
+                Get-PolicyGitImage
+            }
+        }
+        finally {
+            $exclusive.Dispose()
+        }
+
+        $gitPhysical = Join-Path $testRoot 'git-physical'
+        $gitJunction = Join-Path $testRoot 'git-junction'
+        [void] [IO.Directory]::CreateDirectory($gitPhysical)
+        $gitTarget = Join-Path $gitPhysical 'git.exe'
+        [IO.File]::Copy($real, $gitTarget)
+        New-Item -ItemType Junction -Path $gitJunction -Target $gitPhysical -ErrorAction Stop | Out-Null
+        $junctionImage = Join-Path $gitJunction 'git.exe'
+        $targetIdentity = Get-PolicyCanonicalFileIdentity -Path $gitTarget
+        $junctionIdentity = Get-PolicyCanonicalFileIdentity -Path $junctionImage
+        Assert-True -Condition ($junctionIdentity.Path -ceq $targetIdentity.Path) -Label 'junction resolves to physical path'
+        Assert-True -Condition ($junctionIdentity.FileIndex -ceq $targetIdentity.FileIndex) -Label 'junction resolves to physical identity'
+        & $psModule { param($v) $script:PolicyTrustedGitImages = $v } @($junctionImage)
+        Assert-Throws -Label 'junction cannot redirect a trusted location' -Match 'filesystem redirects' -Action {
+            Get-PolicyGitImage
+        }
+
+        $gitSymlink = Join-Path $testRoot 'git-symlink.exe'
+        $symlinkCreated = $false
+        try {
+            New-Item -ItemType SymbolicLink -Path $gitSymlink -Target $gitTarget -ErrorAction Stop | Out-Null
+            $symlinkCreated = $true
+        }
+        catch {
+            Write-TestSkip -Label 'symlinked git.exe' -Reason $_.Exception.Message
+        }
+        if ($symlinkCreated) {
+            $symlinkIdentity = Get-PolicyCanonicalFileIdentity -Path $gitSymlink
+            Assert-True -Condition ($symlinkIdentity.Path -ceq $targetIdentity.Path) -Label 'symlink resolves to physical path'
+            Assert-True -Condition ($symlinkIdentity.FileIndex -ceq $targetIdentity.FileIndex) -Label 'symlink resolves to physical identity'
+            & $psModule { param($v) $script:PolicyTrustedGitImages = $v } @($gitSymlink)
+            Assert-Throws -Label 'symlink cannot redirect a trusted location' -Match 'filesystem redirects' -Action {
+                Get-PolicyGitImage
+            }
+        }
+
+        $substDrive = $null
+        foreach ($letter in [char[]] 'ZYXWVUTSRQPONMLKJIHGFED') {
+            $candidateDrive = "$letter`:"
+            if (-not [IO.Directory]::Exists("$candidateDrive\")) {
+                $substDrive = $candidateDrive
+                break
+            }
+        }
+        if ($null -eq $substDrive) {
+            Write-TestSkip -Label 'subst/device alias' -Reason 'no drive letter is available'
+        }
+        else {
+            $subst = Join-Path $env:SystemRoot 'System32\subst.exe'
+            & $subst $substDrive $gitPhysical | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                Write-TestSkip -Label 'subst/device alias' -Reason "subst exited with $LASTEXITCODE"
+            }
+            else {
+                try {
+                    $substImage = "$substDrive\git.exe"
+                    $substIdentity = Get-PolicyCanonicalFileIdentity -Path $substImage
+                    Assert-True -Condition ($substIdentity.Path -ceq $targetIdentity.Path) -Label 'subst alias resolves to physical path'
+                    Assert-True -Condition ($substIdentity.FileIndex -ceq $targetIdentity.FileIndex) -Label 'subst alias resolves to physical identity'
+                    & $psModule { param($v) $script:PolicyTrustedGitImages = $v } @($substImage)
+                    Assert-Throws -Label 'subst cannot redirect a trusted location' -Match 'filesystem redirects' -Action {
+                        Get-PolicyGitImage
+                    }
+                }
+                finally {
+                    & $subst $substDrive /d | Out-Null
                 }
             }
         }
@@ -621,4 +746,4 @@ finally {
     }
 }
 
-Write-Output "Private-root assertions passed: $script:assertions"
+Write-Output "Private-root assertions passed: $script:assertions; skipped capabilities: $script:skips"

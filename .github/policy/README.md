@@ -127,8 +127,11 @@ parameter override of any kind**. An override that accepts "any absolute file"
 is equivalent to arbitrary code execution here: a native stub can forge origin,
 HEAD, tree, and cleanliness through the same code path and defeat the base
 verification entirely. The allowlisted path must also be canonical — a real
-file, not a symlink or reparse point, whose resolved path is itself the
-allowlisted path — so a redirected entry is refused. The image is passed as
+file opened through a Windows handle whose final physical path is the fixed
+allowlisted location. The handle resolution follows symlinks, junctions,
+reparse points, and subst/device aliases while normalizing case, 8.3 names, and
+path prefixes, so a redirected entry is diagnosed and refused consistently by
+Python and PowerShell. The image is passed as
 `argv[0]`; `subprocess`'s `executable=` is never used, because it would let
 `argv[0]` keep saying `git` while another binary runs.
 
@@ -342,6 +345,12 @@ Run the standard-library-only suites from the repository root:
 python -B -m unittest discover .github/policy/tests -v
 pwsh -NoProfile -File .github/policy/tests/private-root.tests.ps1
 ```
+
+The Git image mutation denominator is the number of entries in
+`tests/git_identity_mutations.json`. The Python suite applies every listed
+delete/invert operator to one marked guard at a time, syntax-checks the mutant,
+and reports killed, survived, and error counts; this makes the denominator
+derivable instead of copying a total into prose.
 
 > **`private-root.tests.ps1` is NOT a Pester file.** Despite the `.tests.ps1`
 > name it is a standalone assertion script and must be invoked directly, as

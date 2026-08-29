@@ -537,6 +537,213 @@ $script:PolicyTrustedGitImages = @(
     'C:\Program Files (x86)\Git\cmd\git.exe',
     'C:\Program Files (x86)\Git\bin\git.exe'
 )
+$script:PolicyNativeFileIdentity = $null
+
+function ConvertTo-PolicyLexicalLocalFilePath {
+    param(
+        [Parameter(Mandatory)]
+        [string] $Path,
+
+        [Parameter(Mandatory)]
+        [string] $Label
+    )
+
+    $normalized = $Path.Replace('/', '\')
+    if ($normalized.StartsWith('\\?\') -or $normalized.StartsWith('\\.\')) {
+        $normalized = $normalized.Substring(4)
+    }
+    if ($normalized -cnotmatch '^[A-Za-z]:\\(?!\\)') { # POLICY_GUARD:LEXICAL_LOCAL
+        throw "$Label is not a local drive-rooted file name."
+    }
+    try {
+        return [IO.Path]::GetFullPath($normalized)
+    }
+    catch {
+        throw "$Label cannot be normalized: $($_.Exception.Message)"
+    }
+}
+
+function Initialize-PolicyNativeFileIdentity {
+    if ($null -ne $script:PolicyNativeFileIdentity) {
+        return
+    }
+
+    try {
+        $assemblyName = [Reflection.AssemblyName]::new(
+            "PolicyNativeFileIdentity_$([Guid]::NewGuid().ToString('N'))"
+        )
+        $assembly = [Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly(
+            $assemblyName,
+            [Reflection.Emit.AssemblyBuilderAccess]::Run
+        )
+        $module = $assembly.DefineDynamicModule($assemblyName.Name)
+        $builder = $module.DefineType(
+            "$($assemblyName.Name).Methods",
+            [Reflection.TypeAttributes]'Public, Abstract, Sealed'
+        )
+        $methodAttributes = [Reflection.MethodAttributes]'Public, Static, PinvokeImpl'
+        $callingConventions = [Reflection.CallingConventions]::Standard
+        $nativeConvention = [Runtime.InteropServices.CallingConvention]::Winapi
+
+        $getFinalPath = $builder.DefinePInvokeMethod(
+            'GetFinalPathNameByHandleW',
+            'kernel32.dll',
+            $methodAttributes,
+            $callingConventions,
+            [uint32],
+            [Type[]] @(
+                [Microsoft.Win32.SafeHandles.SafeFileHandle],
+                [Text.StringBuilder],
+                [uint32],
+                [uint32]
+            ),
+            $nativeConvention,
+            [Runtime.InteropServices.CharSet]::Unicode
+        )
+        $getFinalPath.SetImplementationFlags([Reflection.MethodImplAttributes]::PreserveSig)
+
+        $getInformation = $builder.DefinePInvokeMethod(
+            'GetFileInformationByHandle',
+            'kernel32.dll',
+            $methodAttributes,
+            $callingConventions,
+            [bool],
+            [Type[]] @(
+                [Microsoft.Win32.SafeHandles.SafeFileHandle],
+                [IntPtr]
+            ),
+            $nativeConvention,
+            [Runtime.InteropServices.CharSet]::None
+        )
+        $getInformation.SetImplementationFlags([Reflection.MethodImplAttributes]::PreserveSig)
+
+        $nativeType = $builder.CreateType()
+        $script:PolicyNativeFileIdentity = [pscustomobject] @{
+            GetFinalPath = $nativeType.GetMethod('GetFinalPathNameByHandleW')
+            GetInformation = $nativeType.GetMethod('GetFileInformationByHandle')
+        }
+    }
+    catch {
+        throw "cannot initialize Windows handle-based file identity: $($_.Exception.Message)"
+    }
+}
+
+function ConvertFrom-PolicySignedUInt32 {
+    param(
+        [Parameter(Mandatory)]
+        [int] $Value
+    )
+
+    return [BitConverter]::ToUInt32([BitConverter]::GetBytes($Value), 0)
+}
+
+function Get-PolicyCanonicalFileIdentity {
+    <#
+        Opens a file and asks Windows for its normalized final path and stable
+        filesystem identity. GetFinalPathNameByHandleW follows symlinks,
+        junctions and other reparse points, expands case and short names, and
+        resolves subst/device aliases to the underlying filesystem path.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string] $Path
+    )
+
+    $requested = ConvertTo-PolicyLexicalLocalFilePath -Path $Path -Label 'file path'
+    Initialize-PolicyNativeFileIdentity
+
+    try {
+        $handle = [IO.File]::OpenHandle(
+            $requested,
+            [IO.FileMode]::Open,
+            [IO.FileAccess]::Read,
+            [IO.FileShare]'ReadWrite, Delete',
+            [IO.FileOptions]::None
+        )
+    }
+    catch {
+        throw "cannot open '$requested' for canonical file identity: $($_.Exception.Message)"
+    }
+
+    try {
+        $buffer = [Text.StringBuilder]::new(32768)
+        try {
+            $arguments = [object[]] @($handle, $buffer, [uint32] $buffer.Capacity, [uint32] 0)
+            $length = [uint32] $script:PolicyNativeFileIdentity.GetFinalPath.Invoke(
+                $null,
+                $arguments
+            )
+        }
+        catch {
+            $reason = if ($_.Exception.InnerException) {
+                $_.Exception.InnerException.Message
+            } else {
+                $_.Exception.Message
+            }
+            throw "GetFinalPathNameByHandleW failed for '$requested': $reason"
+        }
+        if ($length -eq 0) {
+            throw "GetFinalPathNameByHandleW failed for '$requested'."
+        }
+        if ($length -ge $buffer.Capacity) {
+            throw "resolved file path for '$requested' exceeds the Windows path limit."
+        }
+        $resolved = ConvertTo-PolicyLexicalLocalFilePath `
+            -Path $buffer.ToString() `
+            -Label 'resolved file path'
+
+        $information = [Runtime.InteropServices.Marshal]::AllocHGlobal(52)
+        try {
+            for ($index = 0; $index -lt 52; $index++) {
+                [Runtime.InteropServices.Marshal]::WriteByte($information, $index, 0)
+            }
+            try {
+                $arguments = [object[]] @($handle, $information)
+                $succeeded = [bool] $script:PolicyNativeFileIdentity.GetInformation.Invoke(
+                    $null,
+                    $arguments
+                )
+            }
+            catch {
+                $reason = if ($_.Exception.InnerException) {
+                    $_.Exception.InnerException.Message
+                } else {
+                    $_.Exception.Message
+                }
+                throw "GetFileInformationByHandle failed for '$requested': $reason"
+            }
+            if (-not $succeeded) {
+                throw "GetFileInformationByHandle failed for '$requested'."
+            }
+
+            $attributes = ConvertFrom-PolicySignedUInt32 `
+                ([Runtime.InteropServices.Marshal]::ReadInt32($information, 0))
+            if (($attributes -band [uint32] [IO.FileAttributes]::Directory) -ne 0) {
+                throw "canonical file identity target '$requested' is a directory."
+            }
+            $volume = ConvertFrom-PolicySignedUInt32 `
+                ([Runtime.InteropServices.Marshal]::ReadInt32($information, 28))
+            $fileIndexHigh = ConvertFrom-PolicySignedUInt32 `
+                ([Runtime.InteropServices.Marshal]::ReadInt32($information, 44))
+            $fileIndexLow = ConvertFrom-PolicySignedUInt32 `
+                ([Runtime.InteropServices.Marshal]::ReadInt32($information, 48))
+            $fileIndex = ([uint64] $fileIndexHigh -shl 32) -bor [uint64] $fileIndexLow
+        }
+        finally {
+            [Runtime.InteropServices.Marshal]::FreeHGlobal($information)
+        }
+    }
+    finally {
+        $handle.Dispose()
+    }
+
+    return [pscustomobject] @{
+        RequestedPath = $requested
+        Path = $resolved
+        VolumeSerial = $volume.ToString('x8')
+        FileIndex = $fileIndex.ToString('x16')
+    }
+}
 
 function Get-PolicyGitImage {
     <#
@@ -547,32 +754,33 @@ function Get-PolicyGitImage {
         planted stub can forge origin, HEAD, tree, and cleanliness -- the exact
         answers this module exists to verify.
     #>
+    $diagnostics = @()
     foreach ($candidate in $script:PolicyTrustedGitImages) {
-        # A UNC path routes image resolution through the network redirector, so
-        # the trusted image would be whatever a remote server serves; an
-        # extended-length or device prefix bypasses path normalisation. Both
-        # resolve to themselves, so resolving-to-itself alone is NOT sufficient
-        # canonicality -- a drive-letter root is required.
-        $normalized = $candidate.Replace('/', '\')
-        # A single drive-letter root check. It subsumes separate UNC and
-        # doubled-separator tests -- \\server\share, \\?\ and \\.\ all fail this
-        # pattern -- so no second guard is carried. A guard that cannot be
-        # killed on its own is decoration, not protection.
-        if ($normalized -cnotmatch '^[A-Za-z]:\\(?!\\)') { continue }
-        if (-not [IO.Path]::IsPathFullyQualified($candidate)) { continue }
-        if (-not [IO.File]::Exists($candidate)) { continue }
-        $info = [IO.FileInfo]::new($candidate)
-        if (($info.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
-        if ($null -ne [IO.File]::ResolveLinkTarget($candidate, $true)) { continue }
-        if (-not [String]::Equals(
-                [IO.Path]::GetFullPath($candidate),
-                $candidate,
-                [StringComparison]::Ordinal)) {
+        try {
+            $identity = Get-PolicyCanonicalFileIdentity -Path $candidate
+        }
+        catch {
+            $diagnostics += "'$candidate': $($_.Exception.Message)"
             continue
         }
-        return $candidate
+        if (-not [String]::Equals( # POLICY_GUARD:TARGET_MATCH
+                $identity.Path,
+                $identity.RequestedPath,
+                [StringComparison]::OrdinalIgnoreCase)) {
+            $diagnostics += (
+                "'$candidate': filesystem redirects the approved location to " +
+                "'$($identity.Path)' (file $($identity.VolumeSerial):$($identity.FileIndex))"
+            )
+            continue
+        }
+        return $identity.Path
     }
-    throw 'no canonical drive-letter trusted git image is available.'
+    $detail = if ($diagnostics.Count) {
+        $diagnostics -join '; '
+    } else {
+        'trusted image list is empty'
+    }
+    throw "no canonical fixed-location trusted git image is available; $detail"
 }
 
 $script:PolicyInertConfigProven = @{}
@@ -839,6 +1047,7 @@ Export-ModuleMember -Function @(
     'Assert-PolicyPrivateDacl',
     'Assert-PolicyInertLocalConfig',
     'Get-PolicyDirectoryIdentity',
+    'Get-PolicyCanonicalFileIdentity',
     'Get-PolicyGitImage',
     'Invoke-PolicyGit',
     'Get-PolicyExpectedPrincipal',

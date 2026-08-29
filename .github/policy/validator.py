@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import argparse
 import ast
+import ctypes
 import datetime as dt
 import email.utils
 import json
+import ntpath
 import os
 import pathlib
 import re
@@ -14,7 +16,8 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Mapping
+from ctypes import wintypes
+from typing import Any, Mapping, NamedTuple
 
 from policy_lib import (
     ACQUISITION_MARKERS,
@@ -329,47 +332,152 @@ GIT_FORCED_CONFIG = (
 )
 
 
-def _git_image() -> str:
-    """Resolve the one trusted Git image, or fail closed.
+class _CanonicalFileIdentity(NamedTuple):
+    requested_path: str
+    path: str
+    volume_serial: int
+    file_index: int
 
-    There is deliberately NO environment or test override. An override that
-    accepts "any absolute file" is equivalent to arbitrary code execution here:
-    a native stub can forge origin, HEAD, tree, and cleanliness through this
-    same function and defeat verify_local_base entirely.
 
-    The image must be a plain drive-letter path that resolves to itself. A UNC
-    path is refused because it routes image resolution through the network
-    redirector, so the "trusted" image would be whatever a remote server
-    serves; an extended-length or device prefix is refused because it bypasses
-    path normalisation. "Resolves to itself" alone is NOT sufficient
-    canonicality -- both of those forms resolve to themselves.
+class _ByHandleFileInformation(ctypes.Structure):
+    _fields_ = (
+        ("attributes", wintypes.DWORD),
+        ("creation_time_low", wintypes.DWORD),
+        ("creation_time_high", wintypes.DWORD),
+        ("last_access_time_low", wintypes.DWORD),
+        ("last_access_time_high", wintypes.DWORD),
+        ("last_write_time_low", wintypes.DWORD),
+        ("last_write_time_high", wintypes.DWORD),
+        ("volume_serial", wintypes.DWORD),
+        ("file_size_high", wintypes.DWORD),
+        ("file_size_low", wintypes.DWORD),
+        ("number_of_links", wintypes.DWORD),
+        ("file_index_high", wintypes.DWORD),
+        ("file_index_low", wintypes.DWORD),
+    )
+
+
+def _lexical_local_file_path(path: str) -> str:
+    normalized = path.replace("/", "\\")
+    if normalized.startswith(("\\\\?\\", "\\\\.\\")):
+        normalized = normalized[4:]
+    if DRIVE_ROOT_RE.match(normalized) is None:  # POLICY_GUARD:LEXICAL_LOCAL
+        raise OSError("path is not a local drive-rooted file name")
+    return ntpath.normpath(normalized)
+
+
+def _canonical_file_identity(path: str) -> _CanonicalFileIdentity:
+    """Resolve an existing Windows file through an open handle.
+
+    GetFinalPathNameByHandleW is the shared identity contract used by the
+    PowerShell implementation too. Unlike textual normalization, it traverses
+    symlinks, junctions and other reparse points, expands short names and case,
+    and resolves subst/device aliases to the underlying filesystem path.
     """
+    if sys.platform != "win32":
+        raise OSError("Windows handle-based file identity is unavailable")
+
+    requested = _lexical_local_file_path(path)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    final_path = kernel32.GetFinalPathNameByHandleW
+    final_path.argtypes = (
+        wintypes.HANDLE,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    )
+    final_path.restype = wintypes.DWORD
+    file_information = kernel32.GetFileInformationByHandle
+    file_information.argtypes = (
+        wintypes.HANDLE,
+        ctypes.POINTER(_ByHandleFileInformation),
+    )
+    file_information.restype = wintypes.BOOL
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+
+    handle = create_file(
+        requested,
+        0x80000000,  # GENERIC_READ
+        0x00000001 | 0x00000002 | 0x00000004,
+        None,
+        3,  # OPEN_EXISTING
+        0,
+        None,
+    )
+    invalid_handle = wintypes.HANDLE(-1).value
+    if handle == invalid_handle:
+        error = ctypes.get_last_error()
+        raise OSError(error, ctypes.FormatError(error), requested)
+    try:
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = final_path(handle, buffer, len(buffer), 0)
+        if length == 0:
+            error = ctypes.get_last_error()
+            raise OSError(
+                error,
+                f"GetFinalPathNameByHandleW failed: {ctypes.FormatError(error)}",
+                requested,
+            )
+        if length >= len(buffer):
+            raise OSError("resolved file path exceeds the Windows path limit")
+        resolved = _lexical_local_file_path(buffer.value)
+
+        information = _ByHandleFileInformation()
+        if not file_information(handle, ctypes.byref(information)):
+            error = ctypes.get_last_error()
+            raise OSError(
+                error,
+                f"GetFileInformationByHandle failed: {ctypes.FormatError(error)}",
+                requested,
+            )
+        if information.attributes & 0x10:  # FILE_ATTRIBUTE_DIRECTORY
+            raise OSError("trusted image target is a directory")
+        return _CanonicalFileIdentity(
+            requested,
+            resolved,
+            information.volume_serial,
+            (information.file_index_high << 32) | information.file_index_low,
+        )
+    finally:
+        close_handle(handle)
+
+
+def _git_image() -> str:
+    """Resolve the one fixed trusted Git location, or fail closed."""
+    diagnostics = []
     for candidate in TRUSTED_GIT_IMAGES:
-        normalized = candidate.replace("/", "\\")
-        # A single drive-letter root check. It subsumes a separate
-        # startswith("\\\\") test -- UNC (\\server\share) and device or
-        # extended-length (\\?\, \\.\) forms all fail this pattern -- so no
-        # second UNC guard is carried. A guard that cannot be killed on its own
-        # is decoration, not protection.
-        if DRIVE_ROOT_RE.match(normalized) is None:
-            continue
         try:
-            # os.path.realpath returns an absolute, link-resolved,
-            # traversal-collapsed, long-name path, so the comparison below
-            # subsumes separate isabs and islink checks. Measured, not assumed.
-            if not os.path.isfile(candidate):
-                continue
-            resolved = os.path.realpath(candidate)
-        except OSError:
+            identity = _canonical_file_identity(candidate)
+        except OSError as error:
+            diagnostics.append(f"{candidate!r}: {error}")
             continue
-        if os.path.normcase(resolved) != os.path.normcase(candidate):
+        if ntpath.normcase(identity.path) != ntpath.normcase(  # POLICY_GUARD:TARGET_MATCH
+            identity.requested_path
+        ):
+            diagnostics.append(
+                f"{candidate!r}: filesystem redirects the approved location "
+                f"to {identity.path!r} "
+                f"(file {identity.volume_serial:08x}:{identity.file_index:016x})"
+            )
             continue
-        return candidate
+        return identity.path
+    detail = "; ".join(diagnostics) or "trusted image list is empty"
     raise PolicyError(
         "BASE_CHECKOUT_GIT",
-        "no canonical drive-letter trusted git image is available; refusing to "
-        "resolve git through PATH, a UNC path, an extended-length path, or any "
-        "override",
+        "no canonical fixed-location trusted git image is available; " + detail,
     )
 
 
@@ -1263,6 +1371,78 @@ def _assert_trusted_resolver(
             candidates = set(constants[value.id])
         elif isinstance(value, ast.Name) and value.id in loop_bound:
             candidates = set(loop_bound[value.id])
+        elif (
+            isinstance(value, ast.Attribute)
+            and isinstance(value.value, ast.Name)
+            and value.attr == "path"
+        ):
+            identity_name = value.value.id
+            matched_candidates: set[str] = set()
+            for loop in (
+                item
+                for item in ast.walk(definition)
+                if isinstance(item, ast.For)
+                and isinstance(item.target, ast.Name)
+                and item.target.id in loop_bound
+                and node in item.body
+            ):
+                return_index = loop.body.index(node)
+                if return_index == 0:
+                    continue
+                guard = loop.body[return_index - 1]
+                if not (
+                    isinstance(guard, ast.If)
+                    and isinstance(guard.test, ast.Compare)
+                    and len(guard.test.ops) == 1
+                    and isinstance(guard.test.ops[0], ast.NotEq)
+                    and len(guard.test.comparators) == 1
+                    and any(isinstance(item, ast.Continue) for item in guard.body)
+                ):
+                    continue
+
+                def _identity_normcase(expression: ast.expr, attribute: str) -> bool:
+                    return (
+                        isinstance(expression, ast.Call)
+                        and _qualified(expression.func, bindings) == "ntpath.normcase"
+                        and len(expression.args) == 1
+                        and not expression.keywords
+                        and isinstance(expression.args[0], ast.Attribute)
+                        and isinstance(expression.args[0].value, ast.Name)
+                        and expression.args[0].value.id == identity_name
+                        and expression.args[0].attr == attribute
+                    )
+
+                if not (
+                    _identity_normcase(guard.test.left, "path")
+                    and _identity_normcase(
+                        guard.test.comparators[0], "requested_path"
+                    )
+                ):
+                    continue
+                assignments = [
+                    item
+                    for item in ast.walk(loop)
+                    if isinstance(item, ast.Assign)
+                    and len(item.targets) == 1
+                    and isinstance(item.targets[0], ast.Name)
+                    and item.targets[0].id == identity_name
+                    and isinstance(item.value, ast.Call)
+                    and isinstance(item.value.func, ast.Name)
+                    and item.value.func.id == "_canonical_file_identity"
+                    and len(item.value.args) == 1
+                    and isinstance(item.value.args[0], ast.Name)
+                    and item.value.args[0].id == loop.target.id
+                    and not item.value.keywords
+                ]
+                if len(assignments) == 1:
+                    matched_candidates = set(loop_bound[loop.target.id])
+            if not matched_candidates:
+                raise PolicyError(
+                    "HELPER_DYNAMIC_EXECUTION",
+                    f"{path} returns a native file identity without an adjacent "
+                    "fixed-location comparison",
+                )
+            candidates = matched_candidates
         else:
             raise PolicyError(
                 "HELPER_DYNAMIC_EXECUTION",
@@ -1298,9 +1478,106 @@ def _python_surfaces(path: str, source: str, active: bool) -> set[str]:
         for target in bindings.values()
         if not target.startswith("<")
     }
+    native_identity = any(
+        module.split(".")[0] == "ctypes" for module in modules
+    )
+    if native_identity:
+        require(
+            path == ".github/policy/validator.py",
+            "HELPER_DYNAMIC_EXECUTION",
+            f"{path} may not exercise the Windows native identity surface",
+        )
+        allowed_ctypes = {
+            "ctypes.FormatError",
+            "ctypes.POINTER",
+            "ctypes.Structure",
+            "ctypes.WinDLL",
+            "ctypes.byref",
+            "ctypes.c_void_p",
+            "ctypes.create_unicode_buffer",
+            "ctypes.get_last_error",
+            "ctypes.wintypes",
+            "ctypes.wintypes.BOOL",
+            "ctypes.wintypes.DWORD",
+            "ctypes.wintypes.HANDLE",
+            "ctypes.wintypes.LPCWSTR",
+            "ctypes.wintypes.LPWSTR",
+        }
+        ctypes_references = {
+            resolved
+            for node in ast.walk(syntax)
+            if isinstance(node, ast.Attribute)
+            for resolved in (_qualified(node, bindings),)
+            if resolved is not None and resolved.startswith("ctypes.")
+        }
+        require(
+            ctypes_references <= allowed_ctypes,
+            "HELPER_DYNAMIC_EXECUTION",
+            f"{path} uses unmodelled ctypes references "
+            f"{sorted(ctypes_references - allowed_ctypes)}",
+        )
+        kernel_references = {
+            node.attr
+            for node in ast.walk(syntax)
+            if isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "kernel32"
+        }
+        require(
+            kernel_references
+            == {
+                "CloseHandle",
+                "CreateFileW",
+                "GetFileInformationByHandle",
+                "GetFinalPathNameByHandleW",
+            },
+            "HELPER_DYNAMIC_EXECUTION",
+            f"{path} uses an unmodelled kernel32 identity surface "
+            f"{sorted(kernel_references)}",
+        )
+        parents = {
+            child: parent
+            for parent in ast.walk(syntax)
+            for child in ast.iter_child_nodes(parent)
+        }
+        indirect_kernel_uses = [
+            node
+            for node in ast.walk(syntax)
+            if isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id == "kernel32"
+            and not (
+                isinstance(parents.get(node), ast.Attribute)
+                and parents[node].value is node
+            )
+        ]
+        require(
+            not indirect_kernel_uses,
+            "HELPER_DYNAMIC_EXECUTION",
+            f"{path} uses the kernel32 library object indirectly",
+        )
+        native_loads = [
+            node
+            for node in ast.walk(syntax)
+            if isinstance(node, ast.Call)
+            and _qualified(node.func, bindings) == "ctypes.WinDLL"
+        ]
+        require(
+            len(native_loads) == 1
+            and len(native_loads[0].args) == 1
+            and isinstance(native_loads[0].args[0], ast.Constant)
+            and native_loads[0].args[0].value == "kernel32"
+            and len(native_loads[0].keywords) == 1
+            and native_loads[0].keywords[0].arg == "use_last_error"
+            and isinstance(native_loads[0].keywords[0].value, ast.Constant)
+            and native_loads[0].keywords[0].value.value is True,
+            "HELPER_DYNAMIC_EXECUTION",
+            f"{path} does not load exactly the fixed kernel32 identity surface",
+        )
     for module in modules:
         require(
-            module.split(".")[0] not in FORBIDDEN_PYTHON_MODULES,
+            module.split(".")[0] not in FORBIDDEN_PYTHON_MODULES
+            or (native_identity and module.split(".")[0] == "ctypes"),
             "HELPER_DYNAMIC_EXECUTION",
             f"{path} imports the unmodelled module {module}",
         )
@@ -1317,7 +1594,8 @@ def _python_surfaces(path: str, source: str, active: bool) -> set[str]:
     }
     for module in imported:
         require(
-            module.split(".")[0] not in FORBIDDEN_PYTHON_MODULES,
+            module.split(".")[0] not in FORBIDDEN_PYTHON_MODULES
+            or (native_identity and module.split(".")[0] == "ctypes"),
             "HELPER_DYNAMIC_EXECUTION",
             f"{path} imports the unmodelled module {module}",
         )
@@ -1335,6 +1613,8 @@ def _python_surfaces(path: str, source: str, active: bool) -> set[str]:
         for name in PROCESS_PYTHON_MODULES
     ):
         surfaces.add("git-read-local")
+    if native_identity:
+        surfaces.add("windows-file-identity")
 
     if not active:
         return surfaces
@@ -1689,7 +1969,30 @@ def _powershell_surfaces(path: str, source: str) -> set[str]:
         "HELPER_PACKAGE_UNMODELED",
         f"{path} references package commands {sorted(packages)}",
     )
-    marker = next((item for item in ACQUISITION_MARKERS if item in text), None)
+    native_identity = "reflection.assemblyname" in text
+    if native_identity:
+        require(
+            re.search(r"reflection\.assembly(?!name)", text) is None,
+            "HELPER_DYNAMIC_EXECUTION",
+            f"{path} references a managed assembly loading surface",
+        )
+        require(
+            path == ".github/policy/PrivateRoot.psm1"
+            and text.count("definepinvokemethod") == 2
+            and text.count("'kernel32.dll'") == 2
+            and text.count("'getfinalpathnamebyhandlew'") == 2
+            and text.count("'getfileinformationbyhandle'") == 2,
+            "HELPER_DYNAMIC_EXECUTION",
+            f"{path} does not define exactly the fixed kernel32 identity surface",
+        )
+    marker = next(
+        (
+            item
+            for item in ACQUISITION_MARKERS
+            if item in text and not (native_identity and item == "reflection.assembly")
+        ),
+        None,
+    )
     require(
         marker is None,
         "HELPER_NETWORK_UNMODELED",
@@ -1731,6 +2034,8 @@ def _powershell_surfaces(path: str, source: str) -> set[str]:
         surfaces.add("dotnet-acl")
     if "gettype(" in text or "getmethod(" in text or ".invoke(" in text:
         surfaces.add("dotnet-reflection")
+    if native_identity:
+        surfaces.add("windows-file-identity")
     return surfaces
 
 

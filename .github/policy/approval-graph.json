@@ -132,14 +132,15 @@
       ]
     },
     ".github/policy/PrivateRoot.psm1": {
-      "blob": "22d0a70b75b7d721021545b1280a90362c8d9921",
+      "blob": "e7d973f46a70e8d72ea929b94d0075e3ceedb544",
       "mode": "100644",
       "interpreter": "pwsh-module",
       "capabilities": [
         "git-read-local",
         "dotnet-filesystem",
         "dotnet-acl",
-        "dotnet-reflection"
+        "dotnet-reflection",
+        "windows-file-identity"
       ],
       "dependencies": [],
       "consumers": [
@@ -147,12 +148,13 @@
       ]
     },
     ".github/policy/validator.py": {
-      "blob": "529f37c16a1f04ae792ffeb90d403012f45ff7bd",
+      "blob": "2b33fe0ca27a84a4522a8c88f6455c1ff755f862",
       "mode": "100644",
       "interpreter": "python",
       "capabilities": [
         "github-api-read",
-        "git-read-local"
+        "git-read-local",
+        "windows-file-identity"
       ],
       "dependencies": [
         ".github/policy/policy_lib.py"
@@ -162,7 +164,7 @@
       ]
     },
     ".github/policy/policy_lib.py": {
-      "blob": "5f663a7796b51bcdc6e9799f548bced31914488e",
+      "blob": "53cdb67500d10e62bb6cdbfe3f53ba52ef38d8d2",
       "mode": "100644",
       "interpreter": "python-module",
       "capabilities": [],
