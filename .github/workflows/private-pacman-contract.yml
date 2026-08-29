@@ -73,6 +73,21 @@ jobs:
              $report.AdmissionReady -ne $false) {
             throw 'The diagnostic report authority or schema is invalid.'
           }
+          if ($report.Runtime.ProcessArchitecture -cne
+                 $report.Runtime.OSArchitecture -or
+              $report.RecorderBuild.Architecture -cne
+                 $report.Runtime.ProcessArchitecture -or
+              $report.RecorderBuild.BuildToolArchitecture -cne
+                 $report.Runtime.ProcessArchitecture -or
+              $report.RecorderBuild.SdkVersion -notmatch '^10\.' -or
+              $report.RecorderAttestation.Schema -cne
+                 'private-pacman-recorder-attestation/v1' -or
+              $report.RecorderAttestation.ProcessArchitecture -cne
+                 $report.Runtime.ProcessArchitecture -or
+              $report.RecorderAttestation.OSArchitecture -cne
+                 $report.Runtime.OSArchitecture) {
+            throw 'The runner, builder, and recorder architectures are not self-consistent.'
+          }
 
           $summary = $report.Summary
           if ([int64]$summary.Total -ne (
@@ -132,6 +147,14 @@ jobs:
              $summary.TransactionCoverageStatus -cne
              $report.CanonicalTransactionState.CoverageStatus) {
             throw 'Literal-root coverage summaries do not match their evidence.'
+          }
+          if ($report.CanonicalSharedState.Path -cne 'C:\msys64' -or
+              $report.CanonicalTransactionState.Path -cne 'C:\msys64' -or
+              $report.CanonicalTransactionState.CoverageStatus -cne 'Covered' -or
+              [string]::IsNullOrWhiteSpace(
+                 [string]$report.CanonicalTransactionState.FileSystemPath
+              )) {
+            throw 'The logical or physical canonical-root transaction boundary is invalid.'
           }
           $literalTests = [ordered]@{
             'literal C:\msys64 suite coverage is strict and countable' =
