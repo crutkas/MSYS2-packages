@@ -80,8 +80,26 @@ def pkgbuild_toolchain_dev(pkgver="9.9.9dev") -> str:
     )
 
 
-def ledger_row(path, field, rule_id, locator, matched, reason="test reason",
+_TEST_RULES = guard.load_rules(GUARD_PATH.parent / "arm64-rules.toml")
+
+
+def ledger_row(path, field, rule_id, locator, matched=None, reason=None,
                introduced_by="0123abc", removal_gate="PR-1", expires="2999-01-01"):
+    """Builds one ledger TSV row. `matched`/`reason` default to the
+    AUTHORITATIVE canonical values re-derived the same way the guard itself
+    validates them (see derive_canonical_matched / rules.toml `reason`) so
+    ordinary fixtures don't need to hand-maintain text that must exactly
+    track the rule registry; pass an explicit (wrong) value to deliberately
+    test the forged-matched/forged-reason rejection paths.
+    """
+    rule_ids = tuple(rule_id.split(","))
+    if matched is None:
+        matched = guard.derive_canonical_matched(rule_ids, locator, _TEST_RULES)
+        assert matched is not None, f"cannot auto-derive canonical matched for {rule_id!r}"
+    if reason is None:
+        reason_parts = [_TEST_RULES[r].reason for r in rule_ids]
+        assert all(p is not None for p in reason_parts), f"cannot auto-derive canonical reason for {rule_id!r} (pass reason= explicitly for absolute-rule test rows)"
+        reason = "; ".join(reason_parts)
     return "\t".join([
         path, field, rule_id, locator, guard.sha256_hex(locator), matched,
         reason, introduced_by, removal_gate, expires,
@@ -250,7 +268,7 @@ class TestQuarantine(BaseFixtureTest):
                           "sha256sums=('SKIP')\n")
         bad_row = ledger_row("pkg-c/PKGBUILD", "source", "TOOLCHAIN_QUARANTINE",
                               f'"git+https://example.org/x.git#commit={QUARANTINE_FULL}"',
-                              "quarantine")
+                              "quarantine", reason="attempted quarantine ledger entry (invalid)")
         self.repo.set_ledger(make_ledger(*rows, bad_row))
         ok, problems = self.repo.run()
         self.assertFalse(ok)
@@ -414,6 +432,185 @@ class TestSemanticWordDerivation(BaseFixtureTest):
         ok, problems = repo.run()
         self.assertFalse(ok)
         self.assertTrue(any("DYNAMIC_SOURCE" in p or "cannot be safely verified" in p for p in problems), problems)
+
+    # -- N1: ANSI-C $'...' quoting is fail-closed rejected (verified: no
+    # in-cone recipe uses this construct -- see the module docstring). --
+
+    def test_ansi_c_quote_hex_escape_is_rejected_fail_closed(self):
+        ok, problems = self._one_pkg_finding(r"source=($'\x68ttp://example.org/x')")
+        self.assertFalse(ok)
+        self.assertTrue(any("PARSE_FAIL" in p and "ANSI-C" in p for p in problems), problems)
+
+    def test_ansi_c_quote_octal_escape_is_rejected_fail_closed(self):
+        ok, problems = self._one_pkg_finding(r"source=($'\150ttp://example.org/x')")
+        self.assertFalse(ok)
+        self.assertTrue(any("PARSE_FAIL" in p and "ANSI-C" in p for p in problems), problems)
+
+    def test_ansi_c_quote_in_scalar_assignment_is_rejected_fail_closed(self):
+        ok, problems = self._one_pkg_finding(
+            "source=(https://example.org/x.tar.gz)",
+            extra_lines="_x=$'git\\x3a//example.org'\n",
+        )
+        self.assertFalse(ok)
+        self.assertTrue(any("PARSE_FAIL" in p and "ANSI-C" in p for p in problems), problems)
+
+    def test_ansi_c_quote_tag_marker_is_rejected_fail_closed(self):
+        ok, problems = self._one_pkg_finding(r"source=($'z#tag\x3dv1')")
+        self.assertFalse(ok)
+        self.assertTrue(any("PARSE_FAIL" in p and "ANSI-C" in p for p in problems), problems)
+
+    # -- N2: legacy backtick command substitution -- opaque, never
+    # executed, real usage in scalar assignments (unquoted and inside
+    # double quotes, in both source elements and scalar assignments). --
+
+    def test_backtick_unquoted_in_source_is_opaque_and_safe(self):
+        # Mirrors the real bash/readline $(...) idiom, but with backticks;
+        # must not be flagged (no marker straddles the substitution).
+        ok, problems = self._one_pkg_finding("source=(https://example.org/patch-`echo 1`.tar.gz)")
+        self.assertTrue(ok, problems)
+
+    def test_backtick_in_double_quotes_in_scalar_assignment_is_opaque(self):
+        # Real ca-certificates-style idiom: a backtick command substitution
+        # (containing a nested single-quoted sed script) as a scalar
+        # variable's value.
+        ok, problems = self._one_pkg_finding(
+            "source=(https://example.org/x.tar.gz)",
+            extra_lines="_x=`sed -n '/^# alias=/{s/^.*=//;p;q;}' f`\n",
+        )
+        self.assertTrue(ok, problems)
+
+    def test_backtick_split_git_proto_across_boundary(self):
+        ok, problems = self._one_pkg_finding("source=(git`echo x`://example.org/x.tar.gz)")
+        self.assertFalse(ok)
+        self.assertTrue(any("DYNAMIC_SOURCE" in p or "cannot be safely verified" in p for p in problems), problems)
+
+    def test_backtick_split_quarantine_hash_below_7_char_threshold(self):
+        # "9bbaa" alone is only 5 hex chars -- below QUARANTINE_MIN_ABBREV --
+        # but the deliberate backtick-split must still be caught.
+        ok, problems = self._one_pkg_finding(
+            "source=(https://example.org/x.tar.gz)",
+            extra_lines="_c=9bbaa`echo x`7b7a36ae51328cbff6acb720dcfa472db37\n",
+        )
+        self.assertFalse(ok)
+        self.assertTrue(any("TOOLCHAIN_QUARANTINE" in p for p in problems), problems)
+
+    def test_backtick_split_quarantine_hash_in_source(self):
+        ok, problems = self._one_pkg_finding("source=(htt`echo p`://9bbaa7b7a36ae51328cbff6acb720dcfa472db37)")
+        self.assertFalse(ok)
+        self.assertTrue(any("TOOLCHAIN_QUARANTINE" in p for p in problems), problems)
+
+    def test_unterminated_backtick_is_parse_fail(self):
+        ok, problems = self._one_pkg_finding("source=(https://example.org/x-`echo 1.tar.gz)")
+        self.assertFalse(ok)
+        self.assertTrue(any("PARSE_FAIL" in p for p in problems), problems)
+
+    def test_malformed_nested_backtick_is_handled(self):
+        # A quoted string inside the backtick containing something
+        # backtick-like must not confuse the terminator search.
+        ok, problems = self._one_pkg_finding(
+            "source=(https://example.org/x.tar.gz)",
+            extra_lines='_x=`echo "no backtick here" | sed \'s/a/b/\'`\n',
+        )
+        self.assertTrue(ok, problems)
+
+    # -- N3: $(...) / backtick nested inside double quotes was previously
+    # invisible to the dynamic-boundary-risk and quarantine-split checks. --
+
+    def test_quoted_command_subst_split_http_across_boundary(self):
+        ok, problems = self._one_pkg_finding('source=("htt$(echo t)p://example.org/x.tar.gz")')
+        self.assertFalse(ok)
+        self.assertTrue(any("DYNAMIC_SOURCE" in p or "cannot be safely verified" in p for p in problems), problems)
+
+    def test_quoted_command_subst_split_git_proto_across_boundary(self):
+        ok, problems = self._one_pkg_finding('source=("git$(echo :)//example.org/x.tar.gz")')
+        self.assertFalse(ok)
+        self.assertTrue(any("DYNAMIC_SOURCE" in p or "cannot be safely verified" in p for p in problems), problems)
+
+    def test_quoted_command_subst_split_tag_marker_across_boundary(self):
+        ok, problems = self._one_pkg_finding('source=("git://example.org/x.git#ta$(echo g)=v1")')
+        self.assertFalse(ok)
+        self.assertTrue(any("DYNAMIC_SOURCE" in p or "cannot be safely verified" in p for p in problems), problems)
+
+    def test_quoted_command_subst_split_quarantine_hash(self):
+        ok, problems = self._one_pkg_finding(
+            "source=(https://example.org/x.tar.gz)",
+            extra_lines='_c="9bbaa7b7a$(echo)36ae51328cbff6acb720dcfa472db37"\n',
+        )
+        self.assertFalse(ok)
+        self.assertTrue(any("TOOLCHAIN_QUARANTINE" in p for p in problems), problems)
+
+    def test_real_bash_readline_quoted_command_subst_idiom_still_accepted(self):
+        # The ACTUAL idiom used by bash/readline in this repository (quoted
+        # form) must remain accepted -- no marker straddles the boundary.
+        ok, problems = self._one_pkg_finding(
+            'source=("https://ftp.gnu.org/gnu/bash/bash-5.2-patches/bash52-$(printf "%03d" 1){,.sig}")'
+        )
+        self.assertTrue(ok, problems)
+
+    # -- Negative controls: precise bash semantics must NOT over-trigger. --
+
+    def test_backslash_t_inside_double_quotes_is_not_a_tab_and_not_flagged(self):
+        # Inside double quotes, backslash retains NO special meaning before
+        # 't' -- \t stays two literal characters (backslash, t), so "http"
+        # never becomes contiguous. This must NOT be flagged.
+        ok, problems = self._one_pkg_finding(r'source=("ht\tp://example.org/x.tar.gz")')
+        self.assertTrue(ok, problems)
+
+    def test_single_quotes_do_not_line_continue(self):
+        # Single quotes perform NO escape processing at all -- a literal
+        # backslash-newline sequence inside single quotes is NOT a
+        # continuation; it is two ordinary literal characters (and single
+        # quotes may contain a literal embedded newline). This must parse
+        # without error and must not be treated as a continuation.
+        ok, problems = self._one_pkg_finding(
+            "source=('http://example.org/x\\\n.tar.gz')"
+        )
+        self.assertFalse(ok)  # http:// is still a real, correctly-detected violation
+        self.assertTrue(any("NEW_DEBT" in p and "SRC_INSECURE_HTTP" in p for p in problems), problems)
+
+    # -- matched/reason are authoritative, proof-bearing columns. --
+
+    def test_forged_matched_is_rejected(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = FixtureRepo(Path(tmp.name))
+        repo.set_rules()
+        repo.add_pkg("pkg-b", pkgbuild_http())
+        repo.set_cone(["pkg-b"])
+        row = ledger_row("pkg-b/PKGBUILD", "source", "SRC_INSECURE_HTTP",
+                          '"http://example.org/pkg-b-${pkgver}.tar.gz"', matched="totally-forged-value")
+        repo.set_ledger(make_ledger(row))
+        ok, problems = repo.run()
+        self.assertFalse(ok)
+        self.assertTrue(any("matched" in p and "authoritative" in p for p in problems), problems)
+
+    def test_forged_reason_is_rejected(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = FixtureRepo(Path(tmp.name))
+        repo.set_rules()
+        repo.add_pkg("pkg-b", pkgbuild_http())
+        repo.set_cone(["pkg-b"])
+        row = ledger_row("pkg-b/PKGBUILD", "source", "SRC_INSECURE_HTTP",
+                          '"http://example.org/pkg-b-${pkgver}.tar.gz"', reason="totally forged justification")
+        repo.set_ledger(make_ledger(row))
+        ok, problems = repo.run()
+        self.assertFalse(ok)
+        self.assertTrue(any("reason" in p and "authoritative" in p for p in problems), problems)
+
+    def test_toolchain_dev_ver_matched_must_equal_locator_value(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = FixtureRepo(Path(tmp.name))
+        repo.set_rules()
+        repo.add_pkg("mingw-w64-cross-mingwarm64-gcc", pkgbuild_toolchain_dev(pkgver="9.9.9dev"))
+        repo.set_cone(["mingw-w64-cross-mingwarm64-gcc"])
+        row = ledger_row("mingw-w64-cross-mingwarm64-gcc/PKGBUILD", "pkgver", "TOOLCHAIN_DEV_VER",
+                          "9.9.9dev", matched="8.8.8dev", removal_gate="T0-corrected-toolchain")
+        repo.set_ledger(make_ledger(row))
+        ok, problems = repo.run()
+        self.assertFalse(ok)
+        self.assertTrue(any("matched" in p and "authoritative" in p for p in problems), problems)
 
 
 # ---------------------------------------------------------------------------
@@ -762,7 +959,8 @@ class TestLedgerSchema(BaseFixtureTest):
         self.repo.add_pkg("pkg-b", pkgbuild_http())
         self.repo.set_cone(["pkg-b"])
         row = ledger_row("pkg-b/PKGBUILD", "source", "SRC_NOT_A_REAL_RULE",
-                          '"http://example.org/pkg-b-${pkgver}.tar.gz"', "http://")
+                          '"http://example.org/pkg-b-${pkgver}.tar.gz"', "http://",
+                          reason="fake rule for testing")
         self.repo.set_ledger(make_ledger(row))
         ok, problems = self.repo.run()
         self.assertFalse(ok)
@@ -784,7 +982,8 @@ class TestLedgerSchema(BaseFixtureTest):
         locator = '"http://example.org/pkg-b-${pkgver}.tar.gz"'
         row = "\t".join([
             "pkg-b/PKGBUILD", "source", "SRC_INSECURE_HTTP", locator,
-            "not-a-valid-sha256", "http://", "reason", "0123abc", "PR-1", "2999-01-01",
+            "not-a-valid-sha256", "http://",
+            "source fetched over plaintext http://", "0123abc", "PR-1", "2999-01-01",
         ])
         self.repo.set_ledger(make_ledger(row))
         ok, problems = self.repo.run()
@@ -1077,7 +1276,7 @@ class TestCLIBaseRefEndToEnd(unittest.TestCase):
               "pkgname=pkg-a\npkgver=1.0\npkgrel=1\n"
               'source=("git://example.org/pkg-a.git#tag=v1.0")\n')
         locator = '"git://example.org/pkg-a.git#tag=v1.0"'
-        row = ledger_row("pkg-a/PKGBUILD", "source", "SRC_GIT_PROTO,SRC_MUTABLE_REF", locator, "git://,#tag=",
+        row = ledger_row("pkg-a/PKGBUILD", "source", "SRC_GIT_PROTO,SRC_MUTABLE_REF", locator, "#tag=,git://",
                           introduced_by=commit_before)
         write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(row))
 
@@ -1091,7 +1290,7 @@ class TestCLIBaseRefEndToEnd(unittest.TestCase):
               "pkgname=pkg-a\npkgver=1.0\npkgrel=1\n"
               'source=("git://example.org/pkg-a.git#tag=v1.0")\n')
         locator = '"git://example.org/pkg-a.git#tag=v1.0"'
-        row = ledger_row("pkg-a/PKGBUILD", "source", "SRC_GIT_PROTO,SRC_MUTABLE_REF", locator, "git://,#tag=")
+        row = ledger_row("pkg-a/PKGBUILD", "source", "SRC_GIT_PROTO,SRC_MUTABLE_REF", locator, "#tag=,git://")
         write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(row))
         self.run_git("add", "-A")
         self.run_git("commit", "-q", "-m", "commit1: baseline with SRC_* debt")
@@ -1112,7 +1311,7 @@ class TestCLIBaseRefEndToEnd(unittest.TestCase):
               "pkgname=pkg-a\npkgver=1.0\npkgrel=1\n"
               'source=("git://example.org/pkg-a.git#tag=v1.0")\n')
         locator = '"git://example.org/pkg-a.git#tag=v1.0"'
-        row = ledger_row("pkg-a/PKGBUILD", "source", "SRC_GIT_PROTO,SRC_MUTABLE_REF", locator, "git://,#tag=")
+        row = ledger_row("pkg-a/PKGBUILD", "source", "SRC_GIT_PROTO,SRC_MUTABLE_REF", locator, "#tag=,git://")
         write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(row))
         self.run_git("add", "-A")
         self.run_git("commit", "-q", "-m", "commit1")
@@ -1151,6 +1350,147 @@ class TestCLIBaseRefEndToEnd(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         after = set(glob.glob(tmp_glob))
         self.assertEqual(before, after, f"temp base-ledger file(s) not cleaned up: {after - before}")
+
+
+class TestBaseConeMonotonicity(unittest.TestCase):
+    """B3: the declared ARM64 build-closure cone may only grow (a reviewed,
+    digest-updated addition) -- it may never shrink or same-size-substitute
+    an entry, even if the current commit's cone+digest are internally
+    self-consistent. This is a CROSS-COMMIT check (mirrors the ledger's
+    promotion mechanism): it materializes the base commit's real cone.txt
+    via the real CLI --base-ref flag against a real temporary git repo, and
+    rejects any base entry that is absent from the current cone.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="arm64-basecone-e2e-")
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+        self.repo_root = Path(self.tmp)
+        (self.repo_root / ".ci").mkdir(parents=True)
+        write(self.repo_root / ".ci" / "arm64-rules.toml", RULES_TOML)
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())
+
+        def run_git(*args):
+            return subprocess.run(["git", *args], cwd=self.repo_root, capture_output=True, text=True, check=True)
+        self.run_git = run_git
+        run_git("init", "-q")
+        run_git("config", "user.email", "test@example.com")
+        run_git("config", "user.name", "test")
+
+    def _set_cone(self, entries):
+        write(self.repo_root / ".ci" / "arm64-cone.txt", "\n".join(sorted(entries)) + "\n")
+        write(self.repo_root / ".ci" / "arm64-cone.sha256",
+              sha256_of(self.repo_root / ".ci" / "arm64-cone.txt") + "\n")
+
+    def _add_clean_pkg(self, name):
+        write(self.repo_root / name / "PKGBUILD",
+              f"pkgname={name}\npkgver=1.0\npkgrel=1\nsource=()\n")
+
+    def _invoke(self, base_ref=None):
+        args = [sys.executable, str(GUARD_PATH),
+                "--cone", str(self.repo_root / ".ci" / "arm64-cone.txt"),
+                "--cone-digest", str(self.repo_root / ".ci" / "arm64-cone.sha256"),
+                "--rules", str(self.repo_root / ".ci" / "arm64-rules.toml"),
+                "--ledger", str(self.repo_root / ".ci" / "arm64-debt-ledger.tsv"),
+                "--repo-root", str(self.repo_root),
+                "--today", "2026-01-01"]
+        if base_ref is not None:
+            args += ["--base-ref", base_ref]
+        return subprocess.run(args, cwd=self.repo_root, capture_output=True, text=True)
+
+    def test_base_cone_absent_first_run_does_not_crash_or_disable_check(self):
+        # This is the commit that first introduces the cone -- there is
+        # genuinely no base to compare against. Must PASS cleanly (not
+        # crash), and the absence of a base cone must not silently skip
+        # OTHER checks (digest pinning still applies).
+        self._add_clean_pkg("pkg-a")
+        self._set_cone(["pkg-a"])
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "introduce cone")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+        result = self._invoke(base_ref=commit1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PASS", result.stdout)
+
+    def test_base_cone_present_unchanged_passes(self):
+        self._add_clean_pkg("pkg-a")
+        self._add_clean_pkg("pkg-b")
+        self._set_cone(["pkg-a", "pkg-b"])
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+        # No changes at all in the working tree; validate HEAD against itself.
+        result = self._invoke(base_ref=commit1)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PASS", result.stdout)
+
+    def test_base_cone_removal_with_repin_is_rejected(self):
+        self._add_clean_pkg("pkg-a")
+        self._add_clean_pkg("pkg-b")
+        self._set_cone(["pkg-a", "pkg-b"])
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1: two packages")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        # Remove pkg-b from the cone AND correctly re-pin the digest --
+        # internally self-consistent, but must still be rejected because
+        # pkg-b was present at the base commit.
+        self._set_cone(["pkg-a"])
+        result = self._invoke(base_ref=commit1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("SCHEMA_INVALID(cone)", result.stderr)
+        self.assertIn("pkg-b", result.stderr)
+
+    def test_base_cone_same_size_substitution_with_repin_is_rejected(self):
+        self._add_clean_pkg("pkg-a")
+        self._add_clean_pkg("pkg-b")
+        self._set_cone(["pkg-a", "pkg-b"])
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1: two packages")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        # Swap pkg-b for pkg-c: same COUNT, correctly re-pinned digest --
+        # must still be rejected (pkg-b vanished relative to the base).
+        self._add_clean_pkg("pkg-c")
+        self._set_cone(["pkg-a", "pkg-c"])
+        result = self._invoke(base_ref=commit1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("SCHEMA_INVALID(cone)", result.stderr)
+        self.assertIn("pkg-b", result.stderr)
+
+    def test_base_cone_legitimate_addition_with_repin_is_accepted(self):
+        self._add_clean_pkg("pkg-a")
+        self._set_cone(["pkg-a"])
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1: one package")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        # Add pkg-b, correctly re-pin the digest -- every base entry
+        # (pkg-a) is still present, so this is a legitimate, accepted growth.
+        self._add_clean_pkg("pkg-b")
+        self._set_cone(["pkg-a", "pkg-b"])
+        result = self._invoke(base_ref=commit1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PASS", result.stdout)
+
+    def test_base_cone_temp_file_is_cleaned_up(self):
+        self._add_clean_pkg("pkg-a")
+        self._set_cone(["pkg-a"])
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        import glob
+        tmp_glob = str(Path(tempfile.gettempdir()) / "arm64-base-cone-*")
+        before = set(glob.glob(tmp_glob))
+        result = self._invoke(base_ref=commit1)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        after = set(glob.glob(tmp_glob))
+        self.assertEqual(before, after, f"temp base-cone file(s) not cleaned up: {after - before}")
 
 
 if __name__ == "__main__":

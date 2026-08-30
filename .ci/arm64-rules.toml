@@ -13,6 +13,19 @@
 #   ledger row may ever name it again, even if severity in this file still
 #   says "ratchetable". This is what makes the ratchet monotonic — clearing
 #   a rule's debt is a one-way door.
+#
+# matched_marker (ratchetable SRC_* rules only) / reason (all rules):
+#   AUTHORITATIVE, validated values. A ledger row's `matched` column is
+#   guard-recomputed from its rule_id set (using `matched_marker` here, or
+#   for TOOLCHAIN_DEV_VER the locator's own re-derived semantic value) and
+#   its `reason` column is guard-recomputed by joining each applicable
+#   rule's `reason` text below in rule_id-sorted order — both MUST equal
+#   the row's stored value exactly, or the ledger is SCHEMA_INVALID. These
+#   two columns are therefore proof-bearing annotations, not free text: a
+#   forged/inconsistent `matched` or `reason` value is rejected the same as
+#   any other schema violation, everywhere this design is described (this
+#   file, the guard's docstring/code comments, CODEOWNERS, and the PR
+#   description all state the same thing consistently).
 
 [rule.TOOLCHAIN_QUARANTINE]
 severity = "absolute"
@@ -24,28 +37,35 @@ description = "An in-cone PKGBUILD's source/pkgver fields could not be safely an
 
 [rule.SCHEMA_INVALID]
 severity = "absolute"
-description = "Malformed/non-canonical registry, cone, or ledger; an absolute-rule or promoted-rule ledger row; duplicate/unsorted/wildcard ledger or cone content; a ledger row whose locator/hash no longer binds to on-disk content; a cone file whose content does not match its pinned sha256 digest."
+description = "Malformed/non-canonical registry, cone, or ledger; an absolute-rule or promoted-rule ledger row; duplicate/unsorted/wildcard ledger or cone content; a ledger row whose locator/hash, matched, or reason no longer binds to its authoritative recomputed value; a cone file whose content does not match its pinned sha256 digest; a cone that has shrunk or substituted an entry relative to its base commit."
 
 [rule.DYNAMIC_SOURCE_UNVERIFIABLE]
 severity = "absolute"
-description = "A source=() element contains a $(...) command substitution positioned where its unknowable runtime output could complete or hide a flagged marker (git://, http://, #tag=) across the substitution boundary; this analyzer never executes anything, so such an element cannot be safely and unambiguously verified as rule-compliant."
+description = "A source=() element contains a $(...) or backtick command substitution positioned where its unknowable runtime output could complete or hide a flagged marker (git://, http://, #tag=) across the substitution boundary; this analyzer never executes anything, so such an element cannot be safely and unambiguously verified as rule-compliant."
 
 [rule.SRC_GIT_PROTO]
 severity = "ratchetable"
 promote_when_clear = true
 description = "A source=() array element containing the insecure git:// transport."
+matched_marker = "git://"
+reason = "insecure git:// transport for a VCS source fetch"
 
 [rule.SRC_MUTABLE_REF]
 severity = "ratchetable"
 promote_when_clear = true
 description = "A source=() array element pinned to a mutable ref via '#tag='."
+matched_marker = "#tag="
+reason = "source pinned to a mutable tag ref (#tag=) rather than an immutable commit"
 
 [rule.SRC_INSECURE_HTTP]
 severity = "ratchetable"
 promote_when_clear = true
 description = "A source=() array element fetched over plaintext http://."
+matched_marker = "http://"
+reason = "source fetched over plaintext http://"
 
 [rule.TOOLCHAIN_DEV_VER]
 severity = "ratchetable"
 promote_when_clear = true
 description = "An in-cone mingw-w64-cross-mingwarm64-* recipe's pkgver matches a bare development-snapshot version (e.g. 15.0.0dev, 2.44dev)."
+reason = "ARM64 cross-toolchain recipe pinned to an upstream development snapshot version"

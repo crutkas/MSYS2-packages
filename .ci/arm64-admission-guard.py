@@ -215,7 +215,12 @@ def _scan_double_quoted(s: str, pos: int) -> tuple[str, str, int]:
     any OTHER character retains NO special meaning inside double quotes and
     is kept completely literally (both characters), exactly as bash defines
     it -- this is deliberately NOT a permissive/best-effort transformation,
-    it is the precise POSIX/bash double-quote grammar.
+    it is the precise POSIX/bash double-quote grammar. Both `$(...)` command
+    substitution AND legacy `` `...` `` backtick substitution are also
+    permitted (and recognized as OPAQUE spans, never evaluated/executed)
+    inside double quotes -- exactly as real bash allows -- since real
+    recipes (e.g. `ca-certificates`) use backtick substitution inside
+    double-quoted arguments.
     """
     start = pos
     i = pos + 1
@@ -223,6 +228,14 @@ def _scan_double_quoted(s: str, pos: int) -> tuple[str, str, int]:
     value_parts: list[str] = []
     while i < n:
         c = s[i]
+        if c == "$" and i + 1 < n and s[i + 1] == "(":
+            raw, i = _scan_command_subst(s, i)
+            value_parts.append(raw)
+            continue
+        if c == "`":
+            raw, i = _scan_backtick_subst(s, i)
+            value_parts.append(raw)
+            continue
         if c == "\\" and i + 1 < n and s[i + 1] in ('"', "\\", "$", "`"):
             value_parts.append(s[i + 1])
             i += 2
@@ -246,8 +259,12 @@ def _scan_double_quoted(s: str, pos: int) -> tuple[str, str, int]:
 
 def _scan_single_quoted(s: str, pos: int) -> tuple[str, str, int]:
     """Single quotes: bash performs NO escape processing at all inside them
-    -- every character up to the next `'` is 100% literal. Returns
-    (raw_incl_quotes, value, end_pos)."""
+    -- every character up to the next `'` is 100% literal, INCLUDING a
+    literal backslash immediately followed by a newline (single quotes do
+    NOT support line continuation -- unlike double-quoted or unquoted
+    context, a `\\<newline>` sequence inside single quotes is two ordinary
+    literal characters, not a continuation). Returns (raw_incl_quotes,
+    value, end_pos)."""
     start = pos
     i = pos + 1
     n = len(s)
@@ -295,6 +312,48 @@ def _scan_command_subst(s: str, pos: int) -> tuple[str, int]:
             continue
         i += 1
     raise ParseError(f"unterminated command substitution $(...) starting at offset {start}")
+
+
+def _scan_backtick_subst(s: str, pos: int) -> tuple[str, int]:
+    """pos is the index of the opening legacy backtick '`'. Returns
+    (raw_incl_backticks, end_pos). Treated as an OPAQUE literal span
+    exactly like `$(...)` -- never evaluated/executed, only captured
+    verbatim. Skips nested single/double-quoted content (so a quote's own
+    characters, e.g. the pipeline-separated `sed` invocations real recipes
+    use, don't prematurely end the substitution) and honors an escaped
+    backtick or backslash (`\\``, `\\\\`) as literal, non-terminating. This
+    is required for real recipes (e.g. `ca-certificates`, `gcc`,
+    `python-flit-core`) that use legacy backtick command substitution in
+    scalar variable assignments.
+    """
+    start = pos
+    i = pos + 1
+    n = len(s)
+    while i < n:
+        c = s[i]
+        if c == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if c == "'":
+            j = s.find("'", i + 1)
+            i = (j + 1) if j != -1 else n
+            continue
+        if c == '"':
+            j = i + 1
+            while j < n:
+                if s[j] == "\\" and j + 1 < n:
+                    j += 2
+                    continue
+                if s[j] == '"':
+                    j += 1
+                    break
+                j += 1
+            i = j
+            continue
+        if c == "`":
+            return s[start:i + 1], i + 1
+        i += 1
+    raise ParseError(f"unterminated backtick command substitution starting at offset {start}")
 
 
 def _tokenize_words(s: str, pos: int, end_limit: int, stop_at_paren: bool):
@@ -350,6 +409,20 @@ def _tokenize_words(s: str, pos: int, end_limit: int, stop_at_paren: bool):
             cur_raw.append(raw)
             cur_value.append(raw)  # opaque passthrough: never evaluated
             continue
+        if c == "$" and i + 1 < n and s[i + 1] == "'":
+            # ANSI-C quoting ($'...'). Verified (see the module docstring)
+            # that no in-cone recipe uses this construct -- rather than
+            # implementing its full escape grammar, it is explicitly
+            # rejected fail-closed: an unsupported construct must never be
+            # silently passed through or guessed at.
+            raise ParseError(f"unsupported ANSI-C-quoted string ($'...') at offset {i}")
+        if c == "`":
+            if cur_start is None:
+                cur_start = i
+            raw, i = _scan_backtick_subst(s, i)
+            cur_raw.append(raw)
+            cur_value.append(raw)  # opaque passthrough: never evaluated
+            continue
         if c == '"':
             if cur_start is None:
                 cur_start = i
@@ -387,7 +460,8 @@ def _tokenize_words(s: str, pos: int, end_limit: int, stop_at_paren: bool):
         if c == "\\" and i + 1 >= n:
             raise ParseError(f"dangling backslash at end of input at offset {i}")
         # Bare unquoted run: consume until a char that needs special
-        # handling (whitespace, quote, paren, '$(' , or a leading '#').
+        # handling (whitespace, quote, paren, backtick, '$(' / $'...', or a
+        # leading '#').
         if cur_start is None:
             cur_start = i
         j = i
@@ -395,11 +469,13 @@ def _tokenize_words(s: str, pos: int, end_limit: int, stop_at_paren: bool):
             cj = s[j]
             if cj in " \t\r\n\"'()":
                 break
+            if cj == "`":
+                break
             if cj == "#" and j == i and not cur_raw:
                 break
             if cj == "\\":
                 break
-            if cj == "$" and j + 1 < n and s[j + 1] == "(":
+            if cj == "$" and j + 1 < n and s[j + 1] in ("(", "'"):
                 break
             j += 1
         if j == i:
@@ -416,14 +492,33 @@ def _tokenize_words(s: str, pos: int, end_limit: int, stop_at_paren: bool):
     return words, close_pos
 
 
-def _find_command_subst_spans(word_text: str) -> list[tuple[int, int]]:
-    """Returns the (start, end) character offsets of every top-level
-    `$(...)` span within an already-tokenized word's raw text (quote-aware,
-    so a `(` or `)` inside a nested quoted string is not miscounted). Used
-    only by the dynamic-boundary-risk check."""
+def _find_dynamic_spans(word_text: str) -> list[tuple[int, int]]:
+    """Returns the (start, end) character offsets of every OPAQUE dynamic
+    span -- `$(...)` command substitution OR legacy `` `...` `` backtick
+    substitution -- within an already-tokenized word's raw text, INCLUDING
+    ones nested inside a double-quoted segment (bash permits both forms of
+    command substitution inside double quotes; earlier versions of this
+    analyzer only looked for them at the top level, which meant
+    `source=("htt$(echo t)p://...")`, `"git`echo :`//..."`, etc. went
+    undetected by the dynamic-boundary-risk and quarantine-split checks --
+    this closes that gap). Used only by `_dynamic_boundary_risk` and
+    `_quarantine_dynamic_boundary_risk`; never executes anything.
+    """
     spans: list[tuple[int, int]] = []
     i = 0
     n = len(word_text)
+
+    def _consume_dynamic(start: int) -> int:
+        try:
+            if word_text[start:start + 2] == "$(":
+                _, end = _scan_command_subst(word_text, start)
+            else:
+                _, end = _scan_backtick_subst(word_text, start)
+        except ParseError:
+            end = n
+        spans.append((start, end))
+        return end
+
     while i < n:
         c = word_text[i]
         if c == "'":
@@ -431,83 +526,121 @@ def _find_command_subst_spans(word_text: str) -> list[tuple[int, int]]:
             i = (j + 1) if j != -1 else n
             continue
         if c == '"':
-            j = i + 1
-            while j < n:
-                if word_text[j] == "\\" and j + 1 < n:
-                    j += 2
+            i += 1
+            while i < n:
+                cj = word_text[i]
+                if cj == "$" and i + 1 < n and word_text[i + 1] == "(":
+                    i = _consume_dynamic(i)
                     continue
-                if word_text[j] == '"':
-                    j += 1
+                if cj == "`":
+                    i = _consume_dynamic(i)
+                    continue
+                if cj == "\\" and i + 1 < n:
+                    i += 2
+                    continue
+                if cj == '"':
+                    i += 1
                     break
-                j += 1
-            i = j
+                i += 1
             continue
         if c == "$" and i + 1 < n and word_text[i + 1] == "(":
-            start = i
-            depth = 1
-            k = i + 2
-            while k < n and depth > 0:
-                ck = word_text[k]
-                if ck == "'":
-                    j = word_text.find("'", k + 1)
-                    k = (j + 1) if j != -1 else n
-                    continue
-                if ck == '"':
-                    j = k + 1
-                    while j < n:
-                        if word_text[j] == "\\" and j + 1 < n:
-                            j += 2
-                            continue
-                        if word_text[j] == '"':
-                            j += 1
-                            break
-                        j += 1
-                    k = j
-                    continue
-                if ck == "(":
-                    depth += 1
-                    k += 1
-                    continue
-                if ck == ")":
-                    depth -= 1
-                    k += 1
-                    continue
-                k += 1
-            spans.append((start, k))
-            i = k
+            i = _consume_dynamic(i)
+            continue
+        if c == "`":
+            i = _consume_dynamic(i)
+            continue
+        if c == "\\" and i + 1 < n:
+            i += 2
             continue
         i += 1
     return spans
 
 
+def _boundary_straddle_possible(preceding: str, following: str, target: str) -> bool:
+    """True if `target` could be assembled as
+    [some suffix of preceding] + [the dynamic span's unknowable output,
+    of ANY length/content] + [some prefix of following], for SOME pair of
+    split points (p1 <= p2, 0 <= p1,p2 <= len(target)) where preceding ends
+    with target[:p1] and following starts with target[p2:]. The gap
+    target[p1:p2] (possibly empty) is exactly what the dynamic span would
+    need to contribute -- since its real output is never executed/known,
+    ANY such gap is considered adversarially achievable.
+
+    The single EXCLUDED case is p1 == 0 AND p2 == len(target) simultaneously
+    -- i.e. NEITHER side contributes anything and the entire target could
+    only come from the dynamic span's own output. That is an inherent,
+    accepted limit of static analysis true of literally ANY `$(...)`/
+    backtick usage for literally any target string, and flagging it would
+    make every real, supported use (e.g. the bash/readline `$(printf ...)`
+    patch-level idiom, or any file containing ANY command substitution at
+    all) fail closed unconditionally. Every OTHER combination -- where at
+    least one side contributes a real, non-empty fragment, however short --
+    is flagged, which is what catches a deliberate split even when an
+    individual fragment is very short (e.g. a 5-character hash prefix,
+    below the quarantine abbreviation threshold).
+    """
+    length = len(target)
+    valid_p1 = [p for p in range(length + 1) if preceding.endswith(target[:p])]
+    valid_p2 = [p for p in range(length + 1) if following.startswith(target[p:])]
+    for p1 in valid_p1:
+        for p2 in valid_p2:
+            if p1 <= p2 and not (p1 == 0 and p2 == length):
+                return True
+    return False
+
+
 def _dynamic_boundary_risk(word: Word) -> bool:
     """Conservative, narrowly-scoped check for whether `word` contains a
-    `$(...)` span positioned such that an adversarial choice of the
-    substitution's real runtime output (NEVER executed here) could cause one
-    of the ratchet marker substrings (git://, http://, #tag=) to be formed
-    STRADDLING the substitution -- i.e. a non-empty trailing fragment of the
-    marker supplied by the KNOWN semantic text immediately before the span,
-    and a non-empty leading fragment supplied by the KNOWN semantic text
-    immediately after it. See the module docstring for why the case where a
-    marker could be produced ENTIRELY inside the substitution's own output
-    (no contribution from either side) is deliberately NOT flagged.
+    dynamic (`$(...)` or backtick) span positioned such that an adversarial
+    choice of the substitution's real runtime output (NEVER executed here)
+    could cause one of the ratchet marker substrings (git://, http://,
+    #tag=) to be formed STRADDLING the substitution. See
+    `_boundary_straddle_possible` for exactly which cases are (and are not)
+    flagged, and why the case where a marker could be produced ENTIRELY
+    inside the substitution's own output (no contribution from either
+    side) is deliberately NOT flagged -- that would make the real,
+    supported `bash`/`readline` `$(printf ...)` idiom fail closed
+    unconditionally.
     """
-    spans = _find_command_subst_spans(word.text)
+    spans = _find_dynamic_spans(word.text)
     if not spans:
         return False
     for start, end in spans:
         cs_text = word.text[start:end]
         idx = word.value.find(cs_text)
         if idx == -1:
-            continue  # should not happen ($(...) is opaque in both text and value)
+            continue  # should not happen (dynamic spans are opaque in both text and value)
         preceding = word.value[:idx]
         following = word.value[idx + len(cs_text):]
         for marker in DYNAMIC_MARKERS:
-            length = len(marker)
-            for p in range(1, length):  # STRICT interior split only
-                left, right = marker[:p], marker[p:]
-                if preceding.endswith(left) and following.startswith(right):
-                    return True
+            if _boundary_straddle_possible(preceding, following, marker):
+                return True
+    return False
+
+
+def _quarantine_dynamic_boundary_risk(word: Word) -> bool:
+    """Same reasoning as `_dynamic_boundary_risk`, but for the quarantined
+    commit hash: flags a dynamic span positioned where the hash could be
+    assembled straddling it, including fragments shorter than
+    QUARANTINE_MIN_ABBREV on one side -- a deliberate split across an
+    unexecuted substitution is inherently suspicious regardless of
+    individual fragment length, e.g. `_c=9bbaa`echo x`7b7a36ae...` where
+    "9bbaa" alone is only 5 hex characters. Case-insensitive, matching
+    `contains_quarantine_reference`.
+    """
+    spans = _find_dynamic_spans(word.text)
+    if not spans:
+        return False
+    full = QUARANTINE_COMMIT_FULL
+    for start, end in spans:
+        cs_text = word.text[start:end]
+        idx = word.value.find(cs_text)
+        if idx == -1:
+            continue
+        preceding = word.value[:idx].lower()
+        following = word.value[idx + len(cs_text):].lower()
+        if _boundary_straddle_possible(preceding, following, full):
+            return True
     return False
 
 
@@ -696,14 +829,20 @@ def detect_findings_for_file(path: str, text: str) -> tuple[list[Finding], list[
     for w in quarantine_candidates:
         if contains_quarantine_reference(w.value):
             absolute_hits.append(f"{path}: quarantined commit reference found (semantic value {w.value!r})")
+        elif _quarantine_dynamic_boundary_risk(w):
+            absolute_hits.append(
+                f"{path}: a dynamic (command/backtick) substitution is positioned where its unknowable "
+                f"runtime output could complete/hide a reference to the quarantined commit across the "
+                f"substitution boundary; cannot be safely verified (raw={w.text!r})"
+            )
 
     for arrname, words in arrays.items():
         for w in words:
             if _dynamic_boundary_risk(w):
                 absolute_hits.append(
-                    f"{path}:{arrname}: source element contains a $(...) substitution positioned where its "
-                    f"unknowable runtime output could complete/hide a flagged marker (git://, http://, #tag=) "
-                    f"across the substitution boundary; cannot be safely verified (raw={w.text!r})"
+                    f"{path}:{arrname}: source element contains a dynamic (command/backtick) substitution "
+                    f"positioned where its unknowable runtime output could complete/hide a flagged marker "
+                    f"(git://, http://, #tag=) across the substitution boundary; cannot be safely verified (raw={w.text!r})"
                 )
                 continue
             rules = set()
@@ -743,6 +882,8 @@ class Rule:
     rule_id: str
     severity: str  # "absolute" | "ratchetable"
     promote_when_clear: bool
+    matched_marker: str | None = None  # authoritative fixed token for SRC_* rules
+    reason: str | None = None          # authoritative reason text
 
 
 def load_rules(rules_path: Path) -> dict[str, Rule]:
@@ -770,8 +911,48 @@ def load_rules(rules_path: Path) -> dict[str, Rule]:
             raise ParseError(f"rule {rule_id}: promote_when_clear must be boolean")
         if severity == "absolute" and promote:
             raise ParseError(f"rule {rule_id}: absolute rule cannot set promote_when_clear")
-        rules[rule_id] = Rule(rule_id, severity, promote)
+        matched_marker = spec.get("matched_marker")
+        if matched_marker is not None and not isinstance(matched_marker, str):
+            raise ParseError(f"rule {rule_id}: matched_marker must be a string")
+        reason = spec.get("reason")
+        if reason is not None and not isinstance(reason, str):
+            raise ParseError(f"rule {rule_id}: reason must be a string")
+        if severity == "ratchetable" and reason is None:
+            raise ParseError(f"rule {rule_id}: ratchetable rules must declare an authoritative 'reason'")
+        rules[rule_id] = Rule(rule_id, severity, promote, matched_marker, reason)
     return rules
+
+
+def derive_canonical_matched(rule_ids: tuple, locator: str, rules: dict[str, "Rule"]) -> str | None:
+    """Authoritatively re-derives the expected `matched` ledger value from a
+    row's rule_id set and its (raw, verbatim) locator -- this is what makes
+    `matched` a proof-bearing, validated column rather than free text: a
+    forged value that doesn't equal this is SCHEMA_INVALID. For SRC_* rules
+    this is each rule's fixed `matched_marker` (rules.toml); for
+    TOOLCHAIN_DEV_VER it is the locator's own re-derived semantic value
+    (there is no fixed marker -- the whole point is the actual pinned
+    version string). Returns None if any rule_id lacks the information
+    needed to derive a canonical value (caller must fail closed).
+    """
+    tokens = set()
+    for rid in rule_ids:
+        if rid == "TOOLCHAIN_DEV_VER":
+            try:
+                words, _ = _tokenize_words(locator, 0, len(locator), stop_at_paren=False)
+            except ParseError:
+                return None
+            if not words:
+                return None
+            tokens.add(words[0].value)
+        else:
+            rule = rules.get(rid)
+            marker = rule.matched_marker if rule else None
+            if marker is None:
+                return None
+            tokens.add(marker)
+    return ",".join(sorted(tokens))
+
+
 
 
 def load_cone(cone_path: Path, digest_path: Path | None = None) -> list[str]:
@@ -898,6 +1079,27 @@ def load_ledger(ledger_path: Path, rules: dict[str, Rule]) -> list[dict]:
                 raise ParseError(f"ledger line {lineno}: unknown rule_id {rid!r}")
             if rule.severity == "absolute":
                 raise ParseError(f"ledger line {lineno}: rule_id {rid!r} is an absolute rule and can never be ledgered")
+        # `matched` and `reason` are AUTHORITATIVE, proof-bearing columns,
+        # not free text: both are independently re-derived from the row's
+        # rule_id set (and, for TOOLCHAIN_DEV_VER, its own locator) and MUST
+        # equal the stored value exactly, or the row is rejected. This is
+        # what prevents a forged/inconsistent `matched` or `reason` from
+        # ever passing review undetected.
+        canonical_matched = derive_canonical_matched(tuple(rule_ids), row["locator"], rules)
+        if canonical_matched is None or canonical_matched != row["matched"]:
+            raise ParseError(
+                f"ledger line {lineno}: matched {row['matched']!r} does not match the authoritative "
+                f"recomputed value {canonical_matched!r} for rule_id(s) {row['rule_id']!r}"
+            )
+        canonical_reason_parts = [rules[rid].reason for rid in rule_ids]
+        if any(part is None for part in canonical_reason_parts):
+            raise ParseError(f"ledger line {lineno}: one or more rule_id(s) in {row['rule_id']!r} has no authoritative reason declared in rules.toml")
+        canonical_reason = "; ".join(canonical_reason_parts)
+        if canonical_reason != row["reason"]:
+            raise ParseError(
+                f"ledger line {lineno}: reason {row['reason']!r} does not match the authoritative "
+                f"recomputed value {canonical_reason!r} for rule_id(s) {row['rule_id']!r}"
+            )
         if sha256_hex(row["locator"]) != row["locator_sha256"].lower():
             raise ParseError(f"ledger line {lineno}: locator_sha256 does not match sha256(locator)")
         if not re.fullmatch(r"[0-9a-f]{64}", row["locator_sha256"]):
@@ -985,10 +1187,31 @@ def load_base_ledger_rule_ids(base_ledger_path: Path | None) -> set[str] | None:
     return rule_ids
 
 
+def load_base_cone_entries(base_cone_path: Path | None) -> set[str] | None:
+    """Returns the set of non-blank lines in the BASE (parent/merge-base)
+    commit's cone file, used only for the cross-commit cone-monotonicity
+    check (see `run`). Returns None if no base cone is available (this is
+    the commit that first introduces the cone, or the base commit predates
+    it, or it could not be read) -- in that case no monotonicity check is
+    applied, matching the base-ledger pattern: there is nothing to have
+    shrunk relative to. Read leniently (the base cone was already validated
+    when it was committed); an unreadable base cone is conservatively
+    treated as unavailable, never as an error.
+    """
+    if base_cone_path is None or not Path(base_cone_path).is_file():
+        return None
+    try:
+        raw = Path(base_cone_path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return {line for line in raw.splitlines() if line.strip()}
+
+
 def run(cone_path: Path = CONE_FILE, rules_path: Path = RULES_FILE, ledger_path: Path = LEDGER_FILE,
         today: date | None = None, repo_root: Path = REPO_ROOT,
         base_ledger_path: Path | None = None,
-        cone_digest_path: Path | None = CONE_DIGEST_FILE) -> tuple[bool, list[str]]:
+        cone_digest_path: Path | None = CONE_DIGEST_FILE,
+        base_cone_path: Path | None = None) -> tuple[bool, list[str]]:
     problems: list[str] = []
     today = today or date.today()
 
@@ -1001,6 +1224,30 @@ def run(cone_path: Path = CONE_FILE, rules_path: Path = RULES_FILE, ledger_path:
         cone = load_cone(cone_path, cone_digest_path)
     except ParseError as e:
         return False, [f"SCHEMA_INVALID(cone): {e}"]
+
+    # Cross-commit cone monotonicity: the declared 225-entry ARM64 build
+    # closure may only grow (a reviewed, digest-updated addition) -- it may
+    # NEVER shrink, and a same-size substitution (swapping one directory for
+    # another while keeping the digest internally self-consistent) is
+    # exactly as forbidden as an outright removal. Digest pinning alone only
+    # proves the CURRENT commit's cone+digest are mutually self-consistent;
+    # it says nothing about whether the CHANGE from the base commit was
+    # legitimate. This check closes that gap by comparing against the real
+    # base commit's cone (via --base-ref/--base-cone, resolved the same way
+    # as the base ledger). If no base cone is available (first commit that
+    # introduces the cone, or the base predates it), nothing can have
+    # shrunk relative to it, so no check is applied -- this must never
+    # crash and must never silently disable the check when a base cone
+    # genuinely IS available and readable.
+    base_cone_entries = load_base_cone_entries(base_cone_path)
+    if base_cone_entries is not None:
+        missing = base_cone_entries - set(cone)
+        if missing:
+            problems.append(
+                f"SCHEMA_INVALID(cone): {len(missing)} entrie(s) present in the base commit's cone are absent "
+                f"from the current cone -- removal and same-size substitution of a declared build-closure "
+                f"directory are never permitted, only reviewed additions: {sorted(missing)}"
+            )
 
     try:
         ledger_rows = load_ledger(ledger_path, rules)
@@ -1080,22 +1327,21 @@ def run(cone_path: Path = CONE_FILE, rules_path: Path = RULES_FILE, ledger_path:
     return ok, problems
 
 
-def resolve_default_base_ledger(ledger_path: Path, base_ref: str | None, repo_root: Path = REPO_ROOT) -> Path | None:
-    """Best-effort: materialize the ledger file as it existed at base_ref
+def _resolve_default_base_file(target_path: Path, base_ref: str | None, repo_root: Path, tmp_prefix: str, tmp_suffix: str) -> Path | None:
+    """Shared helper: materialize `target_path` as it existed at `base_ref`
     (typically the PR's merge-base / the default branch) into a temp file,
-    using local `git show` only (no network). Returns None if unavailable
-    for any reason (not a git repo, ref doesn't exist, file didn't exist at
-    that ref, git not installed) -- callers must treat that as "no base
-    ledger", not as an error. Callers are responsible for deleting the
-    returned temp file (see `main`'s try/finally) once they are done with
-    it.
+    using local `git show` only (no network, no writes to the repository).
+    Returns None if unavailable for any reason (not a git repo, ref doesn't
+    exist, the file didn't exist at that ref yet, git not installed) --
+    callers must treat that as "no base file available", not as an error.
+    Callers are responsible for deleting the returned temp file.
     """
     import subprocess
     import tempfile
     if not base_ref:
         return None
     try:
-        rel = ledger_path.resolve().relative_to(repo_root.resolve()).as_posix()
+        rel = target_path.resolve().relative_to(repo_root.resolve()).as_posix()
     except ValueError:
         return None
     try:
@@ -1107,10 +1353,23 @@ def resolve_default_base_ledger(ledger_path: Path, base_ref: str | None, repo_ro
         return None
     if result.returncode != 0:
         return None
-    fd, tmp_path = tempfile.mkstemp(prefix="arm64-base-ledger-", suffix=".tsv")
+    fd, tmp_path = tempfile.mkstemp(prefix=tmp_prefix, suffix=tmp_suffix)
     with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
         f.write(result.stdout)
     return Path(tmp_path)
+
+
+def resolve_default_base_ledger(ledger_path: Path, base_ref: str | None, repo_root: Path = REPO_ROOT) -> Path | None:
+    """Best-effort: materialize the ledger file as it existed at base_ref.
+    See `_resolve_default_base_file`."""
+    return _resolve_default_base_file(ledger_path, base_ref, repo_root, "arm64-base-ledger-", ".tsv")
+
+
+def resolve_default_base_cone(cone_path: Path, base_ref: str | None, repo_root: Path = REPO_ROOT) -> Path | None:
+    """Best-effort: materialize the cone file as it existed at base_ref, for
+    the cross-commit cone-monotonicity check. See
+    `_resolve_default_base_file`."""
+    return _resolve_default_base_file(cone_path, base_ref, repo_root, "arm64-base-cone-", ".txt")
 
 
 def main(argv=None) -> int:
@@ -1123,26 +1382,35 @@ def main(argv=None) -> int:
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT, help="Repository root cone paths are resolved against (for isolated fixture tests only).")
     parser.add_argument("--today", type=str, default=None, help="Override today's date (YYYY-MM-DD), for tests only.")
     parser.add_argument("--base-ledger", type=Path, default=None, help="Path to the ledger file as it existed at the PR's base/merge-base commit (used only to detect newly-promoted rules). Omit to auto-resolve via --base-ref.")
-    parser.add_argument("--base-ref", type=str, default=None, help="A local git ref (e.g. origin/master) to auto-resolve --base-ledger from via 'git show'. Ignored if --base-ledger is given. No network access is performed.")
+    parser.add_argument("--base-cone", type=Path, default=None, help="Path to the cone file as it existed at the PR's base/merge-base commit (used only for the cone-monotonicity check). Omit to auto-resolve via --base-ref.")
+    parser.add_argument("--base-ref", type=str, default=None, help="A local git ref (e.g. origin/master) to auto-resolve --base-ledger/--base-cone from via 'git show'. Ignored for either flag explicitly given. No network access is performed.")
     args = parser.parse_args(argv)
 
     resolved_temp_base_ledger = None
+    resolved_temp_base_cone = None
     try:
         base_ledger_path = args.base_ledger
         if base_ledger_path is None and args.base_ref:
             base_ledger_path = resolve_default_base_ledger(args.ledger, args.base_ref, repo_root=args.repo_root)
             resolved_temp_base_ledger = base_ledger_path
 
+        base_cone_path = args.base_cone
+        if base_cone_path is None and args.base_ref:
+            base_cone_path = resolve_default_base_cone(args.cone, args.base_ref, repo_root=args.repo_root)
+            resolved_temp_base_cone = base_cone_path
+
         today = datetime.strptime(args.today, "%Y-%m-%d").date() if args.today else None
         cone_digest_path = None if args.no_cone_digest else args.cone_digest
         ok, problems = run(args.cone, args.rules, args.ledger, today=today, repo_root=args.repo_root,
-                            base_ledger_path=base_ledger_path, cone_digest_path=cone_digest_path)
+                            base_ledger_path=base_ledger_path, cone_digest_path=cone_digest_path,
+                            base_cone_path=base_cone_path)
     finally:
-        if resolved_temp_base_ledger is not None:
-            try:
-                resolved_temp_base_ledger.unlink(missing_ok=True)
-            except OSError:
-                pass
+        for resolved_temp in (resolved_temp_base_ledger, resolved_temp_base_cone):
+            if resolved_temp is not None:
+                try:
+                    resolved_temp.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     if ok:
         print("PASS: arm64-admission-guard (V == L, no absolute hits, ledger valid, unexpired)")
