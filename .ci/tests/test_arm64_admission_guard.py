@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -285,6 +286,112 @@ class TestQuarantine(BaseFixtureTest):
         ok, problems = self.repo.run()
         self.assertFalse(ok)
         self.assertTrue(any("TOOLCHAIN_QUARANTINE" in p for p in problems), problems)
+
+
+# ---------------------------------------------------------------------------
+# 5th evasion form: hiding a marker/quarantine-hash behind an ordinary
+# variable, not merely a raw quoting/dynamic-substitution trick. The guard
+# never executes anything; it resolves ONLY statically-unambiguous
+# single-assignment scalar variables and, for anything it cannot resolve,
+# falls back to the same boundary-straddle reasoning already used for
+# `$(...)`/backtick spans.
+# ---------------------------------------------------------------------------
+
+class TestVariableIndirectionBypass(BaseFixtureTest):
+    def test_resolvable_git_proto_hidden_behind_variable_is_caught(self):
+        # Exact adversarial example: _p=git; source=("${_p}://host/repo")
+        self.baseline()
+        self.repo.add_pkg("pkg-c", "pkgname=pkg-c\npkgver=3.0.0\npkgrel=1\n"
+                          '_p=git\n'
+                          'source=("${_p}://host/repo")\n'
+                          "sha256sums=('SKIP')\n")
+        ok, problems = self.repo.run()
+        self.assertFalse(ok)
+        self.assertTrue(any("NEW_DEBT" in p and "SRC_GIT_PROTO" in p for p in problems), problems)
+
+    def test_resolvable_insecure_http_hidden_behind_variable_is_caught(self):
+        # Exact adversarial example: _h=http; source=("${_h}://host/file.tar.gz")
+        self.baseline()
+        self.repo.add_pkg("pkg-c", "pkgname=pkg-c\npkgver=3.0.0\npkgrel=1\n"
+                          '_h=http\n'
+                          'source=("${_h}://host/file.tar.gz")\n'
+                          "sha256sums=('SKIP')\n")
+        ok, problems = self.repo.run()
+        self.assertFalse(ok)
+        self.assertTrue(any("NEW_DEBT" in p and "SRC_INSECURE_HTTP" in p for p in problems), problems)
+
+    def test_resolvable_mutable_ref_fragment_hidden_behind_variable_is_caught(self):
+        # Exact adversarial example:
+        #   _frag='#tag=v1.0'; source=("git+https://host/repo${_frag}")
+        self.baseline()
+        self.repo.add_pkg("pkg-c", "pkgname=pkg-c\npkgver=3.0.0\npkgrel=1\n"
+                          "_frag='#tag=v1.0'\n"
+                          'source=("git+https://host/repo${_frag}")\n'
+                          "sha256sums=('SKIP')\n")
+        ok, problems = self.repo.run()
+        self.assertFalse(ok)
+        self.assertTrue(any("NEW_DEBT" in p and "SRC_MUTABLE_REF" in p for p in problems), problems)
+
+    def test_resolvable_quarantine_hash_hidden_behind_bare_variable_is_caught(self):
+        self.baseline()
+        self.repo.add_pkg("pkg-c", "pkgname=pkg-c\npkgver=3.0.0\npkgrel=1\n"
+                          f'_h="{QUARANTINE_FULL}"\n'
+                          'source=("${_h}")\n'
+                          "sha256sums=('SKIP')\n")
+        ok, problems = self.repo.run()
+        self.assertFalse(ok)
+        self.assertTrue(any("TOOLCHAIN_QUARANTINE" in p for p in problems), problems)
+
+    def test_unresolvable_conditionally_assigned_variable_fails_closed(self):
+        # _p is assigned on two different code paths (never resolvable
+        # without evaluating control flow) and sits directly adjacent to
+        # "://" -- must fail closed rather than silently pass the literal
+        # "${_p}://host/repo" text through unmatched.
+        self.baseline()
+        self.repo.add_pkg("pkg-c", "pkgname=pkg-c\npkgver=3.0.0\npkgrel=1\n"
+                          "if true; then\n_p=git\nelse\n_p=https\nfi\n"
+                          'source=("${_p}://host/repo")\n'
+                          "sha256sums=('SKIP')\n")
+        ok, problems = self.repo.run()
+        self.assertFalse(ok)
+        self.assertTrue(any("TOOLCHAIN_QUARANTINE" in p or "NEW_DEBT" in p or "absolute" in p for p in problems), problems)
+
+    def test_unresolvable_entirely_bare_variable_source_element_fails_closed(self):
+        # The variable IS the entire source element with no static text
+        # anywhere else -- its real value is completely unverifiable.
+        self.baseline()
+        self.repo.add_pkg("pkg-c", "pkgname=pkg-c\npkgver=3.0.0\npkgrel=1\n"
+                          "if true; then\n_u=safe\nelse\n_u=other\nfi\n"
+                          'source=("${_u}")\n'
+                          "sha256sums=('SKIP')\n")
+        ok, problems = self.repo.run()
+        self.assertFalse(ok)
+
+    def test_split_package_pkgname_array_source_url_is_not_a_false_positive(self):
+        # Negative control: the real, common MSYS2 split-package idiom
+        # (pkgbase= scalar, pkgname=(...) array) used constantly across the
+        # actual 225-file cone. Bare `${pkgname}` here refers to the array's
+        # first element via ordinary bash semantics; it must NOT be flagged
+        # merely because this analyzer does not generically resolve arrays.
+        self.baseline()
+        self.repo.add_pkg("pkg-c", "pkgbase=pkg-c\npkgname=('pkg-c' 'pkg-c-devel')\npkgver=3.0.0\npkgrel=1\n"
+                          'source=("https://example.org/${pkgname}/${pkgname}-${pkgver}.tar.bz2")\n'
+                          "sha256sums=('SKIP')\n")
+        ok, problems = self.repo.run()
+        self.assertTrue(ok, problems)
+
+    def test_bare_makepkg_provided_variable_scalar_copy_is_not_a_false_positive(self):
+        # Negative control: an ordinary, ubiquitous bare copy of a
+        # makepkg-provided variable in a scalar assignment (never a
+        # plausible carrier for the 40-character quarantine commit hash)
+        # must not be flagged just because it is technically unresolved.
+        self.baseline()
+        self.repo.add_pkg("pkg-c", "pkgname=pkg-c\npkgver=3.0.0\npkgrel=1\n"
+                          'DESTDIR="${pkgdir}"\n'
+                          'source=("https://example.org/pkg-c-${pkgver}.tar.gz")\n'
+                          "sha256sums=('SKIP')\n")
+        ok, problems = self.repo.run()
+        self.assertTrue(ok, problems)
 
 
 # ---------------------------------------------------------------------------
@@ -611,6 +718,277 @@ class TestSemanticWordDerivation(BaseFixtureTest):
         ok, problems = repo.run()
         self.assertFalse(ok)
         self.assertTrue(any("matched" in p and "authoritative" in p for p in problems), problems)
+
+
+# ---------------------------------------------------------------------------
+# Audit round 4: VCS-transport-vs-VCS-type split, full fragment-key
+# vocabulary (per-VCS-type, not hardcoded to git's commit/tag/branch),
+# pkgver() override, source/. include directive, and the delimiter-hiding
+# fix for the structural (resolve-first-classify-second) SRC_* matcher.
+# ---------------------------------------------------------------------------
+
+class TestVcsTransportVsType(BaseFixtureTest):
+    def _one_pkg_finding(self, source_line: str, pkgname: str = "pkg-x"):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = FixtureRepo(Path(tmp.name))
+        repo.set_rules()
+        repo.add_pkg(pkgname, f"pkgname={pkgname}\npkgver=1.0\npkgrel=1\n{source_line}\nsha256sums=('SKIP')\n")
+        repo.set_cone([pkgname])
+        repo.set_ledger(make_ledger())
+        return repo.run()
+
+    def test_git_plus_https_is_secure_transport_not_flagged(self):
+        # download_git() does `url=${url#git+}` and hands the REMAINDER
+        # (here "https://...") straight to `git clone` -- this is a
+        # secure HTTPS fetch, not the insecure native git:// protocol,
+        # even though makepkg's own get_protocol() reports VCS type "git"
+        # for dispatch purposes. Regression for a real defect this
+        # analyzer had mid-development (flagging every real
+        # mingw-w64-cross-*/PKGBUILD "git+https://" source as SRC_GIT_PROTO).
+        ok, problems = self._one_pkg_finding('source=("git+https://example.org/x.git#commit=abc123")')
+        self.assertTrue(ok, problems)
+
+    def test_git_plus_git_is_insecure_transport_flagged(self):
+        # "git+git://" explicitly REQUESTS the native insecure git://
+        # transport via the "+transport" suffix (unlike "git+https").
+        ok, problems = self._one_pkg_finding('source=("git+git://example.org/x.git#commit=abc123")')
+        self.assertFalse(ok)
+        self.assertTrue(any("NEW_DEBT" in p and "SRC_GIT_PROTO" in p for p in problems), problems)
+
+    def test_git_plus_http_is_insecure_transport_flagged(self):
+        ok, problems = self._one_pkg_finding('source=("git+http://example.org/x.git#commit=abc123")')
+        self.assertFalse(ok)
+        self.assertTrue(any("NEW_DEBT" in p and "SRC_INSECURE_HTTP" in p for p in problems), problems)
+
+
+class TestFragmentKeyVocabulary(BaseFixtureTest):
+    def _one_pkg_finding(self, source_line: str, pkgname: str = "pkg-x"):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = FixtureRepo(Path(tmp.name))
+        repo.set_rules()
+        repo.add_pkg(pkgname, f"pkgname={pkgname}\npkgver=1.0\npkgrel=1\n{source_line}\nsha256sums=('SKIP')\n")
+        repo.set_cone([pkgname])
+        repo.set_ledger(make_ledger())
+        return repo.run()
+
+    def test_branch_fragment_is_mutable_ref(self):
+        # The vocabulary gap the audit's ninth finding identified:
+        # extract_git() honours branch|tag|commit, but the original
+        # implementation matched only literal "#tag=". A branch is the
+        # MORE mutable of the two (moves on every upstream push, with no
+        # forged-ref check unlike tags) and was previously a total,
+        # undetected bypass: `source=("git+https://h/r#branch=main")`.
+        ok, problems = self._one_pkg_finding('source=("git+https://h/r#branch=main")')
+        self.assertFalse(ok)
+        self.assertTrue(any("NEW_DEBT" in p and "SRC_MUTABLE_REF" in p for p in problems), problems)
+
+    def test_commit_fragment_is_immutable_no_finding(self):
+        ok, problems = self._one_pkg_finding('source=("git+https://h/r#commit=abc123")')
+        self.assertTrue(ok, problems)
+
+    def test_unrecognized_git_fragment_key_fails_closed(self):
+        # makepkg's extract_git() itself aborts the build on any key
+        # outside commit/tag/branch ("Unrecognized reference"), so this
+        # can neither be treated as compliant nor silently ignored.
+        ok, problems = self._one_pkg_finding('source=("git://example.org/x.git#foo=bar")')
+        self.assertFalse(ok)
+        self.assertTrue(any("not one makepkg" in p or "PARSE_FAIL" in p or "TOOLCHAIN_QUARANTINE" in p for p in problems), problems)
+
+    def test_svn_revision_key_is_immutable_no_finding(self):
+        # svn's extract_svn() only ever recognizes "revision", and it is
+        # immutable (an exact numbered revision), unlike git's tag/branch.
+        ok, problems = self._one_pkg_finding('source=("svn+https://example.org/repo/trunk#revision=42")')
+        self.assertTrue(ok, problems)
+
+    def test_svn_unrecognized_key_fails_closed(self):
+        ok, problems = self._one_pkg_finding('source=("svn+https://example.org/repo/trunk#branch=main")')
+        self.assertFalse(ok)
+        self.assertTrue(any("not one makepkg" in p or "TOOLCHAIN_QUARANTINE" in p for p in problems), problems)
+
+    def test_unrecognized_vcs_type_with_fragment_fails_closed(self):
+        # An unrecognized VCS type (not git/fossil/hg/svn/bzr) combined
+        # with a fragment cannot be assumed either compliant or inert --
+        # unlike http/https/ftp, where a fragment (if any) is an ordinary,
+        # makepkg-uninterpreted URI fragment.
+        ok, problems = self._one_pkg_finding('source=("cvs+https://example.org/repo#branch=main")')
+        self.assertFalse(ok)
+        self.assertTrue(any("not one this analyzer recognizes" in p or "TOOLCHAIN_QUARANTINE" in p for p in problems), problems)
+
+    def test_https_fragment_is_inert_no_vcs_semantics(self):
+        # A plain https:// download's "#fragment" (if any) has no
+        # makepkg-interpreted VCS-ref semantics at all -- must not be
+        # flagged as an unrecognized VCS type/key.
+        ok, problems = self._one_pkg_finding('source=("https://example.org/x.tar.gz#readme")')
+        self.assertTrue(ok, problems)
+
+
+class TestPkgverFunctionOverride(BaseFixtureTest):
+    def test_pkgver_function_in_toolchain_recipe_fails_closed(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = FixtureRepo(Path(tmp.name))
+        repo.set_rules()
+        repo.add_pkg(
+            "mingw-w64-cross-mingwarm64-toolchain",
+            "pkgname=mingw-w64-cross-mingwarm64-toolchain\n"
+            "pkgver=1.0.0\n"
+            "pkgrel=1\n"
+            'source=("https://example.org/toolchain-${pkgver}.tar.gz")\n'
+            "sha256sums=('SKIP')\n"
+            "pkgver() {\n"
+            "  cd \"${srcdir}\"\n"
+            '  git describe --long | sed "s/-/./g"\n'
+            "}\n",
+        )
+        repo.set_cone(["mingw-w64-cross-mingwarm64-toolchain"])
+        repo.set_ledger(make_ledger())
+        ok, problems = repo.run()
+        self.assertFalse(ok)
+        self.assertTrue(any("PARSE_FAIL" in p and "pkgver()" in p for p in problems), problems)
+
+    def test_pkgver_function_in_non_toolchain_recipe_is_not_flagged(self):
+        # TOOLCHAIN_DEV_VER only ever inspects mingwarm64 toolchain
+        # recipes, so a pkgver() function elsewhere (a common, legitimate
+        # VCS-derived-version idiom, e.g. mingw-w64-cross-crt/PKGBUILD)
+        # is out of scope for this specific check.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = FixtureRepo(Path(tmp.name))
+        repo.set_rules()
+        repo.add_pkg(
+            "pkg-c",
+            "pkgname=pkg-c\n"
+            "pkgver=1.0.0\n"
+            "pkgrel=1\n"
+            'source=("https://example.org/pkg-c-${pkgver}.tar.gz")\n'
+            "sha256sums=('SKIP')\n"
+            "pkgver() {\n"
+            '  git describe --long | sed "s/-/./g"\n'
+            "}\n",
+        )
+        repo.set_cone(["pkg-c"])
+        repo.set_ledger(make_ledger())
+        ok, problems = repo.run()
+        self.assertTrue(ok, problems)
+
+
+class TestSourceIncludeDirective(BaseFixtureTest):
+    def test_source_command_with_space_fails_closed(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = FixtureRepo(Path(tmp.name))
+        repo.set_rules()
+        repo.add_pkg(
+            "pkg-x",
+            "pkgname=pkg-x\npkgver=1.0\npkgrel=1\n"
+            "source ./helpers.sh\n"
+            'source=("https://example.org/x.tar.gz")\n'
+            "sha256sums=('SKIP')\n",
+        )
+        repo.set_cone(["pkg-x"])
+        repo.set_ledger(make_ledger())
+        ok, problems = repo.run()
+        self.assertFalse(ok)
+        self.assertTrue(any("PARSE_FAIL" in p and "file-inclusion" in p for p in problems), problems)
+
+    def test_dot_command_fails_closed(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = FixtureRepo(Path(tmp.name))
+        repo.set_rules()
+        repo.add_pkg(
+            "pkg-x",
+            "pkgname=pkg-x\npkgver=1.0\npkgrel=1\n"
+            ". ./helpers.sh\n"
+            'source=("https://example.org/x.tar.gz")\n'
+            "sha256sums=('SKIP')\n",
+        )
+        repo.set_cone(["pkg-x"])
+        repo.set_ledger(make_ledger())
+        ok, problems = repo.run()
+        self.assertFalse(ok)
+        self.assertTrue(any("PARSE_FAIL" in p and "file-inclusion" in p for p in problems), problems)
+
+    def test_source_array_assignment_is_not_a_false_positive(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = FixtureRepo(Path(tmp.name))
+        repo.set_rules()
+        repo.add_pkg(
+            "pkg-x",
+            "pkgname=pkg-x\npkgver=1.0\npkgrel=1\n"
+            'source=("https://example.org/x.tar.gz")\n'
+            "sha256sums=('SKIP')\n",
+        )
+        repo.set_cone(["pkg-x"])
+        repo.set_ledger(make_ledger())
+        ok, problems = repo.run()
+        self.assertTrue(ok, problems)
+
+    def test_word_source_as_list_element_on_continuation_line_is_not_a_false_positive(self):
+        # Regression for a real false positive found against the actual
+        # repo baseline: bash/PKGBUILD's `for f in bg bind ... source
+        # suspend ... ; do` builtin-name enumeration, continued across
+        # physical lines via trailing backslashes, where "source" is a
+        # bash KEYWORD NAME being listed, not a command being invoked.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = FixtureRepo(Path(tmp.name))
+        repo.set_rules()
+        repo.add_pkg(
+            "pkg-x",
+            "pkgname=pkg-x\npkgver=1.0\npkgrel=1\n"
+            'source=("https://example.org/x.tar.gz")\n'
+            "sha256sums=('SKIP')\n"
+            "package() {\n"
+            "  for f in bg bind break builtin \\\n"
+            "    source suspend then time \\\n"
+            "    unset until wait; do\n"
+            "    echo $f\n"
+            "  done\n"
+            "}\n",
+        )
+        repo.set_cone(["pkg-x"])
+        repo.set_ledger(make_ledger())
+        ok, problems = repo.run()
+        self.assertTrue(ok, problems)
+
+
+class TestDelimiterHidingAcrossDynamicSpan(BaseFixtureTest):
+    def _one_pkg_finding(self, source_line: str, pkgname: str = "pkg-x"):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = FixtureRepo(Path(tmp.name))
+        repo.set_rules()
+        repo.add_pkg(pkgname, f"pkgname={pkgname}\npkgver=1.0\npkgrel=1\n{source_line}\nsha256sums=('SKIP')\n")
+        repo.set_cone([pkgname])
+        repo.set_ledger(make_ledger())
+        return repo.run()
+
+    def test_scheme_colon_slash_slash_split_across_command_subst_fails_closed(self):
+        # A LITERAL text search for "://" (what the structural
+        # resolve-first-classify-second matcher uses to locate the
+        # decisive VCS-type/transport/fragment-key positions) would
+        # simply MISS this: "git$(echo :)//example.org/x.tar.gz" never
+        # contains "://" as literal text at all (the ":" is produced by
+        # the substitution), so a naive `.find("://")` would incorrectly
+        # conclude there is no scheme here rather than failing closed.
+        ok, problems = self._one_pkg_finding('source=("git$(echo :)//example.org/x.tar.gz")')
+        self.assertFalse(ok)
+        self.assertTrue(any("TOOLCHAIN_QUARANTINE" in p and "could hide" in p for p in problems), problems)
+
+    def test_ordinary_unresolved_expansion_before_path_separator_is_not_a_false_positive(self):
+        # The false-positive flood this fix had to avoid: an unresolved
+        # `${pkgver%.*}`-style expansion sits immediately before a bare
+        # "/" constantly in ordinary compliant source URLs, and that
+        # single-character overlap with "://"'s own trailing "/" must not
+        # be treated as "the delimiter could be hidden here".
+        ok, problems = self._one_pkg_finding(
+            'source=("https://example.org/sources/${pkgver%.*}/pkg-x-${pkgver}.tar.gz")'
+        )
+        self.assertTrue(ok, problems)
 
 
 # ---------------------------------------------------------------------------
@@ -1250,7 +1628,7 @@ class TestCLIBaseRefEndToEnd(unittest.TestCase):
         run_git("config", "user.email", "test@example.com")
         run_git("config", "user.name", "test")
 
-    def _invoke(self, base_ref=None, extra_args=None):
+    def _invoke(self, base_ref=None, extra_args=None, env=None):
         args = [sys.executable, str(GUARD_PATH),
                 "--cone", str(self.repo_root / ".ci" / "arm64-cone.txt"),
                 "--cone-digest", str(self.repo_root / ".ci" / "arm64-cone.sha256"),
@@ -1262,7 +1640,35 @@ class TestCLIBaseRefEndToEnd(unittest.TestCase):
             args += ["--base-ref", base_ref]
         if extra_args:
             args += extra_args
-        return subprocess.run(args, cwd=self.repo_root, capture_output=True, text=True)
+        # Isolate from whatever real GitHub-Actions-environment this test
+        # suite might itself be running inside (e.g. its own CI job): by
+        # default, explicitly clear the GITHUB_ACTIONS-family variables so
+        # `derive_github_actions_base_ref` behaves as a genuine local run
+        # regardless of the outer environment. Tests that specifically
+        # exercise the GitHub-Actions-derived path pass their own
+        # controlled `env` (see `_invoke_as_github_actions`).
+        run_env = dict(os.environ)
+        if env is None:
+            for key in ("GITHUB_ACTIONS", "GITHUB_EVENT_PATH", "GITHUB_EVENT_NAME"):
+                run_env.pop(key, None)
+        else:
+            run_env.update(env)
+        return subprocess.run(args, cwd=self.repo_root, capture_output=True, text=True, env=run_env)
+
+    def _invoke_as_github_actions(self, event: dict, event_name: str = "pull_request", base_ref=None, extra_args=None):
+        """Writes `event` as a GITHUB_EVENT_PATH-style JSON file and invokes
+        the CLI with a controlled GITHUB_ACTIONS/GITHUB_EVENT_NAME
+        environment simulating a real GitHub Actions job -- this is the
+        exact mechanism derive_github_actions_base_ref relies on, so it
+        must be exercised through the real subprocess boundary, not just
+        by calling the Python function directly."""
+        event_path = Path(self.tmp) / "github_event.json"
+        write(event_path, json.dumps(event))
+        return self._invoke(base_ref=base_ref, extra_args=extra_args, env={
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_EVENT_NAME": event_name,
+            "GITHUB_EVENT_PATH": str(event_path),
+        })
 
     def test_base_ref_absent_ledger_first_run_behavior(self):
         # No prior commit has ever had a ledger file -- --base-ref points at
@@ -1281,6 +1687,55 @@ class TestCLIBaseRefEndToEnd(unittest.TestCase):
         write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(row))
 
         result = self._invoke(base_ref=commit_before)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PASS", result.stdout)
+
+    def test_unresolvable_base_ref_is_a_hard_fail_not_a_silent_skip(self):
+        # B3 condition 1: an explicitly-supplied --base-ref that does not
+        # resolve to a real commit must hard-fail, never silently degrade
+        # to "no base available" (which would make the entire cross-commit
+        # mechanism bypassable by simply supplying a broken/nonexistent
+        # ref). This is distinct from the legitimate first-run case (a
+        # VALID ref whose target file didn't exist yet), covered by
+        # test_base_ref_absent_ledger_first_run_behavior above.
+        write(self.repo_root / "pkg-a" / "PKGBUILD", "pkgname=pkg-a\npkgver=1.0\npkgrel=1\nsource=()\n")
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1")
+
+        result = self._invoke(base_ref="this-commit-does-not-exist-anywhere")
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("FAIL", result.stdout + result.stderr)
+        self.assertIn("does not resolve to a real commit", result.stderr)
+
+    def test_empty_base_ref_is_a_hard_fail(self):
+        # An empty string --base-ref (e.g. a workflow that failed to
+        # compute a trusted base and passed through an empty value) must
+        # also hard-fail, not be silently treated the same as omitting
+        # --base-ref entirely.
+        write(self.repo_root / "pkg-a" / "PKGBUILD", "pkgname=pkg-a\npkgver=1.0\npkgrel=1\nsource=()\n")
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1")
+
+        result = self._invoke(base_ref="")
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+
+    def test_omitting_base_ref_entirely_still_runs_without_cross_commit_check(self):
+        # Contrast with the above: NOT passing --base-ref at all (as
+        # opposed to passing an empty/broken one) remains a supported,
+        # deliberate "no cross-commit check" mode for ad hoc local runs --
+        # the shipped CI workflow always supplies a real --base-ref, so
+        # this path is never exercised in CI.
+        write(self.repo_root / "pkg-a" / "PKGBUILD", "pkgname=pkg-a\npkgver=1.0\npkgrel=1\nsource=()\n")
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1")
+
+        result = self._invoke(base_ref=None)
         self.assertNotIn("Traceback", result.stderr)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("PASS", result.stdout)
@@ -1350,6 +1805,127 @@ class TestCLIBaseRefEndToEnd(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         after = set(glob.glob(tmp_glob))
         self.assertEqual(before, after, f"temp base-ledger file(s) not cleaned up: {after - before}")
+
+    # -----------------------------------------------------------------
+    # B3 hardening: the base identity itself must be GitHub-supplied
+    # (derived from GITHUB_EVENT_PATH), never a caller-editable
+    # --base-ref string a workflow YAML computes -- on a `pull_request`
+    # trigger the workflow file expressing that computation is itself
+    # part of the diff under review.
+    # -----------------------------------------------------------------
+
+    def _commit_ledger_free_baseline(self):
+        write(self.repo_root / "pkg-a" / "PKGBUILD", "pkgname=pkg-a\npkgver=1.0\npkgrel=1\nsource=()\n")
+        # No ledger file at all at this commit -- genuinely predates PR-0.
+        (self.repo_root / ".ci" / "arm64-debt-ledger.tsv").unlink(missing_ok=True)
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "genuinely predates the ledger")
+        return self.run_git("rev-parse", "HEAD").stdout.strip()
+
+    def test_github_actions_derives_base_from_event_path_not_workflow(self):
+        # The core fix: with NO --base-ref passed at all (mirroring the
+        # simplified workflow, which no longer computes or passes one),
+        # running inside a simulated GitHub Actions pull_request job still
+        # performs the cross-commit check, using the base SHA taken
+        # directly from GITHUB_EVENT_PATH.
+        old_commit = self._commit_ledger_free_baseline()
+
+        write(self.repo_root / "pkg-a" / "PKGBUILD",
+              "pkgname=pkg-a\npkgver=1.0\npkgrel=1\n"
+              'source=("git://example.org/pkg-a.git#tag=v1.0")\n')
+        locator = '"git://example.org/pkg-a.git#tag=v1.0"'
+        row = ledger_row("pkg-a/PKGBUILD", "source", "SRC_GIT_PROTO,SRC_MUTABLE_REF", locator, "#tag=,git://",
+                          introduced_by=old_commit)
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(row))
+
+        result = self._invoke_as_github_actions(
+            event={"pull_request": {"base": {"sha": old_commit}}}, event_name="pull_request",
+        )
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PASS", result.stdout)
+
+    def test_github_actions_missing_event_path_is_hard_fail(self):
+        # GITHUB_ACTIONS=true but GITHUB_EVENT_PATH pointing at a
+        # nonexistent file must hard-fail, never silently degrade to "no
+        # base available" -- that would make the entire cross-commit
+        # mechanism bypassable simply by GITHUB_EVENT_PATH being
+        # unreadable for any reason.
+        write(self.repo_root / "pkg-a" / "PKGBUILD", "pkgname=pkg-a\npkgver=1.0\npkgrel=1\nsource=()\n")
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1")
+
+        result = self._invoke(env={
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_EVENT_NAME": "pull_request",
+            "GITHUB_EVENT_PATH": str(Path(self.tmp) / "does-not-exist.json"),
+        })
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("FAIL", result.stdout + result.stderr)
+
+    def test_github_actions_malformed_event_json_is_hard_fail(self):
+        result = self._invoke_as_github_actions(event={"pull_request": {}}, event_name="pull_request")
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("FAIL", result.stdout + result.stderr)
+
+    def test_workflow_supplied_base_ref_mismatching_github_event_is_hard_fail(self):
+        # If a workflow-computed --base-ref were ever (re-)introduced and
+        # disagreed with the trusted, event-derived base, that must be a
+        # hard failure -- never a silent preference for either value --
+        # since a mismatch is exactly what a rewritten workflow file
+        # attempting to smuggle in a different base would produce.
+        old_commit = self._commit_ledger_free_baseline()
+        write(self.repo_root / "pkg-a" / "PKGBUILD",
+              "pkgname=pkg-a\npkgver=1.0\npkgrel=1\n"
+              'source=("git://example.org/pkg-a.git#tag=v1.0")\n')
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit2")
+
+        result = self._invoke_as_github_actions(
+            event={"pull_request": {"base": {"sha": old_commit}}}, event_name="pull_request",
+            base_ref="some-other-ref-the-workflow-computed",
+        )
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("does not match the trusted", result.stderr)
+
+    def test_pull_request_targeting_old_base_predating_ledger_is_legitimate_first_run(self):
+        # Distinguishing this from the attack it might resemble: a PR
+        # that genuinely targets an old base (predating the ledger) is
+        # legitimate first-run behavior ONLY because the base identity
+        # itself is trustworthy here (GitHub-event-derived, not
+        # attacker-chosen) -- an attacker cannot make the event carry an
+        # arbitrary base of their choosing, only the PR's REAL target.
+        old_commit = self._commit_ledger_free_baseline()
+        write(self.repo_root / "pkg-a" / "PKGBUILD", "pkgname=pkg-a\npkgver=1.0\npkgrel=1\nsource=()\n")
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit2, still no new violations")
+
+        result = self._invoke_as_github_actions(
+            event={"pull_request": {"base": {"sha": old_commit}}}, event_name="pull_request",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PASS", result.stdout)
+
+    def test_push_event_before_all_zeros_is_legitimate_no_base(self):
+        # GitHub's sentinel for "no prior commit" (e.g. a brand-new
+        # branch) -- legitimately no base to compare against, not a
+        # malformed event that should hard-fail.
+        write(self.repo_root / "pkg-a" / "PKGBUILD", "pkgname=pkg-a\npkgver=1.0\npkgrel=1\nsource=()\n")
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1")
+
+        result = self._invoke_as_github_actions(
+            event={"before": "0000000000000000000000000000000000000000"}, event_name="push",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PASS", result.stdout)
 
 
 class TestBaseConeMonotonicity(unittest.TestCase):
@@ -1491,6 +2067,40 @@ class TestBaseConeMonotonicity(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         after = set(glob.glob(tmp_glob))
         self.assertEqual(before, after, f"temp base-cone file(s) not cleaned up: {after - before}")
+
+    def test_deleting_current_cone_file_fails_not_first_run(self):
+        # A pull request that DELETES the current cone.txt entirely must
+        # hard-fail (SCHEMA_INVALID), never be reinterpreted as a
+        # "legitimate first run" -- the first-run carve-out is about the
+        # BASE commit lacking the file, which is a completely separate
+        # question from whether the CURRENT commit has one. load_cone() on
+        # the current path is unconditional and runs before any
+        # base/first-run logic at all.
+        self._add_clean_pkg("pkg-a")
+        self._set_cone(["pkg-a"])
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1: cone exists")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        (self.repo_root / ".ci" / "arm64-cone.txt").unlink()
+        (self.repo_root / ".ci" / "arm64-cone.sha256").unlink()
+        result = self._invoke(base_ref=commit1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("SCHEMA_INVALID(cone)", result.stderr)
+
+    def test_deleting_current_ledger_file_fails_not_first_run(self):
+        self._add_clean_pkg("pkg-a")
+        self._set_cone(["pkg-a"])
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1: ledger exists")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        (self.repo_root / ".ci" / "arm64-debt-ledger.tsv").unlink()
+        result = self._invoke(base_ref=commit1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("SCHEMA_INVALID(ledger)", result.stderr)
 
 
 if __name__ == "__main__":

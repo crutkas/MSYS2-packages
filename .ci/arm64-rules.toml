@@ -53,9 +53,8 @@ reason = "insecure git:// transport for a VCS source fetch"
 [rule.SRC_MUTABLE_REF]
 severity = "ratchetable"
 promote_when_clear = true
-description = "A source=() array element pinned to a mutable ref via '#tag='."
-matched_marker = "#tag="
-reason = "source pinned to a mutable tag ref (#tag=) rather than an immutable commit"
+description = "A git-protocol source=() array element pinned to a mutable VCS fragment ref, '#tag=' or '#branch=' (the full mutable vocabulary makepkg's extract_git() recognizes alongside the immutable '#commit=' -- 'branch' resolves to origin/<name> and moves on every upstream push, with no forged-ref check equivalent to the one makepkg applies to tags, so it is the MORE mutable of the two, not a lesser variant). matched/reason are re-derived per-row from the locator's own VCS fragment key (tag or branch), not a single fixed marker."
+reason = "source pinned to a mutable VCS ref (#tag= or #branch=) rather than an immutable #commit="
 
 [rule.SRC_INSECURE_HTTP]
 severity = "ratchetable"

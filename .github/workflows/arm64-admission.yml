@@ -36,21 +36,16 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Resolve base ledger (best-effort, local only)
-        id: base
-        run: |
-          set -eo pipefail
-          BASE_REF=""
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BASE_REF="origin/${{ github.event.pull_request.base.ref }}"
-          elif [ -n "${{ github.event.before }}" ] && git cat-file -e "${{ github.event.before }}" 2>/dev/null; then
-            BASE_REF="${{ github.event.before }}"
-          fi
-          echo "base_ref=${BASE_REF}" >> "$GITHUB_OUTPUT"
-
       - name: Run arm64-admission-guard tests
         run: python .ci/tests/test_arm64_admission_guard.py -v
 
       - name: Run arm64-admission-guard
-        run: |
-          python .ci/arm64-admission-guard.py --base-ref "${{ steps.base.outputs.base_ref }}"
+        # No --base-ref is passed here, deliberately: the guard derives its
+        # own trusted base commit from GITHUB_EVENT_PATH (a JSON file
+        # GitHub's runner writes BEFORE any repository code -- including
+        # this workflow file itself -- is read), never from anything a
+        # workflow YAML computes. On a `pull_request` trigger this
+        # workflow's own file is part of the diff under review, so any
+        # base-selection logic expressed here would be attacker-editable;
+        # see derive_github_actions_base_ref in arm64-admission-guard.py.
+        run: python .ci/arm64-admission-guard.py

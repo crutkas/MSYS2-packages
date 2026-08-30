@@ -137,6 +137,8 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
+import json
 import os
 import re
 import sys
@@ -158,7 +160,18 @@ QUARANTINE_COMMIT_FULL = "9bbaa7b7a36ae51328cbff6acb720dcfa472db37"
 # unrelated short token, short enough to catch common abbreviated forms.
 QUARANTINE_MIN_ABBREV = 7
 
-DYNAMIC_MARKERS = ("git://", "http://", "#tag=")
+# NOTE on case sensitivity: an audit against makepkg's real implementation
+# (libmakepkg/util/source.sh.in get_downloadclient(), which compares
+# `[[ $proto = "$handler" ]]` against lowercase DLAGENTS keys; and
+# libmakepkg/source/git.sh.in extract_git(), whose `case ${fragment%%=*}`
+# only recognizes lowercase keys) showed BOTH an uppercase protocol
+# (`HTTP://`) and an uppercase fragment key (`#TAG=`) make makepkg itself
+# ABORT the build ("Unknown download protocol" / "Unrecognized
+# reference"). Those are broken recipes, not insecure fetches -- makepkg
+# cannot reach that state successfully, so no case-folding rule is
+# written for either; matching stays exactly case-sensitive throughout
+# (see `_extract_protocol_span`/`_extract_fragment_key_span`, which
+# compare the extracted tokens with plain `==`).
 
 LEDGER_FIELDS = [
     "path", "field", "rule_id", "locator", "locator_sha256", "matched",
@@ -176,7 +189,25 @@ CONE_BYPASS_CHARS = set("*?[]{}()|\\")
 LOCATOR_BYPASS_CHARS = set("*?[]()|\\")
 
 TOOLCHAIN_DEV_VER_RE = re.compile(r"^[0-9]+(\.[0-9]+)*dev$")
-SOURCE_ARRAY_RE = re.compile(r"(?m)^[ \t]*(source(?:_[A-Za-z0-9_]+)?)=\(")
+# Matches an assignment to `source` or `source_<arch>` in ANY form makepkg
+# actually honors: a bare assignment (`source=(`), an append (`source+=(`),
+# or the same prefixed by `declare`/`typeset`/`export`/`readonly` and their
+# common flags (`declare -a source=(`, `export source+=(`, ...). This is
+# NOT a line-anchored "just the plain form" regex specifically because an
+# enumerated list of prefixes is always missing one -- matching the
+# assignment OPERATOR (`=`/`+=`) immediately after the name, regardless of
+# what precedes it on the line, is what makes new omitted prefixes
+# structurally impossible rather than another prefix to remember to add.
+# `source =(` (a SPACE before `=`) is deliberately NOT matched: that is not
+# valid bash assignment syntax at all (bash would parse it as the `source`
+# built-in / `.` command given odd arguments, a syntax error, or invoke
+# `source` as a command -- never an array assignment), so makepkg does not
+# honor it as one either, and treating it as in-scope would be modelling a
+# construct that cannot occur.
+SOURCE_ARRAY_RE = re.compile(
+    r"(?m)^[ \t]*(?:(?:declare|typeset|export|readonly)\s+(?:-[A-Za-z]+\s+)*)?"
+    r"(source(?:_[A-Za-z0-9_]+)?)(\+?=)\("
+)
 PKGVER_RE = re.compile(r"(?m)^[ \t]*pkgver=")
 # Any top-level scalar assignment (`NAME=...`, NOT `NAME=(...)` -- arrays are
 # excluded here; source/source_<arch> arrays are handled by SOURCE_ARRAY_RE).
@@ -556,7 +587,7 @@ def _find_dynamic_spans(word_text: str) -> list[tuple[int, int]]:
     return spans
 
 
-def _boundary_straddle_possible(preceding: str, following: str, target: str) -> bool:
+def _boundary_straddle_possible(preceding: str, following: str, target: str, min_contribution: int = 1) -> bool:
     """True if `target` could be assembled as
     [some suffix of preceding] + [the dynamic span's unknowable output,
     of ANY length/content] + [some prefix of following], for SOME pair of
@@ -566,54 +597,36 @@ def _boundary_straddle_possible(preceding: str, following: str, target: str) -> 
     need to contribute -- since its real output is never executed/known,
     ANY such gap is considered adversarially achievable.
 
-    The single EXCLUDED case is p1 == 0 AND p2 == len(target) simultaneously
-    -- i.e. NEITHER side contributes anything and the entire target could
-    only come from the dynamic span's own output. That is an inherent,
-    accepted limit of static analysis true of literally ANY `$(...)`/
-    backtick usage for literally any target string, and flagging it would
-    make every real, supported use (e.g. the bash/readline `$(printf ...)`
-    patch-level idiom, or any file containing ANY command substitution at
-    all) fail closed unconditionally. Every OTHER combination -- where at
-    least one side contributes a real, non-empty fragment, however short --
-    is flagged, which is what catches a deliberate split even when an
+    The EXCLUDED cases are every (p1, p2) pair where NEITHER side
+    contributes at least `min_contribution` real characters (i.e. both
+    p1 < min_contribution and length - p2 < min_contribution). With the
+    default `min_contribution=1` (used for `$(...)`/backtick spans), this
+    excludes only the single fully-trivial p1==0-and-p2==length case --
+    neither side contributes anything and the entire target could only
+    come from the dynamic span's own output, an inherent, accepted limit
+    of static analysis true of literally ANY `$(...)`/backtick usage for
+    literally any target string (flagging it would make every real,
+    supported use, e.g. the bash/readline `$(printf ...)` patch-level
+    idiom, fail closed unconditionally). Every OTHER combination -- where
+    at least one side contributes a real, non-empty fragment, however
+    short -- is flagged, catching a deliberate split even when an
     individual fragment is very short (e.g. a 5-character hash prefix,
     below the quarantine abbreviation threshold).
+
+    A higher `min_contribution` (used for unresolved `${name}` parameter
+    expansions, which -- unlike rare `$(...)` spans -- sit adjacent to
+    single generic separator characters like `/` constantly in ordinary,
+    compliant PKGBUILD source URLs such as `.../${pkgname}/${pkgname}-
+    ${pkgver}.tar.gz`) additionally excludes degenerate single-character
+    coincidental overlaps that carry no real signal, while still catching
+    any genuine multi-character marker fragment straddling the boundary.
     """
     length = len(target)
     valid_p1 = [p for p in range(length + 1) if preceding.endswith(target[:p])]
     valid_p2 = [p for p in range(length + 1) if following.startswith(target[p:])]
     for p1 in valid_p1:
         for p2 in valid_p2:
-            if p1 <= p2 and not (p1 == 0 and p2 == length):
-                return True
-    return False
-
-
-def _dynamic_boundary_risk(word: Word) -> bool:
-    """Conservative, narrowly-scoped check for whether `word` contains a
-    dynamic (`$(...)` or backtick) span positioned such that an adversarial
-    choice of the substitution's real runtime output (NEVER executed here)
-    could cause one of the ratchet marker substrings (git://, http://,
-    #tag=) to be formed STRADDLING the substitution. See
-    `_boundary_straddle_possible` for exactly which cases are (and are not)
-    flagged, and why the case where a marker could be produced ENTIRELY
-    inside the substitution's own output (no contribution from either
-    side) is deliberately NOT flagged -- that would make the real,
-    supported `bash`/`readline` `$(printf ...)` idiom fail closed
-    unconditionally.
-    """
-    spans = _find_dynamic_spans(word.text)
-    if not spans:
-        return False
-    for start, end in spans:
-        cs_text = word.text[start:end]
-        idx = word.value.find(cs_text)
-        if idx == -1:
-            continue  # should not happen (dynamic spans are opaque in both text and value)
-        preceding = word.value[:idx]
-        following = word.value[idx + len(cs_text):]
-        for marker in DYNAMIC_MARKERS:
-            if _boundary_straddle_possible(preceding, following, marker):
+            if p1 <= p2 and (p1 >= min_contribution or (length - p2) >= min_contribution):
                 return True
     return False
 
@@ -775,6 +788,429 @@ def sha256_hex(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
 
+BARE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# `${source[@]}`/`${source_x86_64[*]}` -- see resolve_effective_value for
+# why this specific self-referential whole-array expansion is treated as
+# contributing no new content, unlike any other `${name[...]}` array
+# index/slice reference (which stays unresolved/opaque per the auditor's
+# explicit instruction that array-element references must not be
+# silently passed through).
+SOURCE_ARRAY_SELF_REF_RE = re.compile(r"^source(?:_[A-Za-z0-9_]+)?\[[@*]\]$")
+VAR_REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _find_param_expansion_spans(s: str) -> list[tuple[int, int]]:
+    """Finds every `${...}` parameter-expansion span in `s`, respecting
+    nesting (a `${` occurring INSIDE another `${...}` increases depth, and
+    the matching `}` is the one that returns depth to zero, e.g.
+    `${x:-${y}}`). Returns (start, end) offsets, `end` one past the closing
+    `}`. Unlike the tokenizer's deliberate non-tracking of plain `{`/`}`
+    (safe there because nothing depends on finding a matching `}`), THIS
+    function's whole purpose is finding the exact extent of a `${...}`
+    construct, because classifying whether its content is one we
+    understand (a bare name we can resolve) or something else entirely
+    (an operator, indirection, an array index -- anything we do not
+    model) requires knowing precisely where it ends. An unterminated `${`
+    (no matching `}` before the end of the string) fails closed by
+    consuming to the end of the string as one opaque span.
+    """
+    spans: list[tuple[int, int]] = []
+    i = 0
+    n = len(s)
+    while i < n:
+        if s[i] == "$" and i + 1 < n and s[i + 1] == "{":
+            depth = 1
+            j = i + 2
+            while j < n and depth > 0:
+                if s[j] == "$" and j + 1 < n and s[j + 1] == "{":
+                    depth += 1
+                    j += 2
+                    continue
+                if s[j] == "}":
+                    depth -= 1
+                    j += 1
+                    continue
+                j += 1
+            spans.append((i, j))
+            i = j
+        else:
+            i += 1
+    return spans
+
+
+def build_resolved_variable_map(text: str) -> dict[str, str]:
+    """Scans every top-level SCALAR assignment (`NAME=value`, a single
+    tokenized word -- NOT arrays) and returns {name: fully-resolved literal
+    value} for names that are BOTH:
+      (a) assigned EXACTLY ONCE anywhere in the file -- a name assigned
+          more than once (e.g. conditionally, or via any control flow this
+          analyzer does not evaluate) is never resolved: rather than
+          guessing which assignment "wins" (exploitable either way, since
+          an attacker could target whichever one is NOT checked), it is
+          conservatively left fully unresolved so every downstream check
+          must fail closed at any position it could affect, and
+      (b) whose value, after a bounded fixed-point substitution pass over
+          bare `${other}` references that are themselves resolved this
+          way, contains NO remaining `${...}` construct of ANY form and no
+          `$(...)`/backtick dynamic span. This means an unmodeled operator
+          (`${x:-y}`, `${x//a/b}`, `${!x}`, `${x[0]}`, ...) NEVER gets
+          treated as resolved just because it happens to sit inside a
+          scalar assignment -- unlike a plain bare-`${other}` chain, which
+          IS resolved, since leaving that unresolved would be a needless
+          false positive rather than a genuine limit of static analysis.
+    A name failing either condition is simply ABSENT from the returned
+    map. This is pure, safe, static string substitution of already-parsed
+    literal text -- it never executes, sources, or evaluates anything.
+    """
+    raw_values: dict[str, list[str]] = {}
+    for m in SCALAR_ASSIGN_RE.finditer(text):
+        name = m.group(1)
+        val_start = m.end()
+        line_end = _find_logical_line_end(text, val_start)
+        try:
+            words, _ = _tokenize_words(text, val_start, line_end, stop_at_paren=False)
+        except ParseError:
+            raw_values.setdefault(name, []).append(None)
+            continue
+        raw_values.setdefault(name, []).append(words[0].value if words else None)
+
+    candidates: dict[str, str] = {}
+    permanently_unresolved: set[str] = set()
+    for name, values in raw_values.items():
+        if len(values) != 1 or values[0] is None:
+            permanently_unresolved.add(name)
+            continue
+        candidates[name] = values[0]
+
+    resolved: dict[str, str] = {}
+    for _ in range(10):
+        changed = False
+        for name in list(candidates.keys()):
+            value = candidates[name]
+            if _find_dynamic_spans(value):
+                permanently_unresolved.add(name)
+                del candidates[name]
+                changed = True
+                continue
+            spans = _find_param_expansion_spans(value)
+            bare_refs: set[str] = set()
+            has_unmodeled = False
+            for start, end in spans:
+                content = value[start + 2:end - 1]
+                if BARE_NAME_RE.match(content):
+                    bare_refs.add(content)
+                else:
+                    has_unmodeled = True
+            if has_unmodeled:
+                permanently_unresolved.add(name)
+                del candidates[name]
+                changed = True
+                continue
+            if not bare_refs:
+                resolved[name] = value
+                del candidates[name]
+                changed = True
+                continue
+            if bare_refs & permanently_unresolved:
+                permanently_unresolved.add(name)
+                del candidates[name]
+                changed = True
+                continue
+            if bare_refs <= resolved.keys():
+                new_value = VAR_REF_RE.sub(lambda m: resolved[m.group(1)], value)
+                candidates[name] = new_value
+                changed = True
+        if not changed:
+            break
+    return resolved
+
+
+def resolve_effective_value(value: str, resolved_vars: dict[str, str]) -> tuple[str, list[tuple[int, int]]]:
+    """Substitutes every STATICALLY-resolvable BARE `${name}` reference in
+    `value` using `resolved_vars`, returning (effective_value,
+    unresolved_spans) where `unresolved_spans` are the (start, end) offsets
+    WITHIN effective_value of every `${...}` parameter-expansion construct
+    that could NOT be resolved -- this includes not only a bare `${name}`
+    whose name is absent from `resolved_vars`, but ALSO any `${...}` form
+    this analyzer does not model at all (an operator such as `:-`, `//`,
+    `#`, `%`, `^^`, `,,`, indirection `${!name}`, an array index
+    `${name[0]}`, ...). Modeling only SOME operators and silently passing
+    the rest through as inert literal text would be exactly the same
+    "handle what we understand, silently allow what we don't" defect this
+    analyzer exists to close elsewhere (raw-vs-semantic quoting, dynamic
+    substitution boundaries): every unmodeled `${...}` construct is
+    therefore treated identically to an unresolved bare name -- an opaque
+    span whose real runtime value is unknown -- regardless of how
+    "obviously safe" its literal spelling might look.
+
+    An unresolved/unmodeled span is left as its literal on-disk text in
+    the output (so its exact character length/position within
+    effective_value is preserved) and its span is reported so the caller
+    can determine whether it overlaps a security-decisive position (the
+    scheme token, the VCS fragment key -- see `_extract_protocol_span`/
+    `_extract_fragment_key_span`). Failing to substitute a genuinely
+    resolvable bare reference here would be a fail-OPEN (the marker is
+    present, just spelled with a variable name bash would expand at
+    runtime), which is why resolution is attempted for that one narrow,
+    provably-safe case.
+    """
+    spans = _find_param_expansion_spans(value)
+    out: list[str] = []
+    unresolved: list[tuple[int, int]] = []
+    pos = 0
+    for start, end in spans:
+        out.append(value[pos:start])
+        content = value[start + 2:end - 1]
+        if BARE_NAME_RE.match(content) and content in resolved_vars:
+            out.append(resolved_vars[content])
+        elif SOURCE_ARRAY_SELF_REF_RE.match(content):
+            # `${source[@]}`/`${source_x86_64[*]}` (self-referential
+            # whole-array expansion, the standard "append another element
+            # to the array I am currently (re-)declaring" idiom, e.g.
+            # `source=(${source[@]} <new-entry>)`). This contributes
+            # nothing NEW to verify: it expands to elements of a
+            # source/source_<arch> array that is ALWAYS independently
+            # scanned in full regardless of this reference (every
+            # source=(...)/source_<arch>=(...) assignment's own tokenized
+            # elements are unioned into `arrays[name]` by
+            # parse_source_arrays and matched on their own), so treating
+            # it as empty here neither hides nor duplicates a finding.
+            pass
+        else:
+            span_start = sum(len(p) for p in out)
+            out.append(value[start:end])
+            unresolved.append((span_start, span_start + (end - start)))
+        pos = end
+    out.append(value[pos:])
+    return "".join(out), unresolved
+
+
+def _collect_opaque_spans(word: "Word", unresolved_expansion_spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Combines `$(...)`/backtick dynamic spans (mapped from `word.text`
+    offsets into `word.value`/effective-value offsets) with unresolved
+    `${...}` parameter-expansion spans into one list of opaque character
+    ranges within the semantic value -- positions whose real runtime
+    content this analyzer cannot know."""
+    spans: list[tuple[int, int]] = []
+    for start, end in _find_dynamic_spans(word.text):
+        cs_text = word.text[start:end]
+        idx = word.value.find(cs_text)
+        if idx != -1:
+            spans.append((idx, idx + len(cs_text)))
+    spans.extend(unresolved_expansion_spans)
+    return spans
+
+
+def _split_filename_prefix(value: str) -> tuple[int, str]:
+    """Mirrors makepkg's get_url()/get_protocol() (`${1#*::}`): strip up
+    to and including the FIRST '::' if present (a `filename::url` source
+    entry). Returns (url_start_offset_within_value, url_part)."""
+    idx = value.find("::")
+    if idx == -1:
+        return 0, value
+    return idx + 2, value[idx + 2:]
+
+
+def _extract_vcs_type_span(value: str) -> tuple[int, int] | None:
+    """Mirrors makepkg's get_protocol() exactly (`${proto%%+*}`): returns
+    the (start, end) offset within `value` of the VCS-HANDLER-DISPATCH
+    token -- what decides whether `extract_git()`'s fragment-key
+    vocabulary (commit/tag/branch) applies at all. For `git+https://` this
+    is `git` (get_protocol() truncates AT the first `+`), the SAME VCS
+    type as bare `git://`, since both are handled by the git downloader.
+    This is intentionally a DIFFERENT token from `_extract_protocol_span`
+    (which decides transport security using the opposite truncation
+    direction) -- makepkg itself uses two different substrings of the
+    same prefix for two different purposes, and conflating them was an
+    earlier defect in this analyzer (a `git+https://` source was
+    incorrectly flagged as insecure `SRC_GIT_PROTO` before this split).
+    """
+    url_start, url_part = _split_filename_prefix(value)
+    scheme_idx = url_part.find("://")
+    if scheme_idx == -1:
+        return None
+    proto_full = url_part[:scheme_idx]
+    plus_idx = proto_full.find("+")
+    vcs_len = plus_idx if plus_idx != -1 else len(proto_full)
+    return (url_start, url_start + vcs_len)
+
+
+def _extract_protocol_span(value: str) -> tuple[int, int] | None:
+    """Returns the (start, end) offset within `value` of the token that
+    decides transport SECURITY, or None if there is no '://' at all after
+    stripping any 'filename::' prefix (makepkg's "local" source case --
+    no protocol to check).
+
+    This is deliberately NOT the same truncation as makepkg's own
+    get_protocol() (`${proto%%+*}`, which keeps only the part BEFORE a
+    `+` for VCS-HANDLER DISPATCH purposes, e.g. both `git://` and
+    `git+https://` report VCS type "git"). For OUR purposes -- is the
+    actual data transport insecure/plaintext -- that truncation direction
+    is wrong: `download_git()` does `url=${url#git+}` and hands the
+    REMAINDER straight to `git clone`, so for a `vcstype+transport://`
+    entry the transport that is actually fetched over is the part AFTER
+    the `+` (`git+https://` fetches over HTTPS -- secure; `git+git://`
+    explicitly requests the native insecure git:// transport). Only a
+    bare scheme with no `+` (`git://`, `http://`, `https://`) uses the
+    whole pre-`://` token directly as its own transport. See
+    `_extract_vcs_type_span` for the OTHER truncation, used to decide
+    whether the git fragment-key vocabulary applies.
+    """
+    url_start, url_part = _split_filename_prefix(value)
+    scheme_idx = url_part.find("://")
+    if scheme_idx == -1:
+        return None
+    proto_full = url_part[:scheme_idx]
+    plus_idx = proto_full.find("+")
+    if plus_idx != -1:
+        transport_start = url_start + plus_idx + 1
+        return (transport_start, url_start + len(proto_full))
+    return (url_start, url_start + len(proto_full))
+
+
+
+def _extract_fragment_key_span(value: str) -> tuple[int, int] | None:
+    """Mirrors makepkg's get_uri_fragment() + extract_git()'s
+    `${fragment%%=*}`: the fragment is everything after the FIRST '#' in
+    the whole entry, truncated at the first '?'; the key is everything in
+    the fragment before its first '='. Returns None if there is no '#' at
+    all (no VCS fragment present)."""
+    hash_idx = value.find("#")
+    if hash_idx == -1:
+        return None
+    frag_start = hash_idx + 1
+    frag = value[frag_start:]
+    q_idx = frag.find("?")
+    if q_idx != -1:
+        frag = frag[:q_idx]
+    eq_idx = frag.find("=")
+    key_len = eq_idx if eq_idx != -1 else len(frag)
+    return (frag_start, frag_start + key_len)
+
+
+def _span_overlaps_any(span: tuple[int, int], opaque_spans: list[tuple[int, int]]) -> bool:
+    s, e = span
+    for os_, oe in opaque_spans:
+        if s < oe and os_ < e:
+            return True
+    return False
+
+
+def _delimiter_could_be_hidden(effective_value: str, opaque_spans: list[tuple[int, int]], delimiter: str) -> bool:
+    """True if any opaque span (a `$(...)`/backtick dynamic substitution
+    or an unresolved/unmodeled `${...}` expansion) sits where it could
+    contribute part of `delimiter` (`"://"`) that the LITERAL text search
+    `_extract_vcs_type_span`/`_extract_protocol_span`/
+    `_extract_fragment_key_span` rely on (`str.find`) would otherwise
+    simply miss -- e.g. `"git$(echo :)//example.org/x"` never contains
+    the literal substring `"://"` at all (the `:` is produced by the
+    substitution), so a plain `.find("://")` would incorrectly conclude
+    there is no scheme here rather than failing closed.
+
+    Uses `min_contribution=2`, NOT the dynamic-span default of 1: unlike a
+    `$(...)`/backtick span (rare in this corpus), an unresolved `${...}`
+    expansion sits immediately before a bare `/` constantly in ordinary,
+    fully compliant source URLs (`.../${pkgver%.*}/name-${pkgver}.tar.xz`),
+    and `://`'s own trailing single character (`/`) would otherwise
+    coincidentally "straddle" on that ubiquitous `/` alone. Requiring at
+    least a 2-character real contribution (verified to still catch the
+    adversarial `git$(echo :)//...` case, where the following text's
+    `"//"` overlap with `://`'s `[1:]` suffix is itself 2 characters)
+    keeps this sensitive to genuine delimiter-splitting without flagging
+    every ordinary unresolved expansion adjacent to a single path
+    separator.
+
+    NOTE, documented rather than silently accepted: this same technique
+    is NOT applied to the single-character `#` fragment delimiter,
+    because `min_contribution=2` can never be satisfied against a
+    length-1 target (making the check permanently vacuous there) while
+    `min_contribution=1` reproduces the exact same false-positive flood
+    this function exists to avoid (`#` trivially "straddles" via the
+    fully-trivial exemption on ANY opaque span with no real signal). An
+    unresolved/opaque span positioned such that it alone could hide an
+    ENTIRE `#key=value` fragment with no literal `#` anywhere else in the
+    element is therefore a known, accepted residual limit -- the same
+    class of "entirely inside the opaque span, zero contribution from
+    static text" limit already accepted for `$(...)`/backtick spans
+    elsewhere in this analyzer, not a new one.
+    """
+    for start, end in opaque_spans:
+        preceding = effective_value[:start]
+        following = effective_value[end:]
+        if _boundary_straddle_possible(preceding, following, delimiter, min_contribution=2):
+            return True
+    return False
+
+
+# The VCS-fragment-key vocabulary EACH of makepkg's VCS source handlers
+# recognizes (msys2-pacman libmakepkg/source/{git,fossil,hg,svn,bzr}.sh.in
+# -- every one of them `case ${fragment%%=*} in <keys>) ... *) error
+# "Unrecognized reference"; exit 1`, so an unrecognized key aborts the
+# real build there regardless of VCS type):
+#   git:    commit (immutable) | tag, branch (mutable)
+#   fossil: commit (immutable) | tag, branch (mutable)  -- identical to git
+#   hg:     revision (immutable content hash) | tag, branch (mutable)
+#   svn:    revision (immutable) | (no mutable key exists)
+#   bzr:    revision (immutable) | (no mutable key exists)
+# `branch` is the MORE mutable of the mutable keys where both exist: it
+# resolves to origin/<name> and moves on every upstream push, with no
+# forged-ref check equivalent to the one makepkg applies to tags.
+VCS_FRAGMENT_VOCAB: dict[str, tuple[frozenset, frozenset]] = {
+    "git": (frozenset({"commit"}), frozenset({"tag", "branch"})),
+    "fossil": (frozenset({"commit"}), frozenset({"tag", "branch"})),
+    "hg": (frozenset({"revision"}), frozenset({"tag", "branch"})),
+    "svn": (frozenset({"revision"}), frozenset()),
+    "bzr": (frozenset({"revision"}), frozenset()),
+}
+# Non-VCS schemes: any '#...' in the entry is an ordinary URI fragment
+# with no makepkg-interpreted VCS-ref semantics at all (no extract_*()
+# ever inspects it), so no fragment-key vocabulary check applies.
+NON_VCS_SCHEMES = frozenset({"http", "https", "ftp", "ftps"})
+
+
+
+def _unresolved_variable_boundary_risk(
+    effective_value: str,
+    unresolved_spans: list[tuple[int, int]],
+    target: str,
+    flag_entirely_bare: bool = True,
+) -> bool:
+    """Same boundary-straddle reasoning as `_boundary_straddle_possible`,
+    with `min_contribution=2` -- an unresolved `${name}` reference sits
+    adjacent to single generic separator characters (`/`, `:`, `.`)
+    constantly in ordinary, fully compliant PKGBUILD source URLs (e.g.
+    `.../${pkgname}/${pkgname}-${pkgver}.tar.gz`), so a 1-character
+    coincidental overlap (e.g. the trailing `/` of `http://` matching the
+    `/` that follows `${pkgname}` in that idiom) carries no real signal
+    and must not be flagged; a genuine >=2-character marker fragment
+    straddling the boundary still is.
+
+    PLUS, when `flag_entirely_bare` is true, one case `_boundary_straddle_
+    possible` intentionally never covers: a variable reference that is, by
+    itself, the ENTIRE value with no static text on either side at all
+    (e.g. `source=(${_u})`). That specific shape -- unlike a command
+    substitution, which can never be assumed to equal a known marker
+    without executing it -- IS exactly the real-world "hide a marker
+    behind an ordinary variable" evasion (`_u=git://host/repo`), so it is
+    flagged unconditionally there. `flag_entirely_bare` is disabled for
+    the wide, file-wide quarantine scalar-assignment scan specifically
+    (see `detect_findings_for_file`), where ordinary bare self-referential
+    or makepkg-provided-variable copies (`DESTDIR="${pkgdir}"`,
+    `CFLAGS="${CFLAGS}"`) are extremely common and are not a plausible
+    carrier for a 40-character VCS commit hash; it stays enabled for
+    source-array/pkgver candidates, which is the exact shape of the
+    evasion this exists to catch.
+    """
+    for start, end in unresolved_spans:
+        preceding = effective_value[:start]
+        following = effective_value[end:]
+        if flag_entirely_bare and preceding == "" and following == "":
+            return True
+        if _boundary_straddle_possible(preceding, following, target, min_contribution=2):
+            return True
+    return False
+
+
 def contains_quarantine_reference(s: str) -> bool:
     """True if s contains the full quarantined commit or a long-enough hex
     abbreviation of it that is not itself a substring of an unrelated hex
@@ -800,72 +1236,204 @@ def is_toolchain_path(pkgbuild_path: str) -> bool:
     return bool(TOOLCHAIN_DIR_RE.match(directory))
 
 
+# Matches a `pkgver()` FUNCTION DEFINITION (any of the common bash forms:
+# `pkgver() {`, `pkgver ( ) {`, `function pkgver {`, `function pkgver() {`)
+# -- NOT its body, which this analyzer never interprets or executes (doing
+# so would be a step toward evaluation). makepkg calls this function AFTER
+# fetching sources and REPLACES the static `pkgver=` this analyzer
+# inspects with its output (idiomatic in this exact package family --
+# `mingw-w64-cross-crt/PKGBUILD` and seven siblings already derive pkgver
+# via `git describe --long ... | sed ...`), making the true runtime
+# version statically undecidable the moment a toolchain recipe defines
+# one, even though this analyzer's TOOLCHAIN_DEV_VER check only ever looks
+# at the static value.
+PKGVER_FUNCTION_RE = re.compile(r"(?m)^[ \t]*(?:function[ \t]+pkgver\b|pkgver[ \t]*\(\s*\))")
+# A `source`/`.` bash COMMAND (built-in file inclusion, e.g. `source
+# ./helpers.sh` or `. ./helpers.sh`) is deliberately distinguished from
+# the `source=(`/`source_<arch>=(` ARRAY ASSIGNMENT syntax this analyzer
+# does parse: the command form requires whitespace before its argument
+# and is not immediately followed by `=`, whereas the assignment form
+# never has a space before `=`. An in-cone recipe using the command form
+# could define the source array or any scalar variable this analyzer
+# resolves in an externally-included file it never reads, hiding content
+# entirely out of view -- the identical "content defined somewhere this
+# analyzer cannot see" risk as a hidden `pkgver()`, so it fails closed the
+# same way.
+SOURCE_INCLUDE_DIRECTIVE_RE = re.compile(r"(?m)^[ \t]*(?:source|\.)[ \t]+\S")
+
+
+def _has_source_include_directive(text: str) -> bool:
+    """True if `text` contains a genuine `source`/`.` file-inclusion
+    COMMAND -- i.e. a `SOURCE_INCLUDE_DIRECTIVE_RE` match that begins a
+    LOGICAL line, not merely a physical one. A match on a physical line
+    that is itself a backslash-newline CONTINUATION of an earlier logical
+    line is excluded: there the token is not the first word of a command
+    at all, just one element of whatever multi-line construct the
+    previous line started (a real, present example: `bash/PKGBUILD`'s
+    `for f in bg bind ... source suspend ... ; do` builtin-name list,
+    continued across several physical lines, where `source` is a bash
+    KEYWORD NAME being enumerated, not a command being invoked).
+    """
+    for m in SOURCE_INCLUDE_DIRECTIVE_RE.finditer(text):
+        line_start = text.rfind("\n", 0, m.start()) + 1
+        if line_start == 0:
+            return True  # first physical line of the file: cannot be a continuation
+        # The newline at `line_start - 1` ends the PREVIOUS physical line;
+        # this line is a continuation of it iff that previous line's last
+        # non-whitespace-trimmed character is an unescaped backslash. We
+        # walk back over any run of backslashes and treat an ODD count as
+        # an active continuation (each backslash+newline pair escapes the
+        # newline; a literal trailing backslash would itself need to be
+        # escaped as `\\`, so consecutive continuations pair off).
+        prev_line_end = line_start - 1
+        j = prev_line_end
+        backslash_run = 0
+        while j > 0 and text[j - 1] == "\\":
+            backslash_run += 1
+            j -= 1
+        if backslash_run % 2 == 1:
+            continue  # continuation line -- not a fresh command
+        return True
+    return False
+
+
 def detect_findings_for_file(path: str, text: str) -> tuple[list[Finding], list[str]]:
     """Returns (ratchetable_findings, absolute_hits) for one PKGBUILD's text.
     Raises ParseError (caller turns that into PARSE_FAIL) if unparseable.
     ALL rule matching below is performed against each Word's derived
-    SEMANTIC `.value`, never its raw `.text` -- `.text` is used ONLY as the
-    stored/hashed locator.
+    SEMANTIC `.value` after safe, static, non-executing variable
+    substitution (`resolve_effective_value`) -- never against raw `.text`,
+    which is used ONLY as the stored/hashed locator, and never against the
+    unsubstituted `.value` alone (that would miss a marker hidden behind an
+    ordinary variable, e.g. `_p=git` then `source=("${_p}://host/repo")`).
     """
     absolute_hits: list[str] = []
     findings: dict[tuple[str, str], set] = {}
     matched_text: dict[tuple[str, str], set] = {}
 
+    if _has_source_include_directive(text):
+        raise ParseError(
+            f"{path}: uses a `source`/`.` file-inclusion COMMAND (not a source=() array assignment); an "
+            f"externally-included file could define the source array or any resolved variable entirely out of "
+            f"this analyzer's view and cannot be safely and unambiguously analyzed"
+        )
+
+    if is_toolchain_path(path) and PKGVER_FUNCTION_RE.search(text):
+        raise ParseError(
+            f"{path}: defines a pkgver() function; makepkg calls it after fetching sources and REPLACES the "
+            f"static pkgver= this analyzer inspects with its output (this analyzer never interprets/executes "
+            f"the function body, since doing so would be a step toward evaluation), so the true runtime "
+            f"version is statically undecidable and cannot be safely analyzed for TOOLCHAIN_DEV_VER"
+        )
+
     arrays, array_spans = parse_source_arrays(text, path)
+    resolved_vars = build_resolved_variable_map(text)
 
     # Quarantine scan: every source/source_<arch> element, the pkgver value,
     # and every scalar variable assignment anywhere in the file (see
     # find_all_scalar_assignment_values for the generalization rationale).
-    quarantine_candidates: list[Word] = []
+    # Source-array/pkgver candidates are the exact shape of the "hide a
+    # marker behind an ordinary variable" evasion, so an entirely-bare
+    # unresolved reference (no static text on either side at all) is
+    # flagged unconditionally there. The much WIDER file-wide scalar-
+    # assignment scan additionally picks up ordinary, ubiquitous, and
+    # entirely benign bare self-referential/makepkg-provided-variable
+    # copies (`DESTDIR="${pkgdir}"`, `CFLAGS="${CFLAGS}"`) that are not a
+    # plausible carrier for a 40-character VCS commit hash, so that scan
+    # does not apply the entirely-bare exception.
+    narrow_quarantine_candidates: list[Word] = []
     for words in arrays.values():
-        quarantine_candidates.extend(words)
+        narrow_quarantine_candidates.extend(words)
     pkgver_word, pkgver_span = parse_pkgver(text, path)
     if pkgver_word is not None:
-        quarantine_candidates.append(pkgver_word)
+        narrow_quarantine_candidates.append(pkgver_word)
     exclude_spans = list(array_spans)
     if pkgver_span is not None:
         exclude_spans.append(pkgver_span)
-    quarantine_candidates.extend(find_all_scalar_assignment_values(text, path, exclude_spans))
-    for w in quarantine_candidates:
-        if contains_quarantine_reference(w.value):
-            absolute_hits.append(f"{path}: quarantined commit reference found (semantic value {w.value!r})")
-        elif _quarantine_dynamic_boundary_risk(w):
+    wide_quarantine_candidates = find_all_scalar_assignment_values(text, path, exclude_spans)
+    for w, flag_entirely_bare in itertools.chain(
+        ((w, True) for w in narrow_quarantine_candidates),
+        ((w, False) for w in wide_quarantine_candidates),
+    ):
+        effective, unresolved = resolve_effective_value(w.value, resolved_vars)
+        if contains_quarantine_reference(effective):
+            absolute_hits.append(f"{path}: quarantined commit reference found (semantic value {effective!r})")
+        elif _quarantine_dynamic_boundary_risk(w) or _unresolved_variable_boundary_risk(
+            effective, unresolved, QUARANTINE_COMMIT_FULL, flag_entirely_bare=flag_entirely_bare
+        ):
             absolute_hits.append(
-                f"{path}: a dynamic (command/backtick) substitution is positioned where its unknowable "
-                f"runtime output could complete/hide a reference to the quarantined commit across the "
-                f"substitution boundary; cannot be safely verified (raw={w.text!r})"
+                f"{path}: a dynamic substitution or unresolved variable reference is positioned where its "
+                f"unknowable runtime value could complete/hide a reference to the quarantined commit across "
+                f"the boundary; cannot be safely verified (raw={w.text!r})"
             )
 
     for arrname, words in arrays.items():
         for w in words:
-            if _dynamic_boundary_risk(w):
+            effective, unresolved = resolve_effective_value(w.value, resolved_vars)
+            opaque_spans = _collect_opaque_spans(w, unresolved)
+
+            vcs_type_span = _extract_vcs_type_span(effective)
+            proto_span = _extract_protocol_span(effective)
+            frag_key_span = _extract_fragment_key_span(effective)
+            vcs_type_unverifiable = vcs_type_span is not None and _span_overlaps_any(vcs_type_span, opaque_spans)
+            proto_unverifiable = proto_span is not None and _span_overlaps_any(proto_span, opaque_spans)
+            frag_key_unverifiable = frag_key_span is not None and _span_overlaps_any(frag_key_span, opaque_spans)
+            delimiter_unverifiable = bool(opaque_spans) and _delimiter_could_be_hidden(effective, opaque_spans, "://")
+
+            if vcs_type_unverifiable or proto_unverifiable or frag_key_unverifiable or delimiter_unverifiable:
                 absolute_hits.append(
-                    f"{path}:{arrname}: source element contains a dynamic (command/backtick) substitution "
-                    f"positioned where its unknowable runtime output could complete/hide a flagged marker "
-                    f"(git://, http://, #tag=) across the substitution boundary; cannot be safely verified (raw={w.text!r})"
+                    f"{path}:{arrname}: a dynamic substitution or an unresolved/unmodeled parameter expansion "
+                    f"occupies -- or could hide -- the VCS-type, transport, delimiter, or VCS-fragment-key "
+                    f"position of a source element (the exact positions makepkg's own get_protocol()/"
+                    f"download_git()/extract_git() decompose the entry into); its real runtime value cannot be "
+                    f"safely verified as rule-compliant (raw={w.text!r}, effective={effective!r})"
                 )
                 continue
+
             rules = set()
             matched = set()
-            if "git://" in w.value:
+            proto_text = effective[proto_span[0]:proto_span[1]] if proto_span is not None else None
+            if proto_text == "git":
                 rules.add("SRC_GIT_PROTO")
                 matched.add("git://")
-            if "#tag=" in w.value:
-                rules.add("SRC_MUTABLE_REF")
-                matched.add("#tag=")
-            if "http://" in w.value:
+            elif proto_text == "http":
                 rules.add("SRC_INSECURE_HTTP")
                 matched.add("http://")
+            vcs_type_text = effective[vcs_type_span[0]:vcs_type_span[1]] if vcs_type_span is not None else None
+            if frag_key_span is not None:
+                frag_key_text = effective[frag_key_span[0]:frag_key_span[1]]
+                if vcs_type_text in VCS_FRAGMENT_VOCAB:
+                    immutable_keys, mutable_keys = VCS_FRAGMENT_VOCAB[vcs_type_text]
+                    if frag_key_text in mutable_keys:
+                        rules.add("SRC_MUTABLE_REF")
+                        matched.add(f"#{frag_key_text}=")
+                    elif frag_key_text not in immutable_keys:
+                        absolute_hits.append(
+                            f"{path}:{arrname}: source element's {vcs_type_text} VCS fragment key {frag_key_text!r} "
+                            f"is not one makepkg's extract_{vcs_type_text}() recognizes; an unrecognized key aborts "
+                            f"the real build there, so it can neither be treated as compliant nor silently ignored "
+                            f"(raw={w.text!r})"
+                        )
+                        continue
+                elif vcs_type_text not in NON_VCS_SCHEMES:
+                    absolute_hits.append(
+                        f"{path}:{arrname}: source element has a VCS fragment (#{frag_key_text}=...) but its VCS "
+                        f"type {vcs_type_text!r} is not one this analyzer recognizes (git/fossil/hg/svn/bzr) or a "
+                        f"known non-VCS scheme with inert fragments (http/https/ftp); whether the fragment key is "
+                        f"a legitimate/immutable reference cannot be safely verified (raw={w.text!r})"
+                    )
+                    continue
             if rules:
                 key = (arrname, w.text)
                 findings.setdefault(key, set()).update(rules)
                 matched_text.setdefault(key, set()).update(matched)
 
     if pkgver_word is not None:
-        if is_toolchain_path(path) and TOOLCHAIN_DEV_VER_RE.match(pkgver_word.value):
+        pkgver_effective, _pkgver_unresolved = resolve_effective_value(pkgver_word.value, resolved_vars)
+        if is_toolchain_path(path) and TOOLCHAIN_DEV_VER_RE.match(pkgver_effective):
             key = ("pkgver", pkgver_word.text)
             findings.setdefault(key, set()).add("TOOLCHAIN_DEV_VER")
-            matched_text.setdefault(key, set()).add(pkgver_word.value)
+            matched_text.setdefault(key, set()).add(pkgver_effective)
 
     out = []
     for (fld, locator), rules in findings.items():
@@ -927,12 +1495,16 @@ def derive_canonical_matched(rule_ids: tuple, locator: str, rules: dict[str, "Ru
     """Authoritatively re-derives the expected `matched` ledger value from a
     row's rule_id set and its (raw, verbatim) locator -- this is what makes
     `matched` a proof-bearing, validated column rather than free text: a
-    forged value that doesn't equal this is SCHEMA_INVALID. For SRC_* rules
-    this is each rule's fixed `matched_marker` (rules.toml); for
-    TOOLCHAIN_DEV_VER it is the locator's own re-derived semantic value
+    forged value that doesn't equal this is SCHEMA_INVALID. For
+    TOOLCHAIN_DEV_VER this is the locator's own re-derived semantic value
     (there is no fixed marker -- the whole point is the actual pinned
-    version string). Returns None if any rule_id lacks the information
-    needed to derive a canonical value (caller must fail closed).
+    version string). For SRC_MUTABLE_REF this is `#<key>=` where `<key>`
+    is the locator's OWN re-derived VCS fragment key (`tag` or `branch` --
+    there is no single fixed marker any more now the rule covers the full
+    makepkg-recognized mutable vocabulary, not only `#tag=`). For the
+    other SRC_* rules this is each rule's fixed `matched_marker`
+    (rules.toml). Returns None if any rule_id lacks the information needed
+    to derive a canonical value (caller must fail closed).
     """
     tokens = set()
     for rid in rule_ids:
@@ -944,6 +1516,24 @@ def derive_canonical_matched(rule_ids: tuple, locator: str, rules: dict[str, "Ru
             if not words:
                 return None
             tokens.add(words[0].value)
+        elif rid == "SRC_MUTABLE_REF":
+            try:
+                words, _ = _tokenize_words(locator, 0, len(locator), stop_at_paren=False)
+            except ParseError:
+                return None
+            if not words:
+                return None
+            value = words[0].value
+            vcs_type_span = _extract_vcs_type_span(value)
+            frag_key_span = _extract_fragment_key_span(value)
+            if vcs_type_span is None or frag_key_span is None:
+                return None
+            vcs_type_text = value[vcs_type_span[0]:vcs_type_span[1]]
+            frag_key_text = value[frag_key_span[0]:frag_key_span[1]]
+            vocab = VCS_FRAGMENT_VOCAB.get(vcs_type_text)
+            if vocab is None or frag_key_text not in vocab[1]:
+                return None
+            tokens.add(f"#{frag_key_text}=")
         else:
             rule = rules.get(rid)
             marker = rule.matched_marker if rule else None
@@ -1327,32 +1917,134 @@ def run(cone_path: Path = CONE_FILE, rules_path: Path = RULES_FILE, ledger_path:
     return ok, problems
 
 
+class BaseRefResolutionError(Exception):
+    """Raised when an explicitly-supplied --base-ref cannot be safely
+    resolved, for any reason OTHER than the one legitimate case: the ref
+    itself is a valid, real commit, but the target file simply did not
+    exist yet at that commit (first-run/bootstrap). This must NEVER be
+    silently swallowed into "no base available" -- doing so would make the
+    entire cross-commit monotonicity mechanism (rule promotion, cone
+    shrink/substitution rejection) bypassable by the trivial path of simply
+    not supplying a working --base-ref. Once --base-ref is given at all,
+    resolution failure is a hard CLI error (see `main`), never a silent
+    downgrade to same-commit-only checking.
+    """
+
+
+def derive_github_actions_base_ref(env: dict | None = None) -> str | None:
+    """Returns the TRUSTED base commit SHA when running inside a GitHub
+    Actions job, derived ENTIRELY from `GITHUB_EVENT_PATH` -- a JSON file
+    GitHub's own servers write to disk before the job starts, populated
+    from the event that triggered the run. This is deliberately NOT the
+    same trust source as a `--base-ref` string a workflow YAML computes
+    and passes on the command line: on a `pull_request` (non-`_target`)
+    trigger, the workflow FILE that would compute and pass that string is
+    itself part of the diff under review, so a pull request could rewrite
+    it to supply any resolvable-but-wrong commit (an old tag, an unrelated
+    branch, the repository's initial commit) and reach the "base lacks the
+    ledger/cone yet" first-run carve-out on a base that predates the
+    ledger, skipping the cross-commit monotonicity check entirely. The
+    event JSON, by contrast, is written by the GitHub Actions runner
+    BEFORE any repository code (including this workflow's own YAML) is
+    read or executed, so nothing in the pull request's diff -- including
+    the workflow file itself -- can influence its content.
+
+    Returns None (not running in GitHub Actions, or the event doesn't
+    carry a base commit at all -- e.g. a `workflow_dispatch` run) so the
+    caller can fall back to ordinary local/manual `--base-ref` handling;
+    returns the SHA string on success. Never returns a "maybe" value: any
+    GitHub-Actions-environment condition that looks like it OUGHT to carry
+    a base (a `pull_request`/`push` event whose JSON cannot be read or
+    parsed, or whose expected field is absent/malformed) raises
+    BaseRefResolutionError -- a corrupt or unreadable event file is exactly
+    the kind of ambiguity this analyzer fails closed on everywhere else,
+    never silently treated the same as "no base to check at all".
+    """
+    env = env if env is not None else os.environ
+    if env.get("GITHUB_ACTIONS") != "true":
+        return None
+    event_path = env.get("GITHUB_EVENT_PATH")
+    event_name = env.get("GITHUB_EVENT_NAME", "")
+    if not event_path:
+        return None
+    try:
+        with open(event_path, "r", encoding="utf-8") as f:
+            event = json.load(f)
+    except (OSError, ValueError) as e:
+        raise BaseRefResolutionError(f"GITHUB_EVENT_PATH={event_path!r} could not be read/parsed as JSON: {e}") from e
+    if event_name in ("pull_request", "pull_request_target"):
+        try:
+            sha = event["pull_request"]["base"]["sha"]
+        except (KeyError, TypeError) as e:
+            raise BaseRefResolutionError(
+                f"GitHub Actions event {event_name!r} JSON is missing pull_request.base.sha"
+            ) from e
+        if not isinstance(sha, str) or not sha:
+            raise BaseRefResolutionError(f"GitHub Actions event {event_name!r} pull_request.base.sha is not a non-empty string")
+        return sha
+    if event_name == "push":
+        sha = event.get("before")
+        if not isinstance(sha, str) or not sha or set(sha) == {"0"}:
+            # A `before` of all zeros is GitHub's sentinel for "no prior
+            # commit" (e.g. a brand-new branch) -- legitimately no base to
+            # compare against, NOT a malformed event.
+            return None
+        return sha
+    # Any other trigger (workflow_dispatch, schedule, ...) legitimately
+    # carries no PR/push base at all.
+    return None
+
+
+def _git_ref_is_valid_commit(base_ref: str, repo_root: Path) -> bool:
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", f"{base_ref}^{{commit}}"],
+            cwd=repo_root, capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        raise BaseRefResolutionError(f"could not invoke git to verify base-ref {base_ref!r}: {e}") from e
+    return result.returncode == 0
+
+
 def _resolve_default_base_file(target_path: Path, base_ref: str | None, repo_root: Path, tmp_prefix: str, tmp_suffix: str) -> Path | None:
     """Shared helper: materialize `target_path` as it existed at `base_ref`
-    (typically the PR's merge-base / the default branch) into a temp file,
-    using local `git show` only (no network, no writes to the repository).
-    Returns None if unavailable for any reason (not a git repo, ref doesn't
-    exist, the file didn't exist at that ref yet, git not installed) --
-    callers must treat that as "no base file available", not as an error.
-    Callers are responsible for deleting the returned temp file.
+    (a trusted, GitHub-supplied commit -- see the workflow) into a temp
+    file, using local `git show` only (no network, no writes to the
+    repository). Returns None ONLY for the single legitimate case: base_ref
+    is a real, resolvable commit but the target file did not exist there
+    yet (this commit/PR is the one introducing it). Every OTHER failure
+    mode -- base_ref missing/empty, base_ref not a real commit, git itself
+    unavailable, or any other `git show` error -- raises
+    BaseRefResolutionError, which callers must treat as fatal, not as "no
+    base". Callers are responsible for deleting the returned temp file.
     """
     import subprocess
     import tempfile
     if not base_ref:
-        return None
+        raise BaseRefResolutionError("--base-ref was not provided (empty/missing) -- refusing to silently skip the cross-commit check")
+    if not _git_ref_is_valid_commit(base_ref, repo_root):
+        raise BaseRefResolutionError(f"--base-ref {base_ref!r} does not resolve to a real commit in this repository")
     try:
         rel = target_path.resolve().relative_to(repo_root.resolve()).as_posix()
-    except ValueError:
-        return None
+    except ValueError as e:
+        raise BaseRefResolutionError(f"target path {target_path} is not inside repo_root {repo_root}") from e
     try:
         result = subprocess.run(
             ["git", "show", f"{base_ref}:{rel}"],
             cwd=repo_root, capture_output=True, text=True, timeout=30,
         )
-    except (OSError, subprocess.SubprocessError):
-        return None
+    except (OSError, subprocess.SubprocessError) as e:
+        raise BaseRefResolutionError(f"git show failed for {base_ref}:{rel}: {e}") from e
     if result.returncode != 0:
-        return None
+        # Distinguish "the path did not exist at this (already-verified-
+        # valid) commit" -- the one legitimate first-run/bootstrap case --
+        # from any OTHER git-show failure, which must hard-fail. Git's
+        # stderr wording for a missing path is stable and specific.
+        stderr = result.stderr or ""
+        if "does not exist in" in stderr or "exists on disk, but not in" in stderr:
+            return None
+        raise BaseRefResolutionError(f"git show {base_ref}:{rel} failed unexpectedly: {stderr.strip()}")
     fd, tmp_path = tempfile.mkstemp(prefix=tmp_prefix, suffix=tmp_suffix)
     with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
         f.write(result.stdout)
@@ -1383,21 +2075,51 @@ def main(argv=None) -> int:
     parser.add_argument("--today", type=str, default=None, help="Override today's date (YYYY-MM-DD), for tests only.")
     parser.add_argument("--base-ledger", type=Path, default=None, help="Path to the ledger file as it existed at the PR's base/merge-base commit (used only to detect newly-promoted rules). Omit to auto-resolve via --base-ref.")
     parser.add_argument("--base-cone", type=Path, default=None, help="Path to the cone file as it existed at the PR's base/merge-base commit (used only for the cone-monotonicity check). Omit to auto-resolve via --base-ref.")
-    parser.add_argument("--base-ref", type=str, default=None, help="A local git ref (e.g. origin/master) to auto-resolve --base-ledger/--base-cone from via 'git show'. Ignored for either flag explicitly given. No network access is performed.")
+    parser.add_argument("--base-ref", type=str, default=None,
+                         help="A trusted, GitHub-supplied commit (e.g. the pull_request base SHA) to auto-resolve --base-ledger/--base-cone from via 'git show'. "
+                              "Once given, resolution failure is a HARD ERROR (exit 1), never a silent skip of the cross-commit check -- see BaseRefResolutionError. "
+                              "Omit entirely (together with --base-ledger/--base-cone) only for ad hoc local runs that intentionally forgo the cross-commit check; "
+                              "the shipped CI workflow does not pass this flag at all -- see derive_github_actions_base_ref, which supplies the trusted value "
+                              "automatically from GITHUB_EVENT_PATH whenever running in GitHub Actions, precisely so that no workflow YAML (itself part of the "
+                              "diff under review on a `pull_request` trigger) ever gets to choose the base. If BOTH this flag and a GitHub-Actions-derived base "
+                              "are present, they must match exactly, or this is a HARD ERROR -- never a silent preference for one over the other. No network "
+                              "access is performed.")
     args = parser.parse_args(argv)
+
+    try:
+        github_actions_base_ref = derive_github_actions_base_ref()
+    except BaseRefResolutionError as e:
+        print(f"FAIL: arm64-admission-guard: cannot derive the trusted GitHub Actions base ref: {e}", file=sys.stderr)
+        print("  - refusing to silently proceed without the cross-commit monotonicity check", file=sys.stderr)
+        return 1
+
+    if github_actions_base_ref is not None:
+        if args.base_ref is not None and args.base_ref != github_actions_base_ref:
+            print(
+                f"FAIL: arm64-admission-guard: --base-ref {args.base_ref!r} does not match the trusted "
+                f"GitHub-Actions-event-derived base {github_actions_base_ref!r}", file=sys.stderr,
+            )
+            print("  - a workflow-supplied base ref may never override the GitHub-event-derived one", file=sys.stderr)
+            return 1
+        args.base_ref = github_actions_base_ref
 
     resolved_temp_base_ledger = None
     resolved_temp_base_cone = None
     try:
-        base_ledger_path = args.base_ledger
-        if base_ledger_path is None and args.base_ref:
-            base_ledger_path = resolve_default_base_ledger(args.ledger, args.base_ref, repo_root=args.repo_root)
-            resolved_temp_base_ledger = base_ledger_path
+        try:
+            base_ledger_path = args.base_ledger
+            if base_ledger_path is None and args.base_ref is not None:
+                base_ledger_path = resolve_default_base_ledger(args.ledger, args.base_ref, repo_root=args.repo_root)
+                resolved_temp_base_ledger = base_ledger_path
 
-        base_cone_path = args.base_cone
-        if base_cone_path is None and args.base_ref:
-            base_cone_path = resolve_default_base_cone(args.cone, args.base_ref, repo_root=args.repo_root)
-            resolved_temp_base_cone = base_cone_path
+            base_cone_path = args.base_cone
+            if base_cone_path is None and args.base_ref is not None:
+                base_cone_path = resolve_default_base_cone(args.cone, args.base_ref, repo_root=args.repo_root)
+                resolved_temp_base_cone = base_cone_path
+        except BaseRefResolutionError as e:
+            print(f"FAIL: arm64-admission-guard: cannot resolve --base-ref {args.base_ref!r}: {e}", file=sys.stderr)
+            print("  - refusing to silently proceed without the cross-commit monotonicity check", file=sys.stderr)
+            return 1
 
         today = datetime.strptime(args.today, "%Y-%m-%d").date() if args.today else None
         cone_digest_path = None if args.no_cone_digest else args.cone_digest
