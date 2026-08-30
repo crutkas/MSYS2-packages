@@ -41,6 +41,32 @@ def sha256_of(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+_GITHUB_ACTIONS_ENV_KEYS = ("GITHUB_ACTIONS", "GITHUB_EVENT_PATH", "GITHUB_EVENT_NAME")
+
+
+def clean_subprocess_env(overrides: dict | None = None) -> dict:
+    """Returns a copy of the current environment with the
+    GITHUB_ACTIONS-family variables removed, so a guard CLI subprocess
+    invoked by this test suite behaves as a genuine LOCAL run regardless
+    of whether the suite itself happens to be executing inside a real
+    GitHub Actions job (as it does in the shipped CI workflow) -- without
+    this, every test that spawns its own throwaway git fixture and passes
+    an unrelated --base-ref would spuriously collide with the REAL job's
+    GITHUB_EVENT_PATH-derived base once derive_github_actions_base_ref()
+    exists, since subprocess.run() inherits the parent environment by
+    default. Pass `overrides` to instead deliberately SET a controlled
+    GitHub-Actions-style environment for tests that exercise that path on
+    purpose (see TestCLIBaseRefEndToEnd._invoke_as_github_actions).
+    """
+    env = dict(os.environ)
+    if overrides is None:
+        for key in _GITHUB_ACTIONS_ENV_KEYS:
+            env.pop(key, None)
+    else:
+        env.update(overrides)
+    return env
+
+
 def pkgbuild_git_dual(pkgver="1.0.0") -> str:
     return (
         "pkgname=pkg-a\n"
@@ -1582,7 +1608,7 @@ class TestCLIExitCodes(BaseFixtureTest):
                  "--today", today]
         if extra_args:
             args.extend(extra_args)
-        return subprocess.run(args, capture_output=True, text=True)
+        return subprocess.run(args, capture_output=True, text=True, env=clean_subprocess_env())
 
     def test_pass_exits_zero(self):
         self.baseline()
@@ -1647,13 +1673,7 @@ class TestCLIBaseRefEndToEnd(unittest.TestCase):
         # regardless of the outer environment. Tests that specifically
         # exercise the GitHub-Actions-derived path pass their own
         # controlled `env` (see `_invoke_as_github_actions`).
-        run_env = dict(os.environ)
-        if env is None:
-            for key in ("GITHUB_ACTIONS", "GITHUB_EVENT_PATH", "GITHUB_EVENT_NAME"):
-                run_env.pop(key, None)
-        else:
-            run_env.update(env)
-        return subprocess.run(args, cwd=self.repo_root, capture_output=True, text=True, env=run_env)
+        return subprocess.run(args, cwd=self.repo_root, capture_output=True, text=True, env=clean_subprocess_env(env))
 
     def _invoke_as_github_actions(self, event: dict, event_name: str = "pull_request", base_ref=None, extra_args=None):
         """Writes `event` as a GITHUB_EVENT_PATH-style JSON file and invokes
@@ -1972,7 +1992,7 @@ class TestBaseConeMonotonicity(unittest.TestCase):
                 "--today", "2026-01-01"]
         if base_ref is not None:
             args += ["--base-ref", base_ref]
-        return subprocess.run(args, cwd=self.repo_root, capture_output=True, text=True)
+        return subprocess.run(args, cwd=self.repo_root, capture_output=True, text=True, env=clean_subprocess_env())
 
     def test_base_cone_absent_first_run_does_not_crash_or_disable_check(self):
         # This is the commit that first introduces the cone -- there is
