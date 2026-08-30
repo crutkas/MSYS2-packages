@@ -12,6 +12,12 @@ concurrency:
   group: arm64-admission-${{ github.ref }}
   cancel-in-progress: true
 
+# Least-privilege: this job only ever reads repository content (checkout)
+# and performs a local, read-only `git show` for base-ledger resolution --
+# it never writes to the repository, comments, or any other API surface.
+permissions:
+  contents: read
+
 on:
   push:
   pull_request:

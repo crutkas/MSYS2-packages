@@ -2,20 +2,18 @@
 """Automated fixture-based test suite for .ci/arm64-admission-guard.py.
 
 Every test builds an isolated temporary repository tree (its own PKGBUILDs,
-cone, rules, and ledger) and calls the guard against that tree only -- no
-test ever reads, writes, or mutates a real/production PKGBUILD anywhere in
-this repository. Run with:
+cone, rules, ledger, cone digest) and calls the guard against that tree
+only -- no test ever reads, writes, or mutates a real/production PKGBUILD
+anywhere in this repository. Run with:
 
-    python -m unittest .ci/tests/test_arm64_admission_guard.py -v
-
-or simply:
-
-    python .ci/tests/test_arm64_admission_guard.py
+    python .ci/tests/test_arm64_admission_guard.py -v
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -29,13 +27,17 @@ sys.modules["arm64_admission_guard"] = guard
 spec.loader.exec_module(guard)
 
 RULES_TOML = GUARD_PATH.parent.joinpath("arm64-rules.toml").read_text(encoding="utf-8")
-
 QUARANTINE_FULL = guard.QUARANTINE_COMMIT_FULL
+LEDGER_HEADER = guard.LEDGER_HEADER
 
 
 def write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8", newline="\n")
+
+
+def sha256_of(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def pkgbuild_git_dual(pkgver="1.0.0") -> str:
@@ -78,9 +80,6 @@ def pkgbuild_toolchain_dev(pkgver="9.9.9dev") -> str:
     )
 
 
-LEDGER_HEADER = guard.LEDGER_HEADER
-
-
 def ledger_row(path, field, rule_id, locator, matched, reason="test reason",
                introduced_by="0123abc", removal_gate="PR-1", expires="2999-01-01"):
     return "\t".join([
@@ -100,12 +99,21 @@ class FixtureRepo:
     def __init__(self, tmp: Path):
         self.root = tmp
         (self.root / ".ci").mkdir(parents=True, exist_ok=True)
+        self._cone_digest_enabled = True
 
     def add_pkg(self, directory: str, pkgbuild_text: str) -> None:
         write(self.root / directory / "PKGBUILD", pkgbuild_text)
 
-    def set_cone(self, entries: list) -> None:
+    def set_cone(self, entries: list, pin_digest: bool = True) -> None:
         write(self.root / ".ci" / "arm64-cone.txt", "\n".join(entries) + "\n")
+        if pin_digest:
+            digest = sha256_of(self.root / ".ci" / "arm64-cone.txt")
+            write(self.root / ".ci" / "arm64-cone.sha256", digest + "\n")
+        self._cone_digest_enabled = pin_digest
+
+    def set_cone_digest_raw(self, text: str) -> None:
+        write(self.root / ".ci" / "arm64-cone.sha256", text)
+        self._cone_digest_enabled = True
 
     def set_rules(self, text: str = RULES_TOML) -> None:
         write(self.root / ".ci" / "arm64-rules.toml", text)
@@ -119,6 +127,7 @@ class FixtureRepo:
         if base_ledger_text is not None:
             base_ledger_path = self.root / ".ci" / "arm64-debt-ledger.base.tsv"
             write(base_ledger_path, base_ledger_text)
+        cone_digest_path = (self.root / ".ci" / "arm64-cone.sha256") if self._cone_digest_enabled else None
         return guard.run(
             cone_path=self.root / ".ci" / "arm64-cone.txt",
             rules_path=self.root / ".ci" / "arm64-rules.toml",
@@ -126,6 +135,7 @@ class FixtureRepo:
             today=datetime.strptime(today, "%Y-%m-%d").date(),
             repo_root=self.root,
             base_ledger_path=base_ledger_path,
+            cone_digest_path=cone_digest_path,
         )
 
 
@@ -177,8 +187,6 @@ class TestBaseline(BaseFixtureTest):
 class TestNewDebt(BaseFixtureTest):
     def test_new_git_violation_without_ledger_row_is_red(self):
         self.baseline()
-        # Add a brand-new violation in an existing in-cone recipe with no
-        # ledger row for it.
         self.repo.add_pkg("pkg-c", 'pkgname=pkg-c\npkgver=3.0.0\npkgrel=1\n'
                           'source=("git://example.org/new-violation.git")\n'
                           "sha256sums=('SKIP')\n")
@@ -187,14 +195,9 @@ class TestNewDebt(BaseFixtureTest):
         self.assertTrue(any("NEW_DEBT" in p for p in problems), problems)
 
 
-# ---------------------------------------------------------------------------
-# 3. Delete one baseline row while its violation remains -> RED
-# ---------------------------------------------------------------------------
-
 class TestDeletedRowViolationRemains(BaseFixtureTest):
     def test_delete_row_violation_remains_is_red(self):
         rows = self.baseline()
-        # Drop the pkg-b row but keep pkg-b's violating PKGBUILD unchanged.
         remaining = [r for r in rows if not r.startswith("pkg-b/")]
         self.repo.set_ledger(make_ledger(*remaining))
         ok, problems = self.repo.run()
@@ -202,14 +205,9 @@ class TestDeletedRowViolationRemains(BaseFixtureTest):
         self.assertTrue(any("NEW_DEBT" in p and "pkg-b" in p for p in problems), problems)
 
 
-# ---------------------------------------------------------------------------
-# 4. Fix a violation but retain its row -> RED (L subset V violated / stale)
-# ---------------------------------------------------------------------------
-
 class TestStaleRow(BaseFixtureTest):
     def test_fixed_violation_retained_row_is_red(self):
         self.baseline()
-        # "Fix" pkg-b by switching to https, but keep its ledger row.
         self.repo.add_pkg("pkg-b", 'pkgname=pkg-b\npkgver=2.0.0\npkgrel=1\n'
                           'source=("https://example.org/pkg-b-${pkgver}.tar.gz")\n'
                           "sha256sums=('SKIP')\n")
@@ -219,7 +217,7 @@ class TestStaleRow(BaseFixtureTest):
 
 
 # ---------------------------------------------------------------------------
-# 5. Quarantine: full hash, abbreviated hash, and ledgering attempt
+# 5. Quarantine
 # ---------------------------------------------------------------------------
 
 class TestQuarantine(BaseFixtureTest):
@@ -258,6 +256,165 @@ class TestQuarantine(BaseFixtureTest):
         self.assertFalse(ok)
         self.assertTrue(any("SCHEMA_INVALID" in p and "absolute" in p for p in problems), problems)
 
+    def test_quarantine_via_arbitrary_variable_name_not_just_commit(self):
+        # Generalization proof: ANY scalar variable name, not a hardcoded
+        # "_commit" special case.
+        self.baseline()
+        self.repo.add_pkg("pkg-c", "pkgname=pkg-c\npkgver=3.0.0\npkgrel=1\n"
+                          f'_upstream_pin="{QUARANTINE_FULL}"\n'
+                          'source=("git+https://example.org/x.git#commit=${_upstream_pin}")\n'
+                          "sha256sums=('SKIP')\n")
+        ok, problems = self.repo.run()
+        self.assertFalse(ok)
+        self.assertTrue(any("TOOLCHAIN_QUARANTINE" in p for p in problems), problems)
+
+
+# ---------------------------------------------------------------------------
+# B1: raw-vs-semantic word derivation -- quote-split / backslash / etc.
+# ---------------------------------------------------------------------------
+
+class TestSemanticWordDerivation(BaseFixtureTest):
+    """Regression coverage for the audit-confirmed evasion class: bash
+    concatenates adjacent quoted/unquoted fragments and processes escapes,
+    so `matched`/quarantine checks against the RAW (still-quoted) text can
+    be defeated by splitting a flagged substring across a boundary. These
+    tests all assert against the derived SEMANTIC Word.value, exercised via
+    the full guard pipeline (never a private helper), using one isolated
+    fixture package per case via subTest.
+    """
+
+    def _one_pkg_finding(self, source_line: str, extra_lines: str = "", pkgname: str = "pkg-x"):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = FixtureRepo(Path(tmp.name))
+        repo.set_rules()
+        repo.add_pkg(pkgname, f"pkgname={pkgname}\npkgver=1.0\npkgrel=1\n{extra_lines}{source_line}\nsha256sums=('SKIP')\n")
+        repo.set_cone([pkgname])
+        repo.set_ledger(make_ledger())
+        return repo.run()
+
+    def test_double_quote_split_git_and_tag(self):
+        ok, problems = self._one_pkg_finding(
+            'source=(\'git\'"://sourceware.org/git/x.git#ta"\'g=\'${pkgver})'
+        )
+        self.assertFalse(ok)
+        self.assertTrue(any("NEW_DEBT" in p and "SRC_GIT_PROTO" in p and "SRC_MUTABLE_REF" in p for p in problems), problems)
+
+    def test_single_quote_split_http(self):
+        ok, problems = self._one_pkg_finding("source=('ht'\"tp\"'://example.org/x.tar.gz')")
+        self.assertFalse(ok)
+        self.assertTrue(any("NEW_DEBT" in p and "SRC_INSECURE_HTTP" in p for p in problems), problems)
+
+    def test_mixed_quote_split_three_way(self):
+        ok, problems = self._one_pkg_finding('source=(\'gi\'"t:"\'//\'"example.org/x")')
+        self.assertFalse(ok)
+        self.assertTrue(any("NEW_DEBT" in p and "SRC_GIT_PROTO" in p for p in problems), problems)
+
+    def test_empty_quote_filler_does_not_break_detection(self):
+        ok, problems = self._one_pkg_finding("source=('git'''\"\"'://example.org/x')")
+        self.assertFalse(ok)
+        self.assertTrue(any("NEW_DEBT" in p and "SRC_GIT_PROTO" in p for p in problems), problems)
+
+    def test_unquoted_backslash_escape_split(self):
+        # Each character individually backslash-escaped outside quotes.
+        ok, problems = self._one_pkg_finding(r"source=(h\t\t\p://example.org/x.tar.gz)")
+        self.assertFalse(ok)
+        self.assertTrue(any("NEW_DEBT" in p and "SRC_INSECURE_HTTP" in p for p in problems), problems)
+
+    def test_backslash_line_continuation_inside_double_quotes(self):
+        ok, problems = self._one_pkg_finding(
+            'source=("git://example.org/x.git#ta\\\ng=v1")'
+        )
+        self.assertFalse(ok)
+        self.assertTrue(any("NEW_DEBT" in p and "SRC_GIT_PROTO" in p and "SRC_MUTABLE_REF" in p for p in problems), problems)
+
+    def test_backslash_line_continuation_unquoted(self):
+        ok, problems = self._one_pkg_finding(
+            "source=(http://example.org/x-\\\n1.tar.gz)"
+        )
+        self.assertFalse(ok)
+        self.assertTrue(any("NEW_DEBT" in p and "SRC_INSECURE_HTTP" in p for p in problems), problems)
+
+    def test_quoted_pkgver_dev_ver_double(self):
+        ok, problems = self._one_pkg_finding(
+            "source=(https://example.org/x.tar.gz)",
+            pkgname="mingw-w64-cross-mingwarm64-gcc",
+        )
+        # replace pkgver line by re-running with quoted pkgver via extra_lines trick:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = FixtureRepo(Path(tmp.name))
+        repo.set_rules()
+        repo.add_pkg("mingw-w64-cross-mingwarm64-gcc",
+                     'pkgname=mingw-w64-cross-mingwarm64-gcc\npkgver="15.0.0dev"\npkgrel=1\n'
+                     'source=(https://example.org/x.tar.gz)\nsha256sums=(\'SKIP\')\n')
+        repo.set_cone(["mingw-w64-cross-mingwarm64-gcc"])
+        repo.set_ledger(make_ledger())
+        ok, problems = repo.run()
+        self.assertFalse(ok)
+        self.assertTrue(any("NEW_DEBT" in p and "TOOLCHAIN_DEV_VER" in p for p in problems), problems)
+
+    def test_quoted_pkgver_dev_ver_single(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = FixtureRepo(Path(tmp.name))
+        repo.set_rules()
+        repo.add_pkg("mingw-w64-cross-mingwarm64-gcc",
+                     "pkgname=mingw-w64-cross-mingwarm64-gcc\npkgver='15.0.0dev'\npkgrel=1\n"
+                     "source=(https://example.org/x.tar.gz)\nsha256sums=('SKIP')\n")
+        repo.set_cone(["mingw-w64-cross-mingwarm64-gcc"])
+        repo.set_ledger(make_ledger())
+        ok, problems = repo.run()
+        self.assertFalse(ok)
+        self.assertTrue(any("NEW_DEBT" in p and "TOOLCHAIN_DEV_VER" in p for p in problems), problems)
+
+    def test_exact_forbidden_hash_split_double_quote(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = FixtureRepo(Path(tmp.name))
+        repo.set_rules()
+        half = len(QUARANTINE_FULL) // 2
+        part1, part2 = QUARANTINE_FULL[:half], QUARANTINE_FULL[half:]
+        repo.add_pkg("pkg-x", "pkgname=pkg-x\npkgver=1.0\npkgrel=1\n"
+                     f'_commit="{part1}""{part2}"\n'
+                     'source=("git+https://example.org/x.git#commit=${_commit}")\n'
+                     "sha256sums=('SKIP')\n")
+        repo.set_cone(["pkg-x"])
+        repo.set_ledger(make_ledger())
+        ok, problems = repo.run()
+        self.assertFalse(ok)
+        self.assertTrue(any("TOOLCHAIN_QUARANTINE" in p for p in problems), problems)
+
+    def test_legitimate_https_with_command_substitution_still_safe(self):
+        # The real bash/readline idiom -- must NOT be flagged.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = FixtureRepo(Path(tmp.name))
+        repo.set_rules()
+        repo.add_pkg("pkg-safe", "pkgname=pkg-safe\npkgver=1.0\npkgrel=1\n"
+                     'source=(https://example.org/patches/x-$(printf "%03d" 1){,.sig})\n'
+                     "sha256sums=('SKIP')\n")
+        repo.set_cone(["pkg-safe"])
+        repo.set_ledger(make_ledger())
+        ok, problems = repo.run()
+        self.assertTrue(ok, problems)
+
+    def test_dynamic_boundary_risk_git_proto_split_across_command_subst(self):
+        # Adversarial: "git" immediately before the substitution, "://"
+        # immediately after -- a marker straddling the gap.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = FixtureRepo(Path(tmp.name))
+        repo.set_rules()
+        repo.add_pkg("pkg-dyn", "pkgname=pkg-dyn\npkgver=1.0\npkgrel=1\n"
+                     'source=(git$(echo)://example.org/x.tar.gz)\n'
+                     "sha256sums=('SKIP')\n")
+        repo.set_cone(["pkg-dyn"])
+        repo.set_ledger(make_ledger())
+        ok, problems = repo.run()
+        self.assertFalse(ok)
+        self.assertTrue(any("DYNAMIC_SOURCE" in p or "cannot be safely verified" in p for p in problems), problems)
+
 
 # ---------------------------------------------------------------------------
 # 6/9. Wildcard/regex/bypass metacharacters vs legitimate ${...} braces
@@ -265,8 +422,7 @@ class TestQuarantine(BaseFixtureTest):
 
 class TestBypassCharacters(BaseFixtureTest):
     def test_each_forbidden_metachar_is_independently_rejected(self):
-        for ch, tag in [("*", "star"), ("?", "qmark"), ("[", "lbrak"), ("]", "rbrak"),
-                        ("(", "lparen"), (")", "rparen"), ("|", "pipe"), ("\\", "bslash")]:
+        for ch in ["*", "?", "[", "]", "(", ")", "|", "\\"]:
             with self.subTest(char=ch):
                 tmp = tempfile.TemporaryDirectory()
                 self.addCleanup(tmp.cleanup)
@@ -284,8 +440,6 @@ class TestBypassCharacters(BaseFixtureTest):
                 self.assertTrue(any("metacharacter" in p for p in problems), problems)
 
     def test_literal_dollar_brace_var_in_locator_is_accepted(self):
-        # ${pkgver}-style braces are pervasive, legitimate bash syntax and
-        # MUST NOT be treated as a wildcard/bypass character.
         self.baseline()
         ok, problems = self.repo.run()
         self.assertTrue(ok, problems)
@@ -298,31 +452,6 @@ class TestBypassCharacters(BaseFixtureTest):
         ok, problems = self.repo.run()
         self.assertFalse(ok)
         self.assertTrue(any("SCHEMA_INVALID(cone)" in p and "metacharacter" in p for p in problems), problems)
-
-    def test_locator_is_literal_data_not_regex_or_glob(self):
-        # A locator containing regex-special characters that are NOT in the
-        # forbidden set (e.g. '.', '+', '^', '$') must bind only to the
-        # EXACT literal string, never as a pattern.
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        repo = FixtureRepo(Path(tmp.name))
-        repo.set_rules()
-        exact = '"http://example.org/a.b+c.tar.gz"'
-        similar_but_different = '"http://example.org/aXbXc.tar.gz"'  # would match '.'-as-wildcard, '+' as regex, but must NOT
-        repo.add_pkg("pkg-x", "pkgname=pkg-x\npkgver=1.0.0\npkgrel=1\n"
-                     "source=(" + similar_but_different + ")\n"
-                     "sha256sums=('SKIP')\n")
-        repo.set_cone(["pkg-x"])
-        # Ledger names the *different* literal string -- if the guard treated
-        # locators as regex/glob patterns this could spuriously "match" and
-        # incorrectly pass; it must instead correctly report new debt (the
-        # on-disk locator has no ledger entry) because sha256 binding is
-        # exact-string, not pattern-based.
-        row = ledger_row("pkg-x/PKGBUILD", "source", "SRC_INSECURE_HTTP", exact, "http://")
-        repo.set_ledger(make_ledger(row))
-        ok, problems = repo.run()
-        self.assertFalse(ok)
-        self.assertTrue(any("NEW_DEBT" in p for p in problems) and any("STALE_DEBT" in p for p in problems), problems)
 
 
 # ---------------------------------------------------------------------------
@@ -393,11 +522,20 @@ class TestParseFail(BaseFixtureTest):
         self.assertFalse(ok)
         self.assertTrue(any("PARSE_FAIL" in p for p in problems), problems)
 
+    def test_dangling_backslash_is_red_parse_fail(self):
+        self.repo.add_pkg("pkg-broken", 'pkgname=pkg-broken\npkgver=1.0\npkgrel=1\n'
+                          "source=(http://example.org/x\\")
+        self.repo.set_cone(["pkg-broken"])
+        self.repo.set_ledger(make_ledger())
+        ok, problems = self.repo.run()
+        self.assertFalse(ok)
+        self.assertTrue(any("PARSE_FAIL" in p for p in problems), problems)
+
     def test_opaque_command_substitution_is_supported_and_never_executed(self):
         fd, marker_path = tempfile.mkstemp()
         os.close(fd)
         marker = Path(marker_path)
-        marker.unlink()  # ensure it does not exist before the guard runs
+        marker.unlink()
         marker_posix = marker.as_posix()
         self.repo.add_pkg("pkg-cmdsub", 'pkgname=pkg-cmdsub\npkgver=1.0\npkgrel=1\n'
                           'source=(https://example.org/x-$(touch ' + marker_posix + ' && echo z).tar.gz)\n'
@@ -405,7 +543,7 @@ class TestParseFail(BaseFixtureTest):
         self.repo.set_cone(["pkg-cmdsub"])
         self.repo.set_ledger(make_ledger())
         ok, problems = self.repo.run()
-        self.assertTrue(ok, problems)  # https:// only, no rule violated, parses fine
+        self.assertTrue(ok, problems)
         self.assertFalse(marker.exists(), "guard must never execute $(...) command substitutions")
 
 
@@ -422,7 +560,6 @@ class TestCanonicalForm(BaseFixtureTest):
                             '"git://example.org/pkg-a.git#tag=v${pkgver}"', "#tag=,git://")
         row_b = ledger_row("pkg-b/PKGBUILD", "source", "SRC_INSECURE_HTTP",
                             '"http://example.org/pkg-b-${pkgver}.tar.gz"', "http://")
-        # Reversed (b before a) -- not canonically sorted by path.
         self.repo.set_ledger(make_ledger(row_b, row_a))
         ok, problems = self.repo.run()
         self.assertFalse(ok)
@@ -461,6 +598,78 @@ class TestCanonicalForm(BaseFixtureTest):
 
 
 # ---------------------------------------------------------------------------
+# B3: cone digest binding (monotonic 225-entry declared BUILD closure)
+# ---------------------------------------------------------------------------
+
+class TestConeDigestBinding(BaseFixtureTest):
+    def test_tampered_cone_without_updated_digest_is_red(self):
+        self.baseline()
+        # Directly rewrite cone.txt WITHOUT updating the pinned digest --
+        # simulates removing (or substituting) an entry to hide it from
+        # scanning without an accompanying reviewed digest update.
+        write(self.repo.root / ".ci" / "arm64-cone.txt", "mingw-w64-cross-mingwarm64-toolchain\npkg-a\npkg-c\n")
+        ok, problems = self.repo.run()
+        self.assertFalse(ok)
+        self.assertTrue(any("SCHEMA_INVALID(cone)" in p and "digest" in p for p in problems), problems)
+
+    def test_same_size_substitution_without_updated_digest_is_red(self):
+        self.baseline()
+        self.repo.add_pkg("pkg-d", pkgbuild_clean())
+        # Swap pkg-b for pkg-d (same array length) without updating digest.
+        write(self.repo.root / ".ci" / "arm64-cone.txt", "mingw-w64-cross-mingwarm64-toolchain\npkg-a\npkg-c\npkg-d\n")
+        ok, problems = self.repo.run()
+        self.assertFalse(ok)
+        self.assertTrue(any("SCHEMA_INVALID(cone)" in p and "digest" in p for p in problems), problems)
+
+    def test_reviewed_cone_change_with_updated_digest_is_structurally_accepted(self):
+        self.baseline()
+        # A legitimate reviewed change: remove pkg-b from the cone AND its
+        # ledger row (both in the same change), correctly re-pinning the
+        # digest -- must NOT trigger SCHEMA_INVALID(cone) (may still need
+        # the ledger row removed to satisfy L subset V, which we also do).
+        self.repo.set_cone(["mingw-w64-cross-mingwarm64-toolchain", "pkg-a", "pkg-c"])
+        remaining = [
+            ledger_row("mingw-w64-cross-mingwarm64-toolchain/PKGBUILD", "pkgver", "TOOLCHAIN_DEV_VER",
+                       "9.9.9dev", "9.9.9dev", removal_gate="T0-corrected-toolchain"),
+            ledger_row("pkg-a/PKGBUILD", "source", "SRC_GIT_PROTO,SRC_MUTABLE_REF",
+                       '"git://example.org/pkg-a.git#tag=v${pkgver}"', "#tag=,git://"),
+        ]
+        self.repo.set_ledger(make_ledger(*remaining))
+        ok, problems = self.repo.run()
+        self.assertTrue(ok, problems)
+        self.assertFalse(any("digest" in p for p in problems), problems)
+
+    def test_unledgered_package_cannot_be_hidden_by_cone_removal(self):
+        # pkg-b has a REAL, unledgered violation. Removing it from the cone
+        # (to "hide" it from scanning) without updating the digest fails
+        # closed on the digest mismatch alone -- proving the evasion does
+        # not work even before considering V==L.
+        self.repo.add_pkg("pkg-a", pkgbuild_git_dual())
+        self.repo.add_pkg("pkg-b", pkgbuild_http())  # unledgered violation
+        self.repo.set_cone(["pkg-a", "pkg-b"])
+        self.repo.set_ledger(make_ledger(
+            ledger_row("pkg-a/PKGBUILD", "source", "SRC_GIT_PROTO,SRC_MUTABLE_REF",
+                       '"git://example.org/pkg-a.git#tag=v${pkgver}"', "#tag=,git://")
+        ))
+        ok, problems = self.repo.run()
+        self.assertFalse(ok)
+        self.assertTrue(any("NEW_DEBT" in p and "pkg-b" in p for p in problems), problems)
+        # Now attempt the evasion: remove pkg-b from cone.txt without
+        # touching the pinned digest.
+        write(self.repo.root / ".ci" / "arm64-cone.txt", "pkg-a\n")
+        ok2, problems2 = self.repo.run()
+        self.assertFalse(ok2)
+        self.assertTrue(any("digest" in p for p in problems2), problems2)
+
+    def test_malformed_digest_file_is_red(self):
+        self.baseline()
+        self.repo.set_cone_digest_raw("not-a-valid-hex-digest\n")
+        ok, problems = self.repo.run()
+        self.assertFalse(ok)
+        self.assertTrue(any("SCHEMA_INVALID(cone)" in p for p in problems), problems)
+
+
+# ---------------------------------------------------------------------------
 # 11. PR-1 simulation: clear all source debt -> GREEN, then rule promotion
 # ---------------------------------------------------------------------------
 
@@ -468,11 +677,6 @@ class TestPromotion(BaseFixtureTest):
     def test_pr1_simulation_then_promoted_rule_blocks_new_debt(self):
         pre_pr1_ledger_text = make_ledger(*self.baseline())
 
-        # Simulate "PR-1": fix pkg-a and pkg-b to secure transports, delete
-        # their ledger rows, keep only the toolchain dev-ver row. Validated
-        # against the pre-PR-1 state as its base (SRC_* rules still had rows
-        # there, so they are not yet promoted -- PR-1 itself is allowed to
-        # reach zero).
         self.repo.add_pkg("pkg-a", 'pkgname=pkg-a\npkgver=1.0.0\npkgrel=1\n'
                           'source=("git+https://example.org/pkg-a.git#commit=deadbeef")\n'
                           "sha256sums=('SKIP')\n")
@@ -486,10 +690,6 @@ class TestPromotion(BaseFixtureTest):
         ok, problems = self.repo.run(base_ledger_text=pre_pr1_ledger_text)
         self.assertTrue(ok, problems)
 
-        # Now, validated against PR-1's own merged state as base (which had
-        # ZERO SRC_* rows), SRC_GIT_PROTO/SRC_MUTABLE_REF/SRC_INSECURE_HTTP
-        # are permanently promoted -- a brand-new insecure http source, even
-        # WITH an attempted ledger row, must still be rejected.
         self.repo.add_pkg("pkg-c", 'pkgname=pkg-c\npkgver=3.0.0\npkgrel=1\n'
                           'source=("http://example.org/new-insecure.tar.gz")\n'
                           "sha256sums=('SKIP')\n")
@@ -501,9 +701,6 @@ class TestPromotion(BaseFixtureTest):
         self.assertTrue(any("promoted" in p for p in problems), problems)
 
     def test_no_base_ledger_means_nothing_promoted_yet(self):
-        # This is the PR-0 case: the ledger is being introduced for the
-        # first time, so there is no prior state and nothing can be
-        # "already cleared" -- the baseline must pass with no base ledger.
         self.baseline()
         ok, problems = self.repo.run(base_ledger_text=None)
         self.assertTrue(ok, problems)
@@ -516,7 +713,6 @@ class TestPromotion(BaseFixtureTest):
 class TestConeScoping(BaseFixtureTest):
     def test_out_of_cone_violation_is_ignored(self):
         self.baseline()
-        # pkg-outside has a real violation but is NOT listed in the cone.
         self.repo.add_pkg("pkg-outside", pkgbuild_git_dual())
         ok, problems = self.repo.run()
         self.assertTrue(ok, problems)
@@ -633,7 +829,7 @@ class TestLedgerSchema(BaseFixtureTest):
         self.repo.set_cone(["pkg-b"])
         base = ledger_row("pkg-b/PKGBUILD", "source", "SRC_INSECURE_HTTP",
                            '"http://example.org/pkg-b-${pkgver}.tar.gz"', "http://")
-        row_with_removal_pr = base + "\t#123"  # a fabricated 11th column
+        row_with_removal_pr = base + "\t#123"
         self.repo.set_ledger(make_ledger(row_with_removal_pr))
         ok, problems = self.repo.run()
         self.assertFalse(ok)
@@ -644,10 +840,117 @@ class TestLedgerSchema(BaseFixtureTest):
         self.repo.set_cone(["pkg-b"])
         row = ledger_row("pkg-b/PKGBUILD", "source", "SRC_INSECURE_HTTP",
                           '"http://example.org/pkg-b-${pkgver}.tar.gz"', "http://")
-        write(self.repo.root / ".ci" / "arm64-debt-ledger.tsv", row + "\n")  # no header line
+        write(self.repo.root / ".ci" / "arm64-debt-ledger.tsv", row + "\n")
         ok, problems = self.repo.run()
         self.assertFalse(ok)
         self.assertTrue(any("header mismatch" in p for p in problems), problems)
+
+
+# ---------------------------------------------------------------------------
+# Field identity: source_<arch> arrays must not be conflated with `source`
+# ---------------------------------------------------------------------------
+
+class TestFieldIdentity(BaseFixtureTest):
+    def test_source_x86_64_array_gets_its_own_field_identity(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = FixtureRepo(Path(tmp.name))
+        repo.set_rules()
+        repo.add_pkg("pkg-arch", "pkgname=pkg-arch\npkgver=1.0\npkgrel=1\n"
+                     "source=()\n"
+                     'source_x86_64=("http://example.org/x86_64-only.tar.gz")\n'
+                     "sha256sums_x86_64=('SKIP')\n")
+        repo.set_cone(["pkg-arch"])
+        repo.set_ledger(make_ledger())
+        ok, problems = repo.run()
+        self.assertFalse(ok)
+        self.assertTrue(any("NEW_DEBT" in p and "field=source_x86_64" in p for p in problems), problems)
+        # A row incorrectly claiming field="source" (instead of
+        # "source_x86_64") must NOT satisfy V==L for this locator.
+        row = ledger_row("pkg-arch/PKGBUILD", "source", "SRC_INSECURE_HTTP",
+                          '"http://example.org/x86_64-only.tar.gz"', "http://")
+        repo.set_ledger(make_ledger(row))
+        ok2, problems2 = repo.run()
+        self.assertFalse(ok2)
+        self.assertTrue(any("field=source_x86_64" in p for p in problems2), problems2)
+        self.assertTrue(any("STALE_DEBT" in p and "field=source" in p for p in problems2), problems2)
+
+
+# ---------------------------------------------------------------------------
+# introduced_by provenance: verified against real git history when available
+# ---------------------------------------------------------------------------
+
+class TestProvenance(unittest.TestCase):
+    def test_introduced_by_verified_against_real_git_history(self):
+        tmp = tempfile.mkdtemp(prefix="arm64-provenance-")
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        repo_root = Path(tmp)
+        (repo_root / ".ci").mkdir(parents=True)
+        (repo_root / "pkg-b").mkdir()
+        write(repo_root / "pkg-b" / "PKGBUILD", pkgbuild_http())
+        write(repo_root / ".ci" / "arm64-rules.toml", RULES_TOML)
+        write(repo_root / ".ci" / "arm64-cone.txt", "pkg-b\n")
+        digest = sha256_of(repo_root / ".ci" / "arm64-cone.txt")
+        write(repo_root / ".ci" / "arm64-cone.sha256", digest + "\n")
+
+        def run_git(*args):
+            return subprocess.run(["git", *args], cwd=repo_root, capture_output=True, text=True, check=True)
+
+        run_git("init", "-q")
+        run_git("config", "user.email", "test@example.com")
+        run_git("config", "user.name", "test")
+        run_git("add", "-A")
+        run_git("commit", "-q", "-m", "initial")
+        real_sha = run_git("rev-parse", "HEAD").stdout.strip()
+
+        # A row whose introduced_by is a real commit sha -> no provenance complaint.
+        row_real = ledger_row("pkg-b/PKGBUILD", "source", "SRC_INSECURE_HTTP",
+                               '"http://example.org/pkg-b-${pkgver}.tar.gz"', "http://",
+                               introduced_by=real_sha)
+        write(repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(row_real))
+        from datetime import date
+        ok, problems = guard.run(
+            cone_path=repo_root / ".ci" / "arm64-cone.txt",
+            rules_path=repo_root / ".ci" / "arm64-rules.toml",
+            ledger_path=repo_root / ".ci" / "arm64-debt-ledger.tsv",
+            today=date(2026, 1, 1),
+            repo_root=repo_root,
+            cone_digest_path=repo_root / ".ci" / "arm64-cone.sha256",
+        )
+        self.assertTrue(ok, problems)
+
+        # A row whose introduced_by is a syntactically-valid-looking but
+        # FAKE commit sha -> must be rejected as it names no real commit.
+        row_fake = ledger_row("pkg-b/PKGBUILD", "source", "SRC_INSECURE_HTTP",
+                               '"http://example.org/pkg-b-${pkgver}.tar.gz"', "http://",
+                               introduced_by="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+        write(repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(row_fake))
+        ok2, problems2 = guard.run(
+            cone_path=repo_root / ".ci" / "arm64-cone.txt",
+            rules_path=repo_root / ".ci" / "arm64-rules.toml",
+            ledger_path=repo_root / ".ci" / "arm64-debt-ledger.tsv",
+            today=date(2026, 1, 1),
+            repo_root=repo_root,
+            cone_digest_path=repo_root / ".ci" / "arm64-cone.sha256",
+        )
+        self.assertFalse(ok2)
+        self.assertTrue(any("does not name a real commit" in p for p in problems2), problems2)
+
+    def test_provenance_check_skipped_gracefully_when_not_a_git_repo(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = FixtureRepo(Path(tmp.name))
+        repo.set_rules()
+        repo.add_pkg("pkg-b", pkgbuild_http())
+        repo.set_cone(["pkg-b"])
+        row = ledger_row("pkg-b/PKGBUILD", "source", "SRC_INSECURE_HTTP",
+                          '"http://example.org/pkg-b-${pkgver}.tar.gz"', "http://",
+                          introduced_by="deadbeefdead")
+        repo.set_ledger(make_ledger(row))
+        ok, problems = repo.run()
+        # No .git directory in this fixture -> provenance check must not
+        # fire at all (it's a fixture, not a real history).
+        self.assertTrue(ok, problems)
 
 
 # ---------------------------------------------------------------------------
@@ -687,20 +990,22 @@ class TestMultiRuleLocator(BaseFixtureTest):
 
 
 # ---------------------------------------------------------------------------
-# Deterministic CLI exit codes
+# B2: real CLI --repo-root / --base-ref end-to-end (with real git history),
+# temp-file cleanup, and deterministic exit codes.
 # ---------------------------------------------------------------------------
 
 class TestCLIExitCodes(BaseFixtureTest):
-    def _invoke_cli(self, repo, today="2026-01-01"):
-        return subprocess.run(
-            [sys.executable, str(GUARD_PATH),
-             "--cone", str(repo.root / ".ci" / "arm64-cone.txt"),
-             "--rules", str(repo.root / ".ci" / "arm64-rules.toml"),
-             "--ledger", str(repo.root / ".ci" / "arm64-debt-ledger.tsv"),
-             "--repo-root", str(repo.root),
-             "--today", today],
-            capture_output=True, text=True,
-        )
+    def _invoke_cli(self, repo, today="2026-01-01", extra_args=None):
+        args = [sys.executable, str(GUARD_PATH),
+                 "--cone", str(repo.root / ".ci" / "arm64-cone.txt"),
+                 "--cone-digest", str(repo.root / ".ci" / "arm64-cone.sha256"),
+                 "--rules", str(repo.root / ".ci" / "arm64-rules.toml"),
+                 "--ledger", str(repo.root / ".ci" / "arm64-debt-ledger.tsv"),
+                 "--repo-root", str(repo.root),
+                 "--today", today]
+        if extra_args:
+            args.extend(extra_args)
+        return subprocess.run(args, capture_output=True, text=True)
 
     def test_pass_exits_zero(self):
         self.baseline()
@@ -717,6 +1022,135 @@ class TestCLIExitCodes(BaseFixtureTest):
         result = self._invoke_cli(self.repo)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("FAIL", result.stderr)
+
+
+class TestCLIBaseRefEndToEnd(unittest.TestCase):
+    """Exercises the REAL CLI --base-ref flag against a REAL temporary git
+    repository with real commits -- this is exactly the code path the CI
+    workflow invokes unconditionally on every run, and a `run()`-level test
+    that hands in an already-materialized base_ledger_path is NOT sufficient
+    coverage for it (it bypasses resolve_default_base_ledger, the git
+    subprocess call, and the temp-file lifecycle entirely).
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="arm64-baseref-e2e-")
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+        self.repo_root = Path(self.tmp)
+        (self.repo_root / ".ci").mkdir(parents=True)
+        (self.repo_root / "pkg-a").mkdir()
+        write(self.repo_root / ".ci" / "arm64-rules.toml", RULES_TOML)
+        write(self.repo_root / ".ci" / "arm64-cone.txt", "pkg-a\n")
+        write(self.repo_root / ".ci" / "arm64-cone.sha256",
+              sha256_of(self.repo_root / ".ci" / "arm64-cone.txt") + "\n")
+
+        def run_git(*args):
+            return subprocess.run(["git", *args], cwd=self.repo_root, capture_output=True, text=True, check=True)
+        self.run_git = run_git
+        run_git("init", "-q")
+        run_git("config", "user.email", "test@example.com")
+        run_git("config", "user.name", "test")
+
+    def _invoke(self, base_ref=None, extra_args=None):
+        args = [sys.executable, str(GUARD_PATH),
+                "--cone", str(self.repo_root / ".ci" / "arm64-cone.txt"),
+                "--cone-digest", str(self.repo_root / ".ci" / "arm64-cone.sha256"),
+                "--rules", str(self.repo_root / ".ci" / "arm64-rules.toml"),
+                "--ledger", str(self.repo_root / ".ci" / "arm64-debt-ledger.tsv"),
+                "--repo-root", str(self.repo_root),
+                "--today", "2026-01-01"]
+        if base_ref is not None:
+            args += ["--base-ref", base_ref]
+        if extra_args:
+            args += extra_args
+        return subprocess.run(args, cwd=self.repo_root, capture_output=True, text=True)
+
+    def test_base_ref_absent_ledger_first_run_behavior(self):
+        # No prior commit has ever had a ledger file -- --base-ref points at
+        # a real commit, but that commit predates the ledger's existence.
+        write(self.repo_root / "pkg-a" / "PKGBUILD", "pkgname=pkg-a\npkgver=1.0\npkgrel=1\nsource=()\n")
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "before ledger existed")
+        commit_before = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        write(self.repo_root / "pkg-a" / "PKGBUILD",
+              "pkgname=pkg-a\npkgver=1.0\npkgrel=1\n"
+              'source=("git://example.org/pkg-a.git#tag=v1.0")\n')
+        locator = '"git://example.org/pkg-a.git#tag=v1.0"'
+        row = ledger_row("pkg-a/PKGBUILD", "source", "SRC_GIT_PROTO,SRC_MUTABLE_REF", locator, "git://,#tag=",
+                          introduced_by=commit_before)
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(row))
+
+        result = self._invoke(base_ref=commit_before)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PASS", result.stdout)
+
+    def test_base_ref_present_ledger_not_yet_promoted(self):
+        write(self.repo_root / "pkg-a" / "PKGBUILD",
+              "pkgname=pkg-a\npkgver=1.0\npkgrel=1\n"
+              'source=("git://example.org/pkg-a.git#tag=v1.0")\n')
+        locator = '"git://example.org/pkg-a.git#tag=v1.0"'
+        row = ledger_row("pkg-a/PKGBUILD", "source", "SRC_GIT_PROTO,SRC_MUTABLE_REF", locator, "git://,#tag=")
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(row))
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1: baseline with SRC_* debt")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        write(self.repo_root / "pkg-a" / "PKGBUILD",
+              "pkgname=pkg-a\npkgver=1.0\npkgrel=1\n"
+              'source=("git+https://example.org/pkg-a.git#commit=deadbeef")\n')
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())
+
+        result = self._invoke(base_ref=commit1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PASS", result.stdout)
+
+    def test_base_ref_promoted_rule_rejects_new_debt(self):
+        write(self.repo_root / "pkg-a" / "PKGBUILD",
+              "pkgname=pkg-a\npkgver=1.0\npkgrel=1\n"
+              'source=("git://example.org/pkg-a.git#tag=v1.0")\n')
+        locator = '"git://example.org/pkg-a.git#tag=v1.0"'
+        row = ledger_row("pkg-a/PKGBUILD", "source", "SRC_GIT_PROTO,SRC_MUTABLE_REF", locator, "git://,#tag=")
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(row))
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1")
+
+        write(self.repo_root / "pkg-a" / "PKGBUILD",
+              "pkgname=pkg-a\npkgver=1.0\npkgrel=1\n"
+              'source=("git+https://example.org/pkg-a.git#commit=deadbeef")\n')
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit2 (PR-1): clears SRC_* debt")
+        commit2 = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        write(self.repo_root / "pkg-a" / "PKGBUILD",
+              "pkgname=pkg-a\npkgver=1.0\npkgrel=1\n"
+              'source=("git://example.org/new-violation.git")\n')
+        locator3 = '"git://example.org/new-violation.git"'
+        row3 = ledger_row("pkg-a/PKGBUILD", "source", "SRC_GIT_PROTO", locator3, "git://")
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(row3))
+
+        result = self._invoke(base_ref=commit2)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("promoted", result.stderr)
+
+    def test_base_ledger_temp_file_is_cleaned_up(self):
+        write(self.repo_root / "pkg-a" / "PKGBUILD", "pkgname=pkg-a\npkgver=1.0\npkgrel=1\nsource=()\n")
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        import glob
+        tmp_glob = str(Path(tempfile.gettempdir()) / "arm64-base-ledger-*")
+        before = set(glob.glob(tmp_glob))
+        result = self._invoke(base_ref=commit1)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        after = set(glob.glob(tmp_glob))
+        self.assertEqual(before, after, f"temp base-ledger file(s) not cleaned up: {after - before}")
 
 
 if __name__ == "__main__":

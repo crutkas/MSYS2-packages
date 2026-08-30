@@ -24,7 +24,11 @@ description = "An in-cone PKGBUILD's source/pkgver fields could not be safely an
 
 [rule.SCHEMA_INVALID]
 severity = "absolute"
-description = "Malformed/non-canonical registry, cone, or ledger; an absolute-rule or promoted-rule ledger row; duplicate/unsorted/wildcard ledger or cone content; a ledger row whose locator/hash no longer binds to on-disk content."
+description = "Malformed/non-canonical registry, cone, or ledger; an absolute-rule or promoted-rule ledger row; duplicate/unsorted/wildcard ledger or cone content; a ledger row whose locator/hash no longer binds to on-disk content; a cone file whose content does not match its pinned sha256 digest."
+
+[rule.DYNAMIC_SOURCE_UNVERIFIABLE]
+severity = "absolute"
+description = "A source=() element contains a $(...) command substitution positioned where its unknowable runtime output could complete or hide a flagged marker (git://, http://, #tag=) across the substitution boundary; this analyzer never executes anything, so such an element cannot be safely and unambiguously verified as rule-compliant."
 
 [rule.SRC_GIT_PROTO]
 severity = "ratchetable"

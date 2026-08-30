@@ -1,11 +1,32 @@
 # CODEOWNERS for the ARM64 package-admission governance gate (PR-0).
 #
-# The rule registry and the debt ledger are the only two files that grant
-# any tolerance in an otherwise fail-closed gate (see
-# .ci/arm64-admission-guard.py). Any change to either MUST be reviewed and
-# approved by a repository owner before it can be merged -- this is only
-# effective in combination with the "Require review from Code Owners"
-# branch protection setting on this repository's default branch (see the
-# PR description for the exact setting verified/applied).
-.ci/arm64-debt-ledger.tsv @crutkas
-.ci/arm64-rules.toml @crutkas
+# Every file that is part of this gate's trust boundary is covered here:
+# the analyzer itself, the cone (build-closure scope) and its pinned
+# digest, the rule registry, the debt ledger, the automated test suite,
+# the CI workflow that runs it, and this CODEOWNERS file itself -- a
+# change to ANY of these can alter what the gate enforces or whether it
+# runs at all, so all of them require the same review.
+#
+# @crutkas is named as owner because they are the truthful CURRENT sole
+# owner/admin of this repository (verified via the GitHub API: the only
+# collaborator, admin:true).
+#
+# governance status (see the PR description for full detail): this file
+# alone is ADVISORY ONLY today. `crutkas/MSYS2-packages` has NO branch
+# protection and NO ruleset on its default branch, and @crutkas -- the
+# only person who could ever satisfy "review from a code owner" -- is
+# also this PR's author; GitHub does not allow a PR author's own review to
+# satisfy a required Code Owner review. Enabling "require review from
+# Code Owners" today would therefore create an UNSATISFIABLE gate. No
+# branch protection or ruleset has been applied, and no collaborator has
+# been added, to work around this -- it remains an open, explicitly
+# documented governance blocker until the repository has a second
+# trusted, non-author collaborator or an equivalent mechanism.
+.ci/arm64-admission-guard.py   @crutkas
+.ci/arm64-cone.txt             @crutkas
+.ci/arm64-cone.sha256          @crutkas
+.ci/arm64-rules.toml           @crutkas
+.ci/arm64-debt-ledger.tsv      @crutkas
+.ci/tests/                     @crutkas
+.github/workflows/arm64-admission.yml @crutkas
+.github/CODEOWNERS             @crutkas

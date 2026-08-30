@@ -4,19 +4,22 @@
 Deterministic, offline, pure static analyzer for PR-0 of the ARM64 bootstrap
 ratchet. It never executes, sources, builds, fetches, or links any PKGBUILD
 or toolchain artifact -- it only reads UTF-8 text and applies a narrow,
-conservative bash-array tokenizer to the specific fields the rule set cares
-about (`source`/`source_<arch>` arrays and the scalar `pkgver` assignment).
+conservative bash-word tokenizer to the specific fields the rule set cares
+about (`source`/`source_<arch>` arrays, scalar variable assignments used for
+the quarantine scan, and the scalar `pkgver` assignment).
 
-Fail-closed predicate (see .ci/arm64-cone.txt / arm64-rules.toml / the design
-note carried in the PR description for the full rationale):
+Fail-closed predicate (see .ci/arm64-cone.txt / arm64-cone.sha256 /
+arm64-rules.toml / the design note carried in the PR description for the
+full rationale):
 
   PASS iff:
     1. A (current absolute-rule hits: TOOLCHAIN_QUARANTINE, PARSE_FAIL,
        SCHEMA_INVALID) is empty.
-    2. The registry, cone and ledger are structurally valid, canonical,
-       sorted, unique, and scope-safe; no wildcard/regex bypass; no ledger
-       row names an absolute or promoted rule; every row's locator/hash
-       binds to the *current* on-disk content of its declared field/path.
+    2. The registry, cone (and its pinned digest), and ledger are
+       structurally valid, canonical, sorted, unique, and scope-safe; no
+       wildcard/regex bypass; no ledger row names an absolute or promoted
+       rule; every row's locator/hash binds to the *current* on-disk
+       content of its declared field/path.
        "Promoted" is a CROSS-COMMIT property: a ratchetable rule becomes
        permanently un-ledgerable once the BASE (parent/merge-base) commit's
        ledger already had zero rows for it -- see --base-ledger/--base-ref
@@ -27,29 +30,86 @@ note carried in the PR description for the full rationale):
        V subset L (no new/unlisted debt) and L subset V (no stale debt).
     4. Every ledger row is unexpired (today <= expires).
 
+Raw vs. semantic word values
+-----------------------------
+Every bash "word" this analyzer recovers (a source array element, a pkgver
+value, a scalar variable assignment scanned for the quarantine rule) is
+tokenized ONCE into a `Word` carrying TWO representations, computed together
+in the same pass so there is never a second, separately-fallible re-scan:
+
+* `Word.text`  -- the exact, verbatim, still-quoted source span. This is the
+  ONLY thing ever stored as a ledger `locator` or hashed for binding. It is
+  never modified, never "cleaned up", so `sha256(locator)` always matches
+  what is physically on disk.
+* `Word.value` -- the derived bash SEMANTIC value: syntactic single/double
+  quote delimiters are removed, bash's double-quote backslash-escape rules
+  (quote, backslash, backtick, dollar-sign, and backslash-newline
+  continuation) and its
+  unquoted backslash-escape rule (backslash removes the special meaning of
+  the following character; backslash-newline is a line continuation and
+  vanishes) are both applied, and ADJACENT fragments (whether quoted or not)
+  are concatenated exactly as bash would -- e.g. `'git'"://x"'#tag='` and
+  `git://x#tag=` are the SAME semantic value. `${...}` and `$(...)` are
+  preserved OPAQUELY (copied through unresolved/unevaluated) in both `text`
+  and `value` -- their surrounding literal characters are what matters and
+  remain fully knowable; their own contents are never executed or expanded.
+  ALL rule matching (quarantine, SRC_*, TOOLCHAIN_DEV_VER) is performed
+  against `Word.value`, NEVER against `Word.text` -- this is what closes the
+  class of evasions where a flagged substring or the quarantined commit hash
+  is split across a quote boundary (single, double, or mixed; including an
+  empty `''`/`""` used purely as filler) so that no single raw fragment
+  contains it, even though bash's own concatenation would reassemble it.
+
+This tokenizer is intentionally NOT permissive: every construct it accepts
+is one whose semantic value it fully and precisely understands from the
+grammar alone (no best-effort guessing). Anything it cannot understand
+raises ParseError, which the caller turns into an absolute, non-ledgerable
+PARSE_FAIL for that recipe -- fail-closed, not silently skipped.
+
 Supported static forms
 -----------------------
-* `source=(...)`/`source_<arch>=(...)` bash arrays containing any mixture of
-  single-quoted (`'...'`), double-quoted (`"..."`, with backslash escapes for
-  a literal quote, backslash, backtick, or dollar sign), and bare/unquoted
-  words, including adjacent-token concatenation
-  (e.g. `'name'::git://host/x.git#tag=y`) exactly as bash performs word
-  splitting -- no variable expansion is performed; `${...}` is preserved
-  literally so the locator binds to the exact on-disk text.
+* `source=(...)`/`source_<arch>=(...)` bash arrays and `NAME=value` scalar
+  assignments containing any mixture of single-quoted (`'...'`, no escapes
+  at all -- 100% literal per bash), double-quoted (`"..."`, with the escapes
+  described above), and bare/unquoted words, including adjacent-token
+  concatenation, exactly as bash performs word splitting.
 * `$(...)` command substitution is tokenized as an OPAQUE, balanced-paren
   literal span (quotes inside it are honored so embedded parens are not
-  miscounted) -- it is never evaluated or executed, only kept verbatim so
-  the surrounding array can still be located and its true locator text
-  captured exactly. This is required for real recipes (e.g. `bash`,
-  `readline`) that conditionally append patch-level source entries via
+  miscounted) -- it is never evaluated or executed, only kept verbatim in
+  both `text` and `value` so the surrounding array/word can still be located
+  and its true locator text captured exactly. This is required for real
+  recipes (e.g. `bash`, `readline`) that conditionally append patch-level
+  source entries via
   `source=(${source[@]} https://.../patch-$(printf "%03d" $p){,.sig})`.
+  Because a `$(...)`'s real runtime output is fundamentally unknowable
+  without executing it (which this analyzer must never do), a SEPARATE,
+  narrow, fail-closed check (`_dynamic_boundary_risk`) flags -- as the
+  absolute `DYNAMIC_SOURCE_UNVERIFIABLE` rule -- the specific case where a
+  flagged marker (`git://`, `http://`, `#tag=`) could be assembled by
+  combining a NON-EMPTY trailing fragment of the text immediately before a
+  `$(...)` span with a NON-EMPTY leading fragment of the text immediately
+  after it (i.e. an adversary using the substitution purely as a splitting
+  gap, exactly mirroring the quote-splitting evasion). It deliberately does
+  NOT flag the case where a marker could be produced ENTIRELY inside the
+  substitution's own unknowable output with no contribution from either
+  side -- that is an inherent, accepted limit of static analysis shared by
+  ANY use of `$(...)` (including the legitimate patch-level idiom above),
+  and flagging it would make ordinary supported `$(...)` usage fail closed
+  unconditionally, which contradicts the requirement to keep it supported.
 * A `source`/`source_<arch>` name may be assigned more than once (that same
   conditional-append idiom re-assigns it inside an `if`). Since control flow
   is not evaluated, every element from every such assignment in the file is
   unioned into that array's element set -- a conservative superset so a
   violation hidden behind an untaken branch is still caught.
 * A scalar `pkgver=<word>` assignment (quoted or unquoted), read with the
-  same tokenizer, first token wins.
+  same tokenizer, first token wins; matched against its SEMANTIC value.
+* The quarantine rule additionally scans every top-level SCALAR variable
+  assignment in the file (`NAME=<word>`, not just `_commit=`) -- not merely
+  a hardcoded set of spellings -- so a reference hidden behind ANY
+  intermediate variable is caught, not only the specific `_commit` idiom
+  used by today's baseline. Array assignments other than `source`/
+  `source_<arch>` are intentionally NOT generically scanned (see
+  `find_all_scalar_assignment_values` docstring for the scoping rationale).
 * `#` starts a line comment only when it is the first character of an
   as-yet-unstarted word (real bash semantics) -- a `#` that appears after
   other unquoted characters of the *same* word (e.g. inside a URL) is kept
@@ -57,32 +117,38 @@ Supported static forms
 
 Rejection behavior
 ------------------
-Any of the following make a recipe's source/pkgver fields "cannot be safely
-and unambiguously recovered", which raises PARSE_FAIL (absolute, fails
-closed) for that path:
+Any of the following make a recipe's source/pkgver/scanned-assignment
+fields "cannot be safely and unambiguously recovered", which raises
+PARSE_FAIL (absolute, fails closed) for that path:
 * unterminated single/double-quoted string, or unterminated `$(...)`,
   within the array/word region;
 * a bare unquoted `(`/`)` that is not either the array's own delimiters or
   part of a `$(...)` span;
+* a dangling backslash at end of input;
 * a `source`/`source_<arch>=(` whose closing `)` cannot be located before
   end of file.
 No network access, subprocess execution, or `source`/`bash -c` of any
-PKGBUILD occurs anywhere in this file.
+PKGBUILD occurs anywhere in this file. The ONLY subprocess ever invoked is a
+strictly read-only, local `git show <ref>:<path>` used solely to materialize
+the BASE ledger for cross-commit rule-promotion detection (see
+`resolve_default_base_ledger`) -- never for any PKGBUILD or package file.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import re
 import sys
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CI_DIR = REPO_ROOT / ".ci"
 CONE_FILE = CI_DIR / "arm64-cone.txt"
+CONE_DIGEST_FILE = CI_DIR / "arm64-cone.sha256"
 RULES_FILE = CI_DIR / "arm64-rules.toml"
 LEDGER_FILE = CI_DIR / "arm64-debt-ledger.tsv"
 
@@ -91,6 +157,8 @@ QUARANTINE_COMMIT_FULL = "9bbaa7b7a36ae51328cbff6acb720dcfa472db37"
 # to the quarantined commit -- long enough that it cannot collide with an
 # unrelated short token, short enough to catch common abbreviated forms.
 QUARANTINE_MIN_ABBREV = 7
+
+DYNAMIC_MARKERS = ("git://", "http://", "#tag=")
 
 LEDGER_FIELDS = [
     "path", "field", "rule_id", "locator", "locator_sha256", "matched",
@@ -110,7 +178,11 @@ LOCATOR_BYPASS_CHARS = set("*?[]()|\\")
 TOOLCHAIN_DEV_VER_RE = re.compile(r"^[0-9]+(\.[0-9]+)*dev$")
 SOURCE_ARRAY_RE = re.compile(r"(?m)^[ \t]*(source(?:_[A-Za-z0-9_]+)?)=\(")
 PKGVER_RE = re.compile(r"(?m)^[ \t]*pkgver=")
+# Any top-level scalar assignment (`NAME=...`, NOT `NAME=(...)` -- arrays are
+# excluded here; source/source_<arch> arrays are handled by SOURCE_ARRAY_RE).
+SCALAR_ASSIGN_RE = re.compile(r"(?m)^[ \t]*([A-Za-z_][A-Za-z0-9_]*)=(?!\()")
 HEX_RE = re.compile(r"[0-9a-fA-F]+")
+FIELD_RE = re.compile(r"^(source(_[A-Za-z0-9_]+)?|pkgver)$")
 
 
 class ParseError(Exception):
@@ -128,35 +200,61 @@ class Finding:
 
 @dataclass
 class Word:
-    text: str
+    text: str   # raw, verbatim source span -- the ONLY thing ever hashed/stored as a locator
+    value: str  # derived bash semantic value -- the ONLY thing ever rule-matched
     start: int
     end: int
 
 
-def _scan_double_quoted(s: str, pos: int) -> tuple[str, int]:
-    """pos is the index of the opening '\"'. Returns (raw_text_incl_quotes, end_pos)."""
+def _scan_double_quoted(s: str, pos: int) -> tuple[str, str, int]:
+    """pos is the index of the opening '"'. Returns (raw_incl_quotes, value,
+    end_pos). `value` has the quotes removed and ONLY the bash-defined
+    double-quote escapes processed: backslash before `"` `\\` `$` `` ` `` is
+    special (backslash consumed, that character kept literally); backslash
+    before a newline is a line continuation (both vanish); backslash before
+    any OTHER character retains NO special meaning inside double quotes and
+    is kept completely literally (both characters), exactly as bash defines
+    it -- this is deliberately NOT a permissive/best-effort transformation,
+    it is the precise POSIX/bash double-quote grammar.
+    """
     start = pos
     i = pos + 1
     n = len(s)
+    value_parts: list[str] = []
     while i < n:
         c = s[i]
-        if c == "\\" and i + 1 < n:
+        if c == "\\" and i + 1 < n and s[i + 1] in ('"', "\\", "$", "`"):
+            value_parts.append(s[i + 1])
             i += 2
             continue
+        if c == "\\" and i + 1 < n and s[i + 1] == "\n":
+            i += 2  # line continuation: both characters vanish from value
+            continue
+        if c == "\\" and i + 1 < n:
+            value_parts.append(s[i])
+            value_parts.append(s[i + 1])
+            i += 2
+            continue
+        if c == "\\" and i + 1 >= n:
+            raise ParseError(f"dangling backslash inside double-quoted string at offset {i}")
         if c == '"':
-            return s[start:i + 1], i + 1
+            return s[start:i + 1], "".join(value_parts), i + 1
+        value_parts.append(c)
         i += 1
     raise ParseError(f"unterminated double-quoted string starting at offset {start}")
 
 
-def _scan_single_quoted(s: str, pos: int) -> tuple[str, int]:
+def _scan_single_quoted(s: str, pos: int) -> tuple[str, str, int]:
+    """Single quotes: bash performs NO escape processing at all inside them
+    -- every character up to the next `'` is 100% literal. Returns
+    (raw_incl_quotes, value, end_pos)."""
     start = pos
     i = pos + 1
     n = len(s)
     idx = s.find("'", i)
     if idx == -1:
         raise ParseError(f"unterminated single-quoted string starting at offset {start}")
-    return s[start:idx + 1], idx + 1
+    return s[start:idx + 1], s[i:idx], idx + 1
 
 
 def _scan_command_subst(s: str, pos: int) -> tuple[str, int]:
@@ -164,8 +262,11 @@ def _scan_command_subst(s: str, pos: int) -> tuple[str, int]:
     Balances nested parens while skipping quoted content (so parens inside
     a quoted string, e.g. `$(printf "%03d" $p)`, are not miscounted). The
     substitution is treated as an OPAQUE literal span: it is never
-    evaluated/executed, only captured verbatim so the locator text and the
-    array's true closing paren can still be located safely."""
+    evaluated/executed, only captured verbatim -- identically in both `text`
+    and `value` -- so the locator text and the array's true closing paren
+    can still be located safely, and so the (narrow, documented) dynamic-
+    boundary risk check can still reason about the KNOWN text immediately
+    surrounding it."""
     assert s[pos:pos + 2] == "$("
     start = pos
     i = pos + 2
@@ -174,10 +275,10 @@ def _scan_command_subst(s: str, pos: int) -> tuple[str, int]:
     while i < n:
         c = s[i]
         if c == "'":
-            _, i = _scan_single_quoted(s, i)
+            _, _, i = _scan_single_quoted(s, i)
             continue
         if c == '"':
-            _, i = _scan_double_quoted(s, i)
+            _, _, i = _scan_double_quoted(s, i)
             continue
         if c == "\\" and i + 1 < n:
             i += 2
@@ -198,23 +299,29 @@ def _scan_command_subst(s: str, pos: int) -> tuple[str, int]:
 
 def _tokenize_words(s: str, pos: int, end_limit: int, stop_at_paren: bool):
     """Tokenize whitespace-separated, quote-aware, concatenation-aware words
-    from s[pos:end_limit]. If stop_at_paren, an unquoted ')' ends the whole
-    region (its index is returned as close_pos); otherwise the region simply
-    runs to end_limit. Returns (words, close_pos_or_None).
+    from s[pos:end_limit], computing BOTH the raw verbatim text and the
+    derived bash semantic value for each word IN THE SAME PASS (see the
+    module docstring's "Raw vs. semantic word values" section). If
+    stop_at_paren, an unquoted ')' ends the whole region (its index is
+    returned as close_pos); otherwise the region simply runs to end_limit.
+    Returns (words, close_pos_or_None). Raises ParseError for anything this
+    narrow grammar cannot precisely and unambiguously resolve -- there is no
+    permissive/best-effort fallback path.
     """
     words: list[Word] = []
     n = end_limit
     i = pos
-    cur_parts: list[str] = []
+    cur_raw: list[str] = []
+    cur_value: list[str] = []
     cur_start = None
     close_pos = None
 
     def flush():
-        nonlocal cur_parts, cur_start
-        if cur_parts:
-            text = "".join(cur_parts)
-            words.append(Word(text, cur_start, i))
-            cur_parts = []
+        nonlocal cur_raw, cur_value, cur_start
+        if cur_raw:
+            words.append(Word("".join(cur_raw), "".join(cur_value), cur_start, i))
+            cur_raw = []
+            cur_value = []
             cur_start = None
 
     while i < n:
@@ -223,7 +330,7 @@ def _tokenize_words(s: str, pos: int, end_limit: int, stop_at_paren: bool):
             flush()
             i += 1
             continue
-        if c == "#" and not cur_parts:
+        if c == "#" and not cur_raw:
             # Comment: only a bare '#' at the very start of a fresh word.
             nl = s.find("\n", i)
             i = n if nl == -1 or nl > n else nl
@@ -240,26 +347,45 @@ def _tokenize_words(s: str, pos: int, end_limit: int, stop_at_paren: bool):
             if cur_start is None:
                 cur_start = i
             raw, i = _scan_command_subst(s, i)
-            cur_parts.append(raw)
+            cur_raw.append(raw)
+            cur_value.append(raw)  # opaque passthrough: never evaluated
             continue
         if c == '"':
             if cur_start is None:
                 cur_start = i
-            raw, i = _scan_double_quoted(s, i)
-            cur_parts.append(raw)
+            raw, val, i = _scan_double_quoted(s, i)
+            cur_raw.append(raw)
+            cur_value.append(val)
             continue
         if c == "'":
             if cur_start is None:
                 cur_start = i
-            raw, i = _scan_single_quoted(s, i)
-            cur_parts.append(raw)
+            raw, val, i = _scan_single_quoted(s, i)
+            cur_raw.append(raw)
+            cur_value.append(val)
             continue
-        if c == "\\" and i + 1 < n:
+        if c == "\\" and i + 1 < n and s[i + 1] == "\n":
+            # Unquoted backslash-newline: a line continuation -- both
+            # characters are kept in the raw locator text (so it still
+            # binds to the exact on-disk bytes) but contribute NOTHING to
+            # the semantic value.
             if cur_start is None:
                 cur_start = i
-            cur_parts.append(s[i:i + 2])
+            cur_raw.append(s[i:i + 2])
             i += 2
             continue
+        if c == "\\" and i + 1 < n:
+            # Unquoted backslash: escapes exactly the next character (its
+            # special meaning, if any, is removed); the backslash itself is
+            # consumed and does not appear in the semantic value.
+            if cur_start is None:
+                cur_start = i
+            cur_raw.append(s[i:i + 2])
+            cur_value.append(s[i + 1])
+            i += 2
+            continue
+        if c == "\\" and i + 1 >= n:
+            raise ParseError(f"dangling backslash at end of input at offset {i}")
         # Bare unquoted run: consume until a char that needs special
         # handling (whitespace, quote, paren, '$(' , or a leading '#').
         if cur_start is None:
@@ -269,7 +395,7 @@ def _tokenize_words(s: str, pos: int, end_limit: int, stop_at_paren: bool):
             cj = s[j]
             if cj in " \t\r\n\"'()":
                 break
-            if cj == "#" and j == i and not cur_parts:
+            if cj == "#" and j == i and not cur_raw:
                 break
             if cj == "\\":
                 break
@@ -279,7 +405,9 @@ def _tokenize_words(s: str, pos: int, end_limit: int, stop_at_paren: bool):
         if j == i:
             # Nothing consumed (shouldn't happen) -- avoid infinite loop.
             raise ParseError(f"unrecognized character {c!r} at offset {i}")
-        cur_parts.append(s[i:j])
+        chunk = s[i:j]
+        cur_raw.append(chunk)
+        cur_value.append(chunk)
         i = j
     else:
         if stop_at_paren:
@@ -288,8 +416,109 @@ def _tokenize_words(s: str, pos: int, end_limit: int, stop_at_paren: bool):
     return words, close_pos
 
 
-def parse_source_arrays(text: str, path: str) -> dict[str, list[Word]]:
-    """Returns {array_name: [Word, ...]} for every source/source_<arch> array.
+def _find_command_subst_spans(word_text: str) -> list[tuple[int, int]]:
+    """Returns the (start, end) character offsets of every top-level
+    `$(...)` span within an already-tokenized word's raw text (quote-aware,
+    so a `(` or `)` inside a nested quoted string is not miscounted). Used
+    only by the dynamic-boundary-risk check."""
+    spans: list[tuple[int, int]] = []
+    i = 0
+    n = len(word_text)
+    while i < n:
+        c = word_text[i]
+        if c == "'":
+            j = word_text.find("'", i + 1)
+            i = (j + 1) if j != -1 else n
+            continue
+        if c == '"':
+            j = i + 1
+            while j < n:
+                if word_text[j] == "\\" and j + 1 < n:
+                    j += 2
+                    continue
+                if word_text[j] == '"':
+                    j += 1
+                    break
+                j += 1
+            i = j
+            continue
+        if c == "$" and i + 1 < n and word_text[i + 1] == "(":
+            start = i
+            depth = 1
+            k = i + 2
+            while k < n and depth > 0:
+                ck = word_text[k]
+                if ck == "'":
+                    j = word_text.find("'", k + 1)
+                    k = (j + 1) if j != -1 else n
+                    continue
+                if ck == '"':
+                    j = k + 1
+                    while j < n:
+                        if word_text[j] == "\\" and j + 1 < n:
+                            j += 2
+                            continue
+                        if word_text[j] == '"':
+                            j += 1
+                            break
+                        j += 1
+                    k = j
+                    continue
+                if ck == "(":
+                    depth += 1
+                    k += 1
+                    continue
+                if ck == ")":
+                    depth -= 1
+                    k += 1
+                    continue
+                k += 1
+            spans.append((start, k))
+            i = k
+            continue
+        i += 1
+    return spans
+
+
+def _dynamic_boundary_risk(word: Word) -> bool:
+    """Conservative, narrowly-scoped check for whether `word` contains a
+    `$(...)` span positioned such that an adversarial choice of the
+    substitution's real runtime output (NEVER executed here) could cause one
+    of the ratchet marker substrings (git://, http://, #tag=) to be formed
+    STRADDLING the substitution -- i.e. a non-empty trailing fragment of the
+    marker supplied by the KNOWN semantic text immediately before the span,
+    and a non-empty leading fragment supplied by the KNOWN semantic text
+    immediately after it. See the module docstring for why the case where a
+    marker could be produced ENTIRELY inside the substitution's own output
+    (no contribution from either side) is deliberately NOT flagged.
+    """
+    spans = _find_command_subst_spans(word.text)
+    if not spans:
+        return False
+    for start, end in spans:
+        cs_text = word.text[start:end]
+        idx = word.value.find(cs_text)
+        if idx == -1:
+            continue  # should not happen ($(...) is opaque in both text and value)
+        preceding = word.value[:idx]
+        following = word.value[idx + len(cs_text):]
+        for marker in DYNAMIC_MARKERS:
+            length = len(marker)
+            for p in range(1, length):  # STRICT interior split only
+                left, right = marker[:p], marker[p:]
+                if preceding.endswith(left) and following.startswith(right):
+                    return True
+    return False
+
+
+def parse_source_arrays(text: str, path: str) -> tuple[dict[str, list[Word]], list[tuple[int, int]]]:
+    """Returns ({array_name: [Word, ...]}, consumed_spans) for every
+    source/source_<arch> array. `consumed_spans` is the list of (start, end)
+    character ranges each array's full declaration occupies -- used by
+    `find_all_scalar_assignment_values` so a continuation line that is
+    semantically part of an ALREADY-parsed array (e.g. a backslash-newline
+    inside a multi-line quoted array element) is never misinterpreted as an
+    unrelated top-level scalar assignment.
 
     A name may be assigned more than once (a common PKGBUILD idiom is a
     conditional block that reassigns `source=(${source[@]} <extra>)` to
@@ -301,6 +530,7 @@ def parse_source_arrays(text: str, path: str) -> dict[str, list[Word]]:
     branch is still caught (fail-closed), never silently dropped.
     """
     result: dict[str, list[Word]] = {}
+    spans: list[tuple[int, int]] = []
     for m in SOURCE_ARRAY_RE.finditer(text):
         name = m.group(1)
         open_paren = m.end() - 1
@@ -310,27 +540,102 @@ def parse_source_arrays(text: str, path: str) -> dict[str, list[Word]]:
         except ParseError as e:
             raise ParseError(f"{path}: {name}=(...): {e}") from e
         result.setdefault(name, []).extend(words)
-    return result
+        spans.append((m.start(), close_pos if close_pos is not None else len(text)))
+    return result, spans
 
 
-def parse_pkgver(text: str, path: str) -> str | None:
+
+def _find_logical_line_end(text: str, start: int) -> int:
+    """Returns the index of the first UNESCAPED newline at/after `start`,
+    treating a backslash immediately preceding a newline as a line
+    continuation -- so a scalar assignment's value (e.g. a `./configure`
+    argument like bash_cv_dev_stdin=present, continued with a trailing
+    backslash onto the next physical line, as seen in real recipes) can legitimately span multiple
+    physical lines without the boundary being cut mid-continuation."""
+    i = start
+    n = len(text)
+    while i < n:
+        if text[i] == "\n":
+            if i > start and text[i - 1] == "\\":
+                i += 1
+                continue
+            return i
+        i += 1
+    return n
+
+
+def parse_pkgver(text: str, path: str) -> tuple[Word | None, tuple[int, int] | None]:
     matches = list(PKGVER_RE.finditer(text))
     if not matches:
-        return None
+        return None, None
     if len(matches) > 1:
         raise ParseError(f"{path}: multiple top-level pkgver= assignments")
     m = matches[0]
     val_start = m.end()
-    line_end = text.find("\n", val_start)
-    if line_end == -1:
-        line_end = len(text)
+    line_end = _find_logical_line_end(text, val_start)
     try:
         words, _ = _tokenize_words(text, val_start, line_end, stop_at_paren=False)
     except ParseError as e:
         raise ParseError(f"{path}: pkgver=...: {e}") from e
     if not words:
         raise ParseError(f"{path}: pkgver= has no value")
-    return words[0].text
+    return words[0], (m.start(), words[0].end)
+
+
+def find_all_scalar_assignment_values(text: str, path: str, exclude_spans: list[tuple[int, int]] = ()) -> list[Word]:
+    """Returns the first-token Word of every top-level SCALAR variable
+    assignment in the file (`NAME=value`, explicitly excluding `NAME=(...)`
+    array assignments, which SOURCE_ARRAY_RE/parse_source_arrays already
+    handle for `source`/`source_<arch>` specifically).
+
+    This exists ONLY to widen the quarantine (TOOLCHAIN_QUARANTINE) scan so
+    a reference to the forbidden commit hidden behind ANY intermediate
+    scalar variable (not merely the `_commit` spelling used by today's
+    baseline recipes) cannot evade detection -- e.g.
+    `_commit="<hash>"` ... `source=(...#commit=${_commit})`.
+
+    `exclude_spans` are character ranges ALREADY consumed by parsing the
+    source arrays / pkgver (see parse_source_arrays / parse_pkgver). This
+    matters because a value can legitimately span multiple physical lines
+    via a backslash-newline continuation inside a quoted string; without
+    excluding those already-consumed spans, a continuation line that
+    happens to start with something matching `IDENTIFIER=` (e.g. the tail
+    of a still-open double-quoted array element resuming on the next
+    physical line) would be misinterpreted as an unrelated top-level scalar
+    assignment. Matches inside `exclude_spans`, and inside the span of any
+    scalar assignment already parsed earlier in this same scan, are
+    skipped.
+
+    Scoping note (deliberately NOT generic-array-aware): this analyzer does
+    NOT attempt to generically tokenize arbitrary OTHER arrays
+    (`depends=(...)`, `makedepends=(...)`, `groups=(...)`, etc.). Those
+    fields are not plausible carriers for a VCS commit hash, commonly use
+    bash constructs well outside this analyzer's narrow supported grammar,
+    and attempting to parse them would materially raise the risk of a
+    spurious PARSE_FAIL on real, otherwise-compliant recipes for a field
+    this rule set has no reason to inspect. Scalar assignments are low-risk
+    (a single tokenized word) and are exactly the shape real recipes use for
+    commit-hash indirection, so the scan is scoped to them precisely.
+    """
+    def _excluded(pos: int, spans) -> bool:
+        return any(s <= pos < e for s, e in spans)
+
+    values: list[Word] = []
+    consumed = list(exclude_spans)
+    for m in SCALAR_ASSIGN_RE.finditer(text):
+        if _excluded(m.start(), consumed):
+            continue
+        name = m.group(1)
+        val_start = m.end()
+        line_end = _find_logical_line_end(text, val_start)
+        try:
+            words, _ = _tokenize_words(text, val_start, line_end, stop_at_paren=False)
+        except ParseError as e:
+            raise ParseError(f"{path}: {name}=...: {e}") from e
+        if words:
+            values.append(words[0])
+            consumed.append((m.start(), words[0].end))
+    return values
 
 
 def sha256_hex(s: str) -> str:
@@ -342,7 +647,9 @@ def contains_quarantine_reference(s: str) -> bool:
     abbreviation of it that is not itself a substring of an unrelated hex
     run of different length starting elsewhere (we simply check: any hex
     run in s of length >= QUARANTINE_MIN_ABBREV that is a prefix of the
-    full quarantined sha, OR the full sha itself as a substring)."""
+    full quarantined sha, OR the full sha itself as a substring). Callers
+    MUST pass a derived semantic `Word.value`, never a raw `Word.text` --
+    see the module docstring."""
     if QUARANTINE_COMMIT_FULL in s:
         return True
     for hm in HEX_RE.finditer(s):
@@ -352,62 +659,79 @@ def contains_quarantine_reference(s: str) -> bool:
     return False
 
 
-def detect_findings_for_file(path: str, text: str) -> tuple[list[Finding], list[str]]:
-    """Returns (ratchetable_findings, absolute_hits) for one PKGBUILD's text.
-    Raises ParseError (caller turns that into PARSE_FAIL) if unparseable.
-    """
-    absolute_hits: list[str] = []
-    findings: dict[tuple[str, str], set] = {}
-    matched_text: dict[tuple[str, str], set] = {}
-
-    # The quarantine check is scanned across the ENTIRE raw file text, not
-    # just source/pkgver fields. Real recipes commonly reference a VCS
-    # commit indirectly, e.g. `_commit="<hash>"` followed by
-    # `source=(...#commit=${_commit})` -- since this analyzer performs no
-    # variable expansion (by design), checking only the literal source
-    # array text would miss the hash hiding in the `_commit=` assignment.
-    # Scanning the whole file closes that evasion path.
-    if contains_quarantine_reference(text):
-        absolute_hits.append(f"{path}: quarantined commit reference found in file")
-
-    arrays = parse_source_arrays(text, path)
-    for arrname, words in arrays.items():
-        for w in words:
-            rules = set()
-            matched = set()
-            if "git://" in w.text:
-                rules.add("SRC_GIT_PROTO")
-                matched.add("git://")
-            if "#tag=" in w.text:
-                rules.add("SRC_MUTABLE_REF")
-                matched.add("#tag=")
-            if "http://" in w.text:
-                rules.add("SRC_INSECURE_HTTP")
-                matched.add("http://")
-            if rules:
-                key = ("source", w.text)
-                findings.setdefault(key, set()).update(rules)
-                matched_text.setdefault(key, set()).update(matched)
-
-    pkgver = parse_pkgver(text, path)
-    if pkgver is not None:
-        if is_toolchain_path(path) and TOOLCHAIN_DEV_VER_RE.match(pkgver):
-            key = ("pkgver", pkgver)
-            findings.setdefault(key, set()).add("TOOLCHAIN_DEV_VER")
-            matched_text.setdefault(key, set()).add(pkgver)
-
-    out = []
-    for (fld, locator), rules in findings.items():
-        out.append(Finding(path, fld, locator, tuple(sorted(rules)), ",".join(sorted(matched_text[(fld, locator)]))))
-    return out, absolute_hits
-
-
 TOOLCHAIN_DIR_RE = re.compile(r"^mingw-w64-cross-mingwarm64-[^/]+$")
 
 
 def is_toolchain_path(pkgbuild_path: str) -> bool:
     directory = pkgbuild_path.split("/")[0]
     return bool(TOOLCHAIN_DIR_RE.match(directory))
+
+
+def detect_findings_for_file(path: str, text: str) -> tuple[list[Finding], list[str]]:
+    """Returns (ratchetable_findings, absolute_hits) for one PKGBUILD's text.
+    Raises ParseError (caller turns that into PARSE_FAIL) if unparseable.
+    ALL rule matching below is performed against each Word's derived
+    SEMANTIC `.value`, never its raw `.text` -- `.text` is used ONLY as the
+    stored/hashed locator.
+    """
+    absolute_hits: list[str] = []
+    findings: dict[tuple[str, str], set] = {}
+    matched_text: dict[tuple[str, str], set] = {}
+
+    arrays, array_spans = parse_source_arrays(text, path)
+
+    # Quarantine scan: every source/source_<arch> element, the pkgver value,
+    # and every scalar variable assignment anywhere in the file (see
+    # find_all_scalar_assignment_values for the generalization rationale).
+    quarantine_candidates: list[Word] = []
+    for words in arrays.values():
+        quarantine_candidates.extend(words)
+    pkgver_word, pkgver_span = parse_pkgver(text, path)
+    if pkgver_word is not None:
+        quarantine_candidates.append(pkgver_word)
+    exclude_spans = list(array_spans)
+    if pkgver_span is not None:
+        exclude_spans.append(pkgver_span)
+    quarantine_candidates.extend(find_all_scalar_assignment_values(text, path, exclude_spans))
+    for w in quarantine_candidates:
+        if contains_quarantine_reference(w.value):
+            absolute_hits.append(f"{path}: quarantined commit reference found (semantic value {w.value!r})")
+
+    for arrname, words in arrays.items():
+        for w in words:
+            if _dynamic_boundary_risk(w):
+                absolute_hits.append(
+                    f"{path}:{arrname}: source element contains a $(...) substitution positioned where its "
+                    f"unknowable runtime output could complete/hide a flagged marker (git://, http://, #tag=) "
+                    f"across the substitution boundary; cannot be safely verified (raw={w.text!r})"
+                )
+                continue
+            rules = set()
+            matched = set()
+            if "git://" in w.value:
+                rules.add("SRC_GIT_PROTO")
+                matched.add("git://")
+            if "#tag=" in w.value:
+                rules.add("SRC_MUTABLE_REF")
+                matched.add("#tag=")
+            if "http://" in w.value:
+                rules.add("SRC_INSECURE_HTTP")
+                matched.add("http://")
+            if rules:
+                key = (arrname, w.text)
+                findings.setdefault(key, set()).update(rules)
+                matched_text.setdefault(key, set()).update(matched)
+
+    if pkgver_word is not None:
+        if is_toolchain_path(path) and TOOLCHAIN_DEV_VER_RE.match(pkgver_word.value):
+            key = ("pkgver", pkgver_word.text)
+            findings.setdefault(key, set()).add("TOOLCHAIN_DEV_VER")
+            matched_text.setdefault(key, set()).add(pkgver_word.value)
+
+    out = []
+    for (fld, locator), rules in findings.items():
+        out.append(Finding(path, fld, locator, tuple(sorted(rules)), ",".join(sorted(matched_text[(fld, locator)]))))
+    return out, absolute_hits
 
 
 # ---------------------------------------------------------------------------
@@ -450,11 +774,40 @@ def load_rules(rules_path: Path) -> dict[str, Rule]:
     return rules
 
 
-def load_cone(cone_path: Path) -> list[str]:
+def load_cone(cone_path: Path, digest_path: Path | None = None) -> list[str]:
+    """Loads and validates the cone file, additionally enforcing (when
+    `digest_path` is given) that the file's exact raw bytes hash to the
+    pinned sha256 digest recorded there. This is what makes the 225-entry
+    declared ARM64 BUILD closure cryptographically bound and monotonic: ANY
+    change to the cone -- a removal, an addition, or a same-size
+    substitution of one directory for another -- changes its digest, and is
+    therefore rejected as SCHEMA_INVALID unless the pinned digest file is
+    updated in the SAME reviewed change (and that file is itself
+    CODEOWNERS-covered, see .github/CODEOWNERS). This is a structural
+    superset of "reject every removal/substitution": it rejects ANY
+    unaccompanied textual change whatsoever.
+    """
     try:
-        raw = cone_path.read_text(encoding="utf-8")
+        raw_bytes = cone_path.read_bytes()
     except OSError as e:
         raise ParseError(f"cannot read cone file: {e}") from e
+
+    if digest_path is not None:
+        try:
+            pinned = digest_path.read_text(encoding="utf-8").strip()
+        except OSError as e:
+            raise ParseError(f"cannot read cone digest file: {e}") from e
+        if not re.fullmatch(r"[0-9a-f]{64}", pinned):
+            raise ParseError(f"cone digest file does not contain a bare 64-char lowercase sha256 hex digest: {pinned!r}")
+        actual = hashlib.sha256(raw_bytes).hexdigest()
+        if actual != pinned:
+            raise ParseError(
+                f"cone file content does not match its pinned digest (expected {pinned}, got {actual}) -- "
+                f"any change to the declared 225-entry ARM64 build closure (add, remove, or same-size "
+                f"substitution) must update {digest_path} in the same reviewed change"
+            )
+
+    raw = raw_bytes.decode("utf-8")
     if raw != "" and not raw.endswith("\n"):
         raise ParseError("cone file must end with a single trailing newline")
     lines = raw.splitlines()
@@ -534,7 +887,7 @@ def load_ledger(ledger_path: Path, rules: dict[str, Rule]) -> list[dict]:
             raise ParseError(f"ledger line {lineno}: matched contains disallowed metacharacter")
         if row["path"].startswith("/") or ".." in row["path"].split("/") or "\\" in row["path"]:
             raise ParseError(f"ledger line {lineno}: path is not a safe repo-relative path: {row['path']!r}")
-        if row["field"] not in ("source", "pkgver"):
+        if not FIELD_RE.match(row["field"]):
             raise ParseError(f"ledger line {lineno}: unknown field {row['field']!r}")
         rule_ids = row["rule_id"].split(",")
         if rule_ids != sorted(rule_ids) or len(rule_ids) != len(set(rule_ids)):
@@ -564,6 +917,38 @@ def load_ledger(ledger_path: Path, rules: dict[str, Rule]) -> list[dict]:
     if sort_keys != sorted(sort_keys, key=lambda t: t[:3]):
         raise ParseError("ledger is not sorted by (path, rule_id, locator_sha256)")
     return rows
+
+
+def verify_introduced_by_provenance(rows: list[dict], repo_root: Path) -> list[str]:
+    """Best-effort, read-only: if repo_root is a real git repository, verify
+    each ledger row's `introduced_by` names a commit that actually exists in
+    it (i.e. real repository provenance, not an arbitrary hex-looking
+    string). Uses only local `git cat-file -e <sha>^{commit}` -- no network,
+    no writes. If repo_root is not a git repository (e.g. an isolated test
+    fixture), this check is skipped entirely (returns no problems) rather
+    than failing every fixture that has no git history of its own.
+    """
+    if not (repo_root / ".git").exists():
+        return []
+    import subprocess
+    problems: list[str] = []
+    seen_shas: set[str] = set()
+    for row in rows:
+        sha = row["introduced_by"]
+        if sha in seen_shas:
+            continue
+        seen_shas.add(sha)
+        try:
+            result = subprocess.run(
+                ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
+                cwd=repo_root, capture_output=True, timeout=10,
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            problems.append(f"SCHEMA_INVALID(ledger): could not verify introduced_by={sha!r} via git ({e})")
+            continue
+        if result.returncode != 0:
+            problems.append(f"SCHEMA_INVALID(ledger): introduced_by={sha!r} does not name a real commit in this repository")
+    return problems
 
 
 # ---------------------------------------------------------------------------
@@ -602,7 +987,8 @@ def load_base_ledger_rule_ids(base_ledger_path: Path | None) -> set[str] | None:
 
 def run(cone_path: Path = CONE_FILE, rules_path: Path = RULES_FILE, ledger_path: Path = LEDGER_FILE,
         today: date | None = None, repo_root: Path = REPO_ROOT,
-        base_ledger_path: Path | None = None) -> tuple[bool, list[str]]:
+        base_ledger_path: Path | None = None,
+        cone_digest_path: Path | None = CONE_DIGEST_FILE) -> tuple[bool, list[str]]:
     problems: list[str] = []
     today = today or date.today()
 
@@ -612,7 +998,7 @@ def run(cone_path: Path = CONE_FILE, rules_path: Path = RULES_FILE, ledger_path:
         return False, [f"SCHEMA_INVALID(rules): {e}"]
 
     try:
-        cone = load_cone(cone_path)
+        cone = load_cone(cone_path, cone_digest_path)
     except ParseError as e:
         return False, [f"SCHEMA_INVALID(cone): {e}"]
 
@@ -620,6 +1006,8 @@ def run(cone_path: Path = CONE_FILE, rules_path: Path = RULES_FILE, ledger_path:
         ledger_rows = load_ledger(ledger_path, rules)
     except ParseError as e:
         return False, [f"SCHEMA_INVALID(ledger): {e}"]
+
+    problems.extend(verify_introduced_by_provenance(ledger_rows, repo_root))
 
     # Promotion is a CROSS-COMMIT, monotonic property: a rule becomes
     # permanently un-ledgerable once the BASE (parent/merge-base) commit's
@@ -692,26 +1080,28 @@ def run(cone_path: Path = CONE_FILE, rules_path: Path = RULES_FILE, ledger_path:
     return ok, problems
 
 
-def resolve_default_base_ledger(ledger_path: Path, base_ref: str | None) -> Path | None:
+def resolve_default_base_ledger(ledger_path: Path, base_ref: str | None, repo_root: Path = REPO_ROOT) -> Path | None:
     """Best-effort: materialize the ledger file as it existed at base_ref
     (typically the PR's merge-base / the default branch) into a temp file,
     using local `git show` only (no network). Returns None if unavailable
     for any reason (not a git repo, ref doesn't exist, file didn't exist at
     that ref, git not installed) -- callers must treat that as "no base
-    ledger", not as an error.
+    ledger", not as an error. Callers are responsible for deleting the
+    returned temp file (see `main`'s try/finally) once they are done with
+    it.
     """
     import subprocess
     import tempfile
     if not base_ref:
         return None
     try:
-        rel = ledger_path.resolve().relative_to(REPO_ROOT.resolve()).as_posix()
+        rel = ledger_path.resolve().relative_to(repo_root.resolve()).as_posix()
     except ValueError:
         return None
     try:
         result = subprocess.run(
             ["git", "show", f"{base_ref}:{rel}"],
-            cwd=REPO_ROOT, capture_output=True, text=True, timeout=30,
+            cwd=repo_root, capture_output=True, text=True, timeout=30,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -726,6 +1116,8 @@ def resolve_default_base_ledger(ledger_path: Path, base_ref: str | None) -> Path
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--cone", type=Path, default=CONE_FILE)
+    parser.add_argument("--cone-digest", type=Path, default=CONE_DIGEST_FILE, help="Path to the pinned sha256 digest of --cone. Pass an empty/nonexistent path override only for isolated fixture tests that intentionally don't pin a digest.")
+    parser.add_argument("--no-cone-digest", action="store_true", help="Disable cone digest pinning entirely (fixture tests only -- never used by the shipped CI workflow).")
     parser.add_argument("--rules", type=Path, default=RULES_FILE)
     parser.add_argument("--ledger", type=Path, default=LEDGER_FILE)
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT, help="Repository root cone paths are resolved against (for isolated fixture tests only).")
@@ -734,13 +1126,24 @@ def main(argv=None) -> int:
     parser.add_argument("--base-ref", type=str, default=None, help="A local git ref (e.g. origin/master) to auto-resolve --base-ledger from via 'git show'. Ignored if --base-ledger is given. No network access is performed.")
     args = parser.parse_args(argv)
 
-    base_ledger_path = args.base_ledger
-    if base_ledger_path is None and args.base_ref:
-        base_ledger_path = resolve_default_base_ledger(args.ledger, args.base_ref)
+    resolved_temp_base_ledger = None
+    try:
+        base_ledger_path = args.base_ledger
+        if base_ledger_path is None and args.base_ref:
+            base_ledger_path = resolve_default_base_ledger(args.ledger, args.base_ref, repo_root=args.repo_root)
+            resolved_temp_base_ledger = base_ledger_path
 
-    today = datetime.strptime(args.today, "%Y-%m-%d").date() if args.today else None
-    ok, problems = run(args.cone, args.rules, args.ledger, today=today, repo_root=args.repo_root,
-                        base_ledger_path=base_ledger_path)
+        today = datetime.strptime(args.today, "%Y-%m-%d").date() if args.today else None
+        cone_digest_path = None if args.no_cone_digest else args.cone_digest
+        ok, problems = run(args.cone, args.rules, args.ledger, today=today, repo_root=args.repo_root,
+                            base_ledger_path=base_ledger_path, cone_digest_path=cone_digest_path)
+    finally:
+        if resolved_temp_base_ledger is not None:
+            try:
+                resolved_temp_base_ledger.unlink(missing_ok=True)
+            except OSError:
+                pass
+
     if ok:
         print("PASS: arm64-admission-guard (V == L, no absolute hits, ledger valid, unexpired)")
         return 0
