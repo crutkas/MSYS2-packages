@@ -1,0 +1,50 @@
+name: arm64-admission
+
+# ARM64 package-admission governance gate (PR-0). Runs the deterministic,
+# offline static analyzer in .ci/arm64-admission-guard.py plus its full
+# fixture-based test suite. Intentionally triggers on every push/pull_request
+# (no path filter) -- the guard always re-scans the ENTIRE declared cone
+# (.ci/arm64-cone.txt) regardless of which files changed, so a path filter
+# here would only save CI minutes, never change correctness; omitting one
+# also closes off a "touch an unrelated file to dodge the gate" bypass class.
+
+concurrency:
+  group: arm64-admission-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  guard:
+    name: ARM64 admission guard
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Resolve base ledger (best-effort, local only)
+        id: base
+        run: |
+          set -eo pipefail
+          BASE_REF=""
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE_REF="origin/${{ github.event.pull_request.base.ref }}"
+          elif [ -n "${{ github.event.before }}" ] && git cat-file -e "${{ github.event.before }}" 2>/dev/null; then
+            BASE_REF="${{ github.event.before }}"
+          fi
+          echo "base_ref=${BASE_REF}" >> "$GITHUB_OUTPUT"
+
+      - name: Run arm64-admission-guard tests
+        run: python .ci/tests/test_arm64_admission_guard.py -v
+
+      - name: Run arm64-admission-guard
+        run: |
+          python .ci/arm64-admission-guard.py --base-ref "${{ steps.base.outputs.base_ref }}"

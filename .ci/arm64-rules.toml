@@ -1,0 +1,47 @@
+# ARM64 package-admission governance gate — rule registry.
+#
+# severity:
+#   "absolute"     — can NEVER appear in the debt ledger. A ledger row naming
+#                     an absolute rule is SCHEMA_INVALID (fails closed).
+#   "ratchetable"  — may have ledger rows (tracked, expiring, hash-bound
+#                     debt) as long as the row's rule_id is not itself
+#                     promoted (see promote_when_clear below).
+#
+# promote_when_clear:
+#   Only meaningful for ratchetable rules. Once a ratchetable rule has ZERO
+#   ledger rows referencing it, the guard treats it as promoted: no NEW
+#   ledger row may ever name it again, even if severity in this file still
+#   says "ratchetable". This is what makes the ratchet monotonic — clearing
+#   a rule's debt is a one-way door.
+
+[rule.TOOLCHAIN_QUARANTINE]
+severity = "absolute"
+description = "Any reference (full or safely-recognizable abbreviated hex) to the quarantined Binutils commit 9bbaa7b7a36ae51328cbff6acb720dcfa472db37, in source= or pkgver, anywhere in the cone."
+
+[rule.PARSE_FAIL]
+severity = "absolute"
+description = "An in-cone PKGBUILD's source/pkgver fields could not be safely and unambiguously recovered by the static parser."
+
+[rule.SCHEMA_INVALID]
+severity = "absolute"
+description = "Malformed/non-canonical registry, cone, or ledger; an absolute-rule or promoted-rule ledger row; duplicate/unsorted/wildcard ledger or cone content; a ledger row whose locator/hash no longer binds to on-disk content."
+
+[rule.SRC_GIT_PROTO]
+severity = "ratchetable"
+promote_when_clear = true
+description = "A source=() array element containing the insecure git:// transport."
+
+[rule.SRC_MUTABLE_REF]
+severity = "ratchetable"
+promote_when_clear = true
+description = "A source=() array element pinned to a mutable ref via '#tag='."
+
+[rule.SRC_INSECURE_HTTP]
+severity = "ratchetable"
+promote_when_clear = true
+description = "A source=() array element fetched over plaintext http://."
+
+[rule.TOOLCHAIN_DEV_VER]
+severity = "ratchetable"
+promote_when_clear = true
+description = "An in-cone mingw-w64-cross-mingwarm64-* recipe's pkgver matches a bare development-snapshot version (e.g. 15.0.0dev, 2.44dev)."
