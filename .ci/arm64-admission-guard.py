@@ -675,6 +675,22 @@ def parse_source_arrays(text: str, path: str) -> tuple[dict[str, list[Word]], li
     a superset over-approximation of what could reach the final array on
     any code path, so a violation hidden behind an untaken conditional
     branch is still caught (fail-closed), never silently dropped.
+
+    Before returning, this ALSO runs `verify_source_mutation_coverage`
+    (see its docstring) -- a genuinely independently-written second-
+    opinion scan for any bash construct that could assign to or mutate
+    `source`/`source_<arch>` OUTSIDE what `SOURCE_ARRAY_RE` above models
+    (a `local` prefix, an indexed-element assignment, `unset`, `printf
+    -v`, `read -a`, `mapfile`/`readarray`, an `eval` argument mentioning
+    `source`, or bash's `${!...}` indirect-variable-expansion syntax
+    anywhere in the file). Wiring this check HERE, rather than only in
+    one caller, means EVERY caller of `parse_source_arrays` --
+    `detect_findings_for_file` (primary detection), and both
+    reconciliation entry points (`reconcile_current_state`,
+    `resolve_base_reconciliation`) -- automatically inherits it and
+    raises the SAME `ParseError` (bucketed as PARSE_FAIL by every
+    caller), never silently proceeding as if total visibility into every
+    source/source_* mutation had been proven when it has not.
     """
     result: dict[str, list[Word]] = {}
     spans: list[tuple[int, int]] = []
@@ -688,7 +704,86 @@ def parse_source_arrays(text: str, path: str) -> tuple[dict[str, list[Word]], li
             raise ParseError(f"{path}: {name}=(...): {e}") from e
         result.setdefault(name, []).extend(words)
         spans.append((m.start(), close_pos if close_pos is not None else len(text)))
+    verify_source_mutation_coverage(text, path, spans)
     return result, spans
+
+
+# Independent, DELIBERATELY separately-written second-opinion scanner for
+# ANY bash construct that could assign to or otherwise mutate `source`/
+# `source_<arch>` outside SOURCE_ARRAY_RE's modeled vocabulary. Shares no
+# regex, helper, or code path with SOURCE_ARRAY_RE/parse_source_arrays --
+# a genuinely independent re-derivation is the only way a gap in the
+# canonical parser's OWN vocabulary can ever be caught, rather than the
+# canonical parser silently vouching for its own completeness. Covers:
+#   - a `local`-prefixed assignment (SOURCE_ARRAY_RE only recognizes
+#     declare/typeset/export/readonly prefixes, never `local`, since
+#     `local` is only valid inside a function body -- but PKGBUILD
+#     functions like prepare()/build() DO run with `source` in scope);
+#   - an INDEXED element assignment (`source[3]=...`), which reassigns
+#     one element without matching SOURCE_ARRAY_RE's `=\(` requirement;
+#   - `unset source[_<arch>]` -- mutation via deletion, not assignment;
+#   - `printf -v source`/`read -a source`/`mapfile`|`readarray ... source`
+#     -- alternate bash constructs that populate a variable/array by name
+#     without ever writing a literal `source=` or `source+=` token;
+#   - an `eval` whose argument text mentions `source` at all -- this
+#     analyzer never interprets eval'd content, so any eval that could
+#     plausibly construct/mutate `source` is unmodeled by construction;
+#   - bash's bare indirect-variable-EXPANSION syntax `${!NAME}` (value-
+#     of-the-variable-NAMED-by-NAME), which could read OR feed into
+#     mutating `source` through a name computed at runtime this analyzer
+#     can never resolve statically. Deliberately narrowed to the bare
+#     `${!name}` form only -- it does NOT flag the extremely common,
+#     entirely different, and behaviorally inert `${!name[@]}`/
+#     `${!name[*]}` (list array indices) or `${!prefix@}`/`${!prefix*}`
+#     (list variable names matching a prefix) forms, which are ubiquitous,
+#     safe PKGBUILD idioms (e.g. `for i in "${!pkgname[@]}"`) with no
+#     value-indirection semantics at all.
+_INDEPENDENT_SOURCE_MUTATION_RE = re.compile(
+    r"(?m)"
+    r"(?:^[ \t]*(?:local|declare|typeset|export|readonly)\s+(?:-[A-Za-z]+\s+)*source(?:_[A-Za-z0-9_]+)?\s*(?:\[[^\]\n]*\])?\s*\+?=)"
+    r"|(?:^[ \t]*source(?:_[A-Za-z0-9_]+)?\s*\[[^\]\n]*\]\s*\+?=)"
+    r"|(?:\bunset\b[^\n]*\bsource(?:_[A-Za-z0-9_]+)?\b)"
+    r"|(?:\bprintf\b[^\n]*-v\s+source(?:_[A-Za-z0-9_]+)?\b)"
+    r"|(?:\bread\b[^\n]*-a\s+source(?:_[A-Za-z0-9_]+)?\b)"
+    r"|(?:\b(?:mapfile|readarray)\b[^\n]*\bsource(?:_[A-Za-z0-9_]+)?\b)"
+    r"|(?:\beval\b[^\n]*\bsource(?:_[A-Za-z0-9_]+)?\b)"
+    r"|(?:\$\{!\s*[A-Za-z_][A-Za-z0-9_]*\s*\})"
+)
+
+
+def verify_source_mutation_coverage(text: str, path: str, canonical_spans: list[tuple[int, int]]) -> None:
+    """Raises ParseError if the independent scanner
+    (`_INDEPENDENT_SOURCE_MUTATION_RE`) finds ANY source/source_*
+    mutation candidate whose start position is not ALSO covered by one
+    of the canonical parser's own consumed spans (`canonical_spans`,
+    from `SOURCE_ARRAY_RE`). This is deliberately an OVERLAP check, not
+    an exact-span-equality check: an ordinary, already-recognized
+    `declare -a source=(...)` legitimately matches BOTH regexes (they
+    share vocabulary for that common case) and must not be flagged --
+    only a hit that falls entirely OUTSIDE every canonical span (a
+    `local`/indexed/`unset`/`printf`/`read`/`mapfile`/`eval`/indirect-
+    expansion construct SOURCE_ARRAY_RE never modeled at all) is treated
+    as unmodeled syntax this analyzer cannot claim total visibility
+    over. Fails closed (PARSE_FAIL, via the caller's ParseError handling)
+    rather than silently proceeding as if the canonical parser's view of
+    `source`/`source_<arch>` were provably complete.
+    """
+    for m in _INDEPENDENT_SOURCE_MUTATION_RE.finditer(text):
+        hit_start, hit_end = m.span()
+        if any(cs <= hit_start < ce or cs < hit_end <= ce for cs, ce in canonical_spans):
+            continue
+        raise ParseError(
+            f"{path}: independent source-mutation coverage scan found a construct "
+            f"({m.group(0)!r} at offset {hit_start}) that could assign to or mutate "
+            f"source/source_<arch> outside what the canonical source-array parser models "
+            f"(local/indexed-element assignment, unset, printf -v, read -a, mapfile/readarray, "
+            f"an eval mentioning source, or bash indirect-variable-expansion ${{!NAME}}); "
+            f"refusing to claim total visibility into every source/source_* mutation"
+        )
+
+
+
+
 
 
 
@@ -1536,32 +1631,53 @@ CLEAN_RELEASE_VERSION_RE = re.compile(r"^[0-9]+(\.[0-9]+)*$")
 # of (path, pkgver, source locator) at hand corresponds to a real,
 # specific upstream release -- this registry is that evidence store.
 #
-# This registry is DELIBERATELY EMPTY in this PR (see
-# RELEASE_ATTESTATION_FILE / seeding discussion in _reconcile_toolchain_dev_ver's
-# module-level docstring below): populating even the one currently-known
-# candidate (mingw-w64-cross-mingwarm64-windows-default-manifest's
-# pkgver=6.4 / #tag=release-6_4) would require independently verifying the
-# upstream git tag object, its dereferenced commit and tree, against the
-# real `sourceware.org` repository -- this analyzer is offline-only (see
-# the module docstring: "No network access is performed" is a load-bearing
-# design invariant elsewhere in this same file, e.g. the CLI's --base-ref
-# handling), so fabricating a verified-looking row here without actually
-# having verified it would be worse than leaving the registry empty: it
-# would be a FALSE positive-evidence claim in the one place this whole
-# section exists to make such claims trustworthy. An empty registry
-# correctly means "nothing can currently reach ABSENT_PROVEN for
-# TOOLCHAIN_DEV_VER" -- ledger rows remain removable ONLY once someone
-# with real access to the upstream repository adds a genuinely verified
-# row in ITS OWN reviewed change (never the same change that also removes
-# the corresponding debt row or changes the attested recipe -- see the
-# same-change-authorization rule below).
+# Round 6 shipped this registry EMPTY: populating even the one
+# then-known candidate (mingw-w64-cross-mingwarm64-windows-default-
+# manifest's pkgver=6.4 / #tag=release-6_4) would have meant writing an
+# assertion this offline analyzer could not itself verify. Round 7 adds
+# ONE row for exactly that candidate, but only after INDEPENDENTLY
+# verifying it against the real upstream repository out-of-band (via
+# `git ls-remote`/`git fetch --depth 1`/`git cat-file -p` against
+# `https://sourceware.org/git/cygwin-apps/windows-default-manifest.git`,
+# not by this analyzer at run time, and not by trusting an unverified
+# third-party claim of the same commit/tree -- see the row's own
+# `provenance` field and the Round 7 evidence report for the exact
+# commands and output). This is the same standard every future
+# attestation must meet: a row may only be added once someone with real,
+# independently-exercised access to the upstream repository has confirmed
+# the exact tag/commit/tree (or artifact digest) it asserts -- this
+# analyzer itself performs no network access and never will, so it can
+# only ever consume evidence gathered outside its own execution, never
+# manufacture it. The registry's SCHEMA additionally now requires each
+# VCS row to carry the dereferenced commit/tree and tag kind
+# (lightweight vs. annotated) and each non-VCS row to carry an artifact
+# digest+size, plus an `upstream_url` naming exactly which real
+# repository/endpoint the evidence was checked against in every row --
+# CI validates this is well-formed, canonical, and self-consistent
+# (schema, sort, uniqueness, no wildcards, in-cone paths, known VCS
+# vocabulary); it does NOT and cannot re-verify the external fact itself
+# -- that remains an independent-review responsibility, exactly as it
+# was for this row.
 ATTESTATION_FIELDS = [
     "path", "pkgver", "source_locator_sha256", "vcs_type", "ref_key", "ref_value",
-    "introduced_by", "provenance",
+    "tag_kind", "resolved_commit", "resolved_tree", "artifact_sha256", "artifact_size",
+    "upstream_url", "introduced_by", "provenance",
 ]
 ATTESTATION_HEADER = "\t".join(ATTESTATION_FIELDS)
 ATTESTATION_BYPASS_CHARS = set("*?[]{}()|\\")
 ATTESTATION_VCS_TYPE_RE = re.compile(r"^(git|fossil|hg|svn|bzr|none)$")
+ATTESTATION_TAG_KIND_RE = re.compile(r"^(none|lightweight|annotated)$")
+# git/fossil/hg all key commits by a 40-hex SHA1; svn/bzr key by a plain
+# integer revision number -- there is no "tree" equivalent this analyzer
+# models for hg/svn/bzr (hg's manifest hash is a different, less
+# universally-tooled concept; svn/bzr have no separable tree object at
+# all), so `resolved_tree` is only ever populated for git/fossil and must
+# be the literal string "none" otherwise -- inventing a placeholder value
+# for a concept that VCS type doesn't have would be exactly the kind of
+# unverifiable assertion this registry exists to forbid.
+ATTESTATION_COMMIT_HEX_VCS = frozenset({"git", "fossil", "hg"})
+ATTESTATION_COMMIT_NUMERIC_VCS = frozenset({"svn", "bzr"})
+ATTESTATION_TREE_VCS = frozenset({"git", "fossil"})
 
 
 @dataclass
@@ -1571,7 +1687,13 @@ class ReleaseAttestation:
     source_locator_sha256: str
     vcs_type: str  # one of VCS_FRAGMENT_VOCAB's keys, or "none" for a non-VCS archive
     ref_key: str   # the VCS fragment key attested (e.g. "tag"), or "none" for non-VCS
-    ref_value: str  # the literal ref value (e.g. "release-6_4"), or the archive's sha256 for non-VCS
+    ref_value: str  # the literal ref value (e.g. "release-6_4"), or "none" for non-VCS
+    tag_kind: str    # "lightweight" | "annotated" when ref_key == "tag", else "none"
+    resolved_commit: str  # dereferenced full commit id/revision, or "none" for non-VCS
+    resolved_tree: str    # dereferenced tree id (git/fossil only), else "none"
+    artifact_sha256: str  # non-VCS archive digest, else "none"
+    artifact_size: str    # non-VCS archive byte size, else "none"
+    upstream_url: str     # the real repository/endpoint this evidence was checked against
     introduced_by: str
     provenance: str
 
@@ -1587,7 +1709,15 @@ def _parse_release_attestations_text(raw: str) -> dict[tuple, "ReleaseAttestatio
     characters, safe repo-relative in-cone-shaped paths, known VCS-type
     vocabulary), since a malformed base-commit registry must be exactly as
     disqualifying as a malformed current one (never silently treated as
-    "no attestations available" -- see callers)."""
+    "no attestations available" -- see callers). This validates that the
+    registry's CONTENT is well-formed, canonical, and internally
+    self-consistent (e.g. a "tag" ref_key must carry a real tag_kind, a
+    non-VCS row must carry an artifact digest+size and no VCS fields).
+    It deliberately does NOT and cannot verify that the EXTERNAL fact a
+    row asserts (that the named tag really does dereference to that
+    commit/tree on that upstream repository) is true -- that is an
+    independent-review responsibility performed out-of-band before the
+    row is ever added; see the module-level note above this class."""
     if raw == "":
         raise ParseError("release-attestation registry file is empty (missing header)")
     if not raw.endswith("\n"):
@@ -1611,7 +1741,7 @@ def _parse_release_attestations_text(raw: str) -> dict[tuple, "ReleaseAttestatio
                 raise ParseError(f"release-attestation line {lineno}: field {k!r} has leading/trailing whitespace")
             if v == "":
                 raise ParseError(f"release-attestation line {lineno}: field {k!r} is empty")
-        for field_name in ("path", "pkgver", "ref_value", "provenance"):
+        for field_name in ("path", "pkgver", "ref_value", "upstream_url", "provenance"):
             if any(ch in ATTESTATION_BYPASS_CHARS for ch in row[field_name]):
                 raise ParseError(f"release-attestation line {lineno}: {field_name} contains disallowed metacharacter")
         if row["path"].startswith("/") or ".." in row["path"].split("/") or "\\" in row["path"]:
@@ -1620,15 +1750,43 @@ def _parse_release_attestations_text(raw: str) -> dict[tuple, "ReleaseAttestatio
             raise ParseError(f"release-attestation line {lineno}: path must name a PKGBUILD: {row['path']!r}")
         if not ATTESTATION_VCS_TYPE_RE.match(row["vcs_type"]):
             raise ParseError(f"release-attestation line {lineno}: unknown vcs_type {row['vcs_type']!r}")
+        if not ATTESTATION_TAG_KIND_RE.match(row["tag_kind"]):
+            raise ParseError(f"release-attestation line {lineno}: unknown tag_kind {row['tag_kind']!r}")
+        if "://" not in row["upstream_url"]:
+            raise ParseError(f"release-attestation line {lineno}: upstream_url does not look like a URL: {row['upstream_url']!r}")
         if row["vcs_type"] == "none":
-            if row["ref_key"] != "none":
-                raise ParseError(f"release-attestation line {lineno}: vcs_type=none requires ref_key=none")
-            if not re.fullmatch(r"[0-9a-f]{64}", row["ref_value"]):
-                raise ParseError(f"release-attestation line {lineno}: vcs_type=none requires ref_value to be a sha256 hex digest of the archive")
+            if row["ref_key"] != "none" or row["ref_value"] != "none":
+                raise ParseError(f"release-attestation line {lineno}: vcs_type=none requires ref_key=none and ref_value=none")
+            if row["tag_kind"] != "none":
+                raise ParseError(f"release-attestation line {lineno}: vcs_type=none requires tag_kind=none")
+            if row["resolved_commit"] != "none" or row["resolved_tree"] != "none":
+                raise ParseError(f"release-attestation line {lineno}: vcs_type=none requires resolved_commit=none and resolved_tree=none")
+            if not re.fullmatch(r"[0-9a-f]{64}", row["artifact_sha256"]):
+                raise ParseError(f"release-attestation line {lineno}: vcs_type=none requires artifact_sha256 to be a sha256 hex digest of the archive")
+            if not re.fullmatch(r"[1-9][0-9]*", row["artifact_size"]):
+                raise ParseError(f"release-attestation line {lineno}: vcs_type=none requires artifact_size to be a positive integer byte count")
         else:
             immutable_keys, mutable_keys = VCS_FRAGMENT_VOCAB[row["vcs_type"]]
             if row["ref_key"] not in immutable_keys | mutable_keys:
                 raise ParseError(f"release-attestation line {lineno}: ref_key {row['ref_key']!r} is not valid for vcs_type {row['vcs_type']!r}")
+            if row["artifact_sha256"] != "none" or row["artifact_size"] != "none":
+                raise ParseError(f"release-attestation line {lineno}: vcs_type={row['vcs_type']!r} requires artifact_sha256=none and artifact_size=none")
+            if row["ref_key"] == "tag":
+                if row["tag_kind"] == "none":
+                    raise ParseError(f"release-attestation line {lineno}: ref_key=tag requires tag_kind of lightweight or annotated")
+            elif row["tag_kind"] != "none":
+                raise ParseError(f"release-attestation line {lineno}: tag_kind must be none unless ref_key=tag")
+            if row["vcs_type"] in ATTESTATION_COMMIT_HEX_VCS:
+                if not re.fullmatch(r"[0-9a-f]{40}", row["resolved_commit"]):
+                    raise ParseError(f"release-attestation line {lineno}: vcs_type={row['vcs_type']!r} requires resolved_commit to be a 40-hex commit id")
+            elif row["vcs_type"] in ATTESTATION_COMMIT_NUMERIC_VCS:
+                if not re.fullmatch(r"[0-9]+", row["resolved_commit"]):
+                    raise ParseError(f"release-attestation line {lineno}: vcs_type={row['vcs_type']!r} requires resolved_commit to be a numeric revision")
+            if row["vcs_type"] in ATTESTATION_TREE_VCS:
+                if not re.fullmatch(r"[0-9a-f]{40}", row["resolved_tree"]):
+                    raise ParseError(f"release-attestation line {lineno}: vcs_type={row['vcs_type']!r} requires resolved_tree to be a 40-hex tree id")
+            elif row["resolved_tree"] != "none":
+                raise ParseError(f"release-attestation line {lineno}: vcs_type={row['vcs_type']!r} has no modeled tree concept; resolved_tree must be none")
         if not re.fullmatch(r"[0-9a-f]{64}", row["source_locator_sha256"]):
             raise ParseError(f"release-attestation line {lineno}: source_locator_sha256 must be 64 lowercase hex chars")
         if not re.fullmatch(r"[0-9a-f]{7,40}", row["introduced_by"]):
@@ -2426,7 +2584,8 @@ def run(cone_path: Path = CONE_FILE, rules_path: Path = RULES_FILE, ledger_path:
         base_cone_path: Path | None = None,
         base_reconciliation: dict[tuple[str, str], dict[str, str]] | None = None,
         attestations_path: Path | None = RELEASE_ATTESTATIONS_FILE,
-        base_release_attestations: dict[tuple, "ReleaseAttestation"] | None = None) -> tuple[bool, list[str]]:
+        base_release_attestations: dict[tuple, "ReleaseAttestation"] | None = None,
+        base_ref: str | None = None) -> tuple[bool, list[str]]:
     problems: list[str] = []
     today = today or date.today()
 
@@ -2438,13 +2597,15 @@ def run(cone_path: Path = CONE_FILE, rules_path: Path = RULES_FILE, ledger_path:
     # The release-attestation registry is validated with the SAME rigor as
     # every other governed artifact, unconditionally, REGARDLESS of
     # whether its content can currently authorize anything (see
-    # `load_release_attestations`'s docstring: this PR ships it empty,
-    # since populating it would require independently verifying upstream
-    # release evidence this offline analyzer cannot itself perform). A
-    # malformed registry is SCHEMA_INVALID exactly like a malformed
-    # ledger/cone/rules file.
+    # `load_release_attestations`'s docstring). A malformed registry is
+    # SCHEMA_INVALID exactly like a malformed ledger/cone/rules file.
+    # `current_attestations` (the CURRENT tree's own registry, distinct
+    # from `base_release_attestations`) is captured here -- it is used
+    # ONLY by the narrowly-scoped current-state-enforcement bootstrap
+    # exception below, never by removal-authorization/promotion, which
+    # remain exclusively base-tree-attestation-gated.
     try:
-        load_release_attestations(attestations_path)
+        current_attestations = load_release_attestations(attestations_path)
     except ParseError as e:
         return False, [f"SCHEMA_INVALID(release-attestations): {e}"]
 
@@ -2656,6 +2817,74 @@ def run(cone_path: Path = CONE_FILE, rules_path: Path = RULES_FILE, ledger_path:
                     f"because the primary detector no longer notices it (former locator={base_row.get('locator')!r})"
                 )
 
+    # Current-state enforcement (Round 7): every in-scope toolchain
+    # pkgver location must be POSITIVELY accounted for on EVERY run, not
+    # only when a ledger row is being removed. The primary detector
+    # (TOOLCHAIN_DEV_VER_RE) is deliberately narrow -- a clean numeric
+    # pkgver, or a live git-describe-style respelling, never matches it,
+    # so such a location is invisible to NEW_DEBT even when its true
+    # release state is PRESENT or UNKNOWN. Without this check, a
+    # brand-new (or already-existing, never-ledgered) toolchain path
+    # could sit in that blind spot indefinitely. `reconciliation` above
+    # already answers this using ONLY base-trusted evidence (content and
+    # attestations both consult base_release_attestations transitively
+    # via `_reconciled_state`), which is exactly what governs it going
+    # forward once a real attestation lands at a real base commit.
+    #
+    # BOOTSTRAP EXCEPTION, narrowly scoped: this registry started this
+    # PR at zero rows, so no path can yet be covered by base evidence no
+    # matter how long it has been true. An UNCHANGED existing toolchain
+    # path (byte-identical PKGBUILD content to the trusted base commit)
+    # that ALSO carries no TOOLCHAIN_DEV_VER ledger row in either the
+    # base or current ledger may additionally be accounted for by a
+    # matching CURRENT-tree attestation. This is what lets THIS PR
+    # introduce the very first attestation row for a state that has been
+    # true all along, without that same-change addition ever authorizing
+    # a ledger removal, rule promotion, or ANY recipe/source/version
+    # change -- those remain governed exclusively by
+    # reconcile_current_state/resolve_base_reconciliation above,
+    # untouched by this block. A path that is new this commit, or whose
+    # bytes differ AT ALL from base, is never bootstrap-eligible: it is
+    # judged exclusively by base evidence, exactly like every other
+    # governed transition, and correctly fails here if base evidence
+    # cannot cover it (this is precisely what makes a brand-new
+    # clean-numeric-pkgver toolchain snapshot with no prior row a hard
+    # failure rather than a silent pass).
+    toolchain_debt_paths = {
+        row["path"] for row in ledger_rows
+        if row["field"] == "pkgver" and row["rule_id"] == "TOOLCHAIN_DEV_VER"
+    }
+    base_ledger_toolchain_paths = {
+        r.get("path") for r in (base_ledger_rows or [])
+        if r.get("field") == "pkgver" and r.get("rule_id") == "TOOLCHAIN_DEV_VER"
+    }
+    for directory in cone:
+        rel = directory + "/PKGBUILD"
+        if not is_toolchain_path(rel) or rel in toolchain_debt_paths:
+            continue
+        state = _reconciled_state(rel, "pkgver", "TOOLCHAIN_DEV_VER")
+        if state == RECON_ABSENT_PROVEN:
+            continue
+        bootstrap_ok = False
+        if rel not in base_ledger_toolchain_paths:
+            try:
+                pkgbuild = resolve_cone_path(directory, repo_root)
+                current_text = pkgbuild.read_text(encoding="utf-8")
+                base_text = _git_show_text(base_ref, rel, repo_root) if base_ref else None
+            except (OSError, BaseRefResolutionError):
+                base_text = None
+                current_text = None
+            if current_text is not None and base_text is not None and base_text == current_text:
+                bootstrap_state = _reconcile_toolchain_dev_ver(rel, current_text, current_attestations)
+                bootstrap_ok = bootstrap_state == RECON_ABSENT_PROVEN
+        if bootstrap_ok:
+            continue
+        problems.append(
+            f"UNACCOUNTED_TOOLCHAIN_RELEASE_STATE: {rel} pkgver reconciliation={state} has no "
+            f"TOOLCHAIN_DEV_VER ledger entry and no base-attested (or narrowly bootstrap-eligible, "
+            f"unchanged-path) release evidence proves its release state is ABSENT_PROVEN"
+        )
+
     for row in ledger_rows:
         rel = row["path"]
         directory = rel.rsplit("/PKGBUILD", 1)[0] if rel.endswith("/PKGBUILD") else None
@@ -2664,6 +2893,7 @@ def run(cone_path: Path = CONE_FILE, rules_path: Path = RULES_FILE, ledger_path:
 
     ok = not problems
     return ok, problems
+
 
 
 class BaseRefResolutionError(Exception):
@@ -2858,7 +3088,13 @@ def _git_show_text(base_ref: str, rel_path: str, repo_root: Path) -> str | None:
     return result.stdout
 
 
-def resolve_base_reconciliation(cone: list[str], base_ref: str | None, repo_root: Path = REPO_ROOT) -> dict[tuple[str, str], dict[str, str]] | None:
+_UNSET_ATTESTATIONS = object()
+
+
+def resolve_base_reconciliation(
+    cone: list[str], base_ref: str | None, repo_root: Path = REPO_ROOT,
+    base_attestations: dict | None = _UNSET_ATTESTATIONS,
+) -> dict[tuple[str, str], dict[str, str]] | None:
     """Materializes every CURRENT-cone path's PKGBUILD content as it
     existed at `base_ref` and computes the SAME independent reconciler
     (`reconcile_current_state`'s per-file logic) against that historical
@@ -2887,10 +3123,18 @@ def resolve_base_reconciliation(cone: list[str], base_ref: str | None, repo_root
     ordinary NEW_DEBT check and by the separate, unconditional "a promoted
     rule_id may never accept a new ledger row" check in `run`, neither of
     which consult this reconciliation data at all.
+
+    `base_attestations`, if supplied (not the `_UNSET_ATTESTATIONS`
+    sentinel default), is used AS GIVEN rather than reloaded here --
+    this lets `main()` load and validate the base registry exactly once,
+    surfacing a malformed base registry as one clean, controlled FAIL
+    message instead of this function raising an uncaught `ParseError`
+    from its own independent internal load.
     """
     if not base_ref:
         return None
-    base_attestations = load_base_release_attestations(base_ref, repo_root)
+    if base_attestations is _UNSET_ATTESTATIONS:
+        base_attestations = load_base_release_attestations(base_ref, repo_root)
     result: dict[tuple[str, str], dict[str, str]] = {}
     for directory in cone:
         rel = directory + "/PKGBUILD"
@@ -2979,22 +3223,30 @@ def main(argv=None) -> int:
             base_reconciliation = None
             base_release_attestations = None
             if args.base_ref is not None:
-                try:
-                    cone_for_reconciliation = load_cone(args.cone, None if args.no_cone_digest else args.cone_digest)
-                except ParseError:
-                    cone_for_reconciliation = None
-                if cone_for_reconciliation is not None:
-                    base_reconciliation = resolve_base_reconciliation(cone_for_reconciliation, args.base_ref, repo_root=args.repo_root)
                 # base_release_attestations feeds removal-authorization
-                # (see `run`): it is loaded and VALIDATED here (a
-                # malformed base-commit registry is a hard failure, never
-                # silently treated as "no attestations available" -- see
+                # AND the promotion-totality reconciliation below (see
+                # `run`/`resolve_base_reconciliation`): it is loaded and
+                # VALIDATED here, ONCE, before either consumer runs (a
+                # malformed base-commit registry is a hard, controlled
+                # failure, never silently treated as "no attestations
+                # available" and never allowed to crash main() with an
+                # uncaught exception from a second, independent load
+                # inside resolve_base_reconciliation -- see
                 # `load_base_release_attestations`).
                 try:
                     base_release_attestations = load_base_release_attestations(args.base_ref, repo_root=args.repo_root)
                 except ParseError as e:
                     print(f"FAIL: arm64-admission-guard: malformed release-attestation registry at base commit {args.base_ref!r}: {e}", file=sys.stderr)
                     return 1
+                try:
+                    cone_for_reconciliation = load_cone(args.cone, None if args.no_cone_digest else args.cone_digest)
+                except ParseError:
+                    cone_for_reconciliation = None
+                if cone_for_reconciliation is not None:
+                    base_reconciliation = resolve_base_reconciliation(
+                        cone_for_reconciliation, args.base_ref, repo_root=args.repo_root,
+                        base_attestations=base_release_attestations,
+                    )
         except BaseRefResolutionError as e:
             print(f"FAIL: arm64-admission-guard: cannot resolve --base-ref {args.base_ref!r}: {e}", file=sys.stderr)
             print("  - refusing to silently proceed without the cross-commit monotonicity check", file=sys.stderr)
@@ -3006,7 +3258,8 @@ def main(argv=None) -> int:
                             base_ledger_path=base_ledger_path, cone_digest_path=cone_digest_path,
                             base_cone_path=base_cone_path, base_reconciliation=base_reconciliation,
                             attestations_path=args.release_attestations,
-                            base_release_attestations=base_release_attestations)
+                            base_release_attestations=base_release_attestations,
+                            base_ref=args.base_ref)
     finally:
         for resolved_temp in (resolved_temp_base_ledger, resolved_temp_base_cone):
             if resolved_temp is not None:

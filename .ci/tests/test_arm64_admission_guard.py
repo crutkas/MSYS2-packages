@@ -138,14 +138,47 @@ def make_ledger(*rows) -> str:
 
 
 def attestation_row(path, pkgver, source_locator, vcs_type, ref_key, ref_value,
+                     tag_kind=None, resolved_commit=None, resolved_tree=None,
+                     artifact_sha256=None, artifact_size="12345",
+                     upstream_url="https://example.org/upstream",
                      introduced_by="0123abc", provenance="test-fixture"):
     """Builds one release-attestation TSV row. `source_locator` is the
     exact raw (on-disk) source-array element text this attestation binds
     to -- its sha256 is what `source_locator_sha256` records, matching
-    the same raw-locator-hashing convention the debt ledger uses."""
+    the same raw-locator-hashing convention the debt ledger uses.
+
+    For vcs_type == "none" (a non-VCS archive), the caller-supplied
+    `ref_value` is treated, for backward-compatible call convenience, as
+    the archive's sha256 and is automatically routed to the dedicated
+    `artifact_sha256` field (Round 7 splits archive evidence into
+    artifact_sha256/artifact_size; ref_key/ref_value/tag_kind/
+    resolved_commit/resolved_tree are then forced to "none" per schema).
+    For a real VCS row, tag_kind/resolved_commit/resolved_tree default to
+    plausible well-formed placeholder values when the caller omits them
+    (sufficient for schema-shape tests that don't care about the exact
+    values); tests asserting the REAL verified windows-default-manifest
+    facts pass all of these explicitly instead of relying on defaults.
+    """
+    if vcs_type == "none":
+        artifact_sha256 = artifact_sha256 if artifact_sha256 is not None else ref_value
+        ref_key = "none"
+        ref_value = "none"
+        tag_kind = "none"
+        resolved_commit = "none"
+        resolved_tree = "none"
+    else:
+        artifact_sha256 = "none"
+        artifact_size = "none"
+        if tag_kind is None:
+            tag_kind = "lightweight" if ref_key == "tag" else "none"
+        if resolved_commit is None:
+            resolved_commit = "a" * 40 if vcs_type in ("git", "fossil", "hg") else "1"
+        if resolved_tree is None:
+            resolved_tree = "b" * 40 if vcs_type in ("git", "fossil") else "none"
     return "\t".join([
         path, pkgver, guard.sha256_hex(source_locator), vcs_type, ref_key, ref_value,
-        introduced_by, provenance,
+        tag_kind, resolved_commit, resolved_tree, artifact_sha256, artifact_size,
+        upstream_url, introduced_by, provenance,
     ])
 
 
@@ -1030,7 +1063,133 @@ class TestSourceIncludeDirective(BaseFixtureTest):
         self.assertTrue(ok, problems)
 
 
-class TestDelimiterHidingAcrossDynamicSpan(BaseFixtureTest):
+# ---------------------------------------------------------------------------
+# Independent source-mutation coverage scan ("common narrowing" closure):
+# a genuinely separately-written second-opinion scan for ANY construct that
+# could assign to or mutate source/source_<arch> outside SOURCE_ARRAY_RE's
+# modeled vocabulary. Each red canary below is a TRUE evasion of the
+# CANONICAL parser alone (verified: SOURCE_ARRAY_RE does not match any of
+# them), closed only by this independent second pass; the green controls
+# confirm the ubiquitous, safe PKGBUILD idioms this scan must NOT flag.
+# ---------------------------------------------------------------------------
+
+class TestSourceMutationCoverage(BaseFixtureTest):
+    def _assert_parse_fail_unmodeled(self, extra: str):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = FixtureRepo(Path(tmp.name))
+        repo.set_rules()
+        repo.add_pkg(
+            "pkg-x",
+            "pkgname=pkg-x\npkgver=1.0\npkgrel=1\n"
+            'source=("https://example.org/x.tar.gz")\n'
+            "sha256sums=('SKIP')\n" + extra,
+        )
+        repo.set_cone(["pkg-x"])
+        repo.set_ledger(make_ledger())
+        ok, problems = repo.run()
+        self.assertFalse(ok, problems)
+        self.assertTrue(any("PARSE_FAIL" in p and "coverage scan" in p for p in problems), problems)
+
+    def test_local_prefixed_source_reassignment_in_function_fails_closed(self):
+        # SOURCE_ARRAY_RE never recognizes a `local` prefix (only
+        # declare/typeset/export/readonly) -- but `local source=(...)`
+        # inside a PKGBUILD function is syntactically legal and would be
+        # invisible to the canonical parser.
+        self._assert_parse_fail_unmodeled(
+            'prepare() {\n  local source=("https://evil.example.org/x.tar.gz")\n}\n'
+        )
+
+    def test_indexed_element_reassignment_fails_closed(self):
+        # `source[0]=...` reassigns one element without ever matching
+        # SOURCE_ARRAY_RE's required `=\(`/`+=\(` shape.
+        self._assert_parse_fail_unmodeled('source[0]="https://evil.example.org/x.tar.gz"\n')
+
+    def test_unset_source_fails_closed(self):
+        self._assert_parse_fail_unmodeled("unset source\n")
+
+    def test_printf_v_source_fails_closed(self):
+        self._assert_parse_fail_unmodeled('printf -v source "%s" "https://evil.example.org/x.tar.gz"\n')
+
+    def test_read_a_source_fails_closed(self):
+        self._assert_parse_fail_unmodeled('read -a source <<< "https://evil.example.org/x.tar.gz"\n')
+
+    def test_mapfile_source_fails_closed(self):
+        self._assert_parse_fail_unmodeled('mapfile -t source <<< "https://evil.example.org/x.tar.gz"\n')
+
+    def test_eval_mentioning_source_fails_closed(self):
+        self._assert_parse_fail_unmodeled('eval "source=(\\"https://evil.example.org/x.tar.gz\\")"\n')
+
+    def test_bare_indirect_expansion_anywhere_fails_closed(self):
+        # `${!NAME}` (value-of-the-variable-NAMED-by-NAME) could feed a
+        # computed name into reading or mutating `source` in a way this
+        # analyzer can never resolve statically -- flagged wherever it
+        # appears in the file, not only near `source` itself.
+        self._assert_parse_fail_unmodeled('_x=pkgver\necho "${!_x}"\n')
+
+    def test_array_index_introspection_is_not_a_false_positive(self):
+        # `${!array[@]}`/`${!array[*]}` (list an array's indices) is a
+        # ubiquitous, entirely safe PKGBUILD idiom (iterating pkgname
+        # arrays) with no value-indirection semantics at all -- must NOT
+        # be flagged by the bare-`${!NAME}` pattern above.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = FixtureRepo(Path(tmp.name))
+        repo.set_rules()
+        repo.add_pkg(
+            "pkg-x",
+            "pkgname=('pkg-x' 'pkg-x-dev')\npkgver=1.0\npkgrel=1\n"
+            'source=("https://example.org/x.tar.gz")\n'
+            "sha256sums=('SKIP')\n"
+            'for i in "${!pkgname[@]}"; do\n  echo "$i"\ndone\n',
+        )
+        repo.set_cone(["pkg-x"])
+        repo.set_ledger(make_ledger())
+        ok, problems = repo.run()
+        self.assertTrue(ok, problems)
+
+    def test_variable_name_prefix_listing_is_not_a_false_positive(self):
+        # `${!prefix@}`/`${!prefix*}` (list variable names matching a
+        # prefix) is the OTHER safe, unrelated `${!...}` form -- also
+        # must not be flagged.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = FixtureRepo(Path(tmp.name))
+        repo.set_rules()
+        repo.add_pkg(
+            "pkg-x",
+            "pkgname=pkg-x\npkgver=1.0\npkgrel=1\n"
+            'source=("https://example.org/x.tar.gz")\n'
+            "sha256sums=('SKIP')\n"
+            'echo "${!pkg@}"\n',
+        )
+        repo.set_cone(["pkg-x"])
+        repo.set_ledger(make_ledger())
+        ok, problems = repo.run()
+        self.assertTrue(ok, problems)
+
+    def test_ordinary_declare_source_array_is_not_a_false_positive(self):
+        # The canonical, already-recognized form must NOT be flagged by
+        # the independent scan merely because it also happens to match
+        # part of its (deliberately broad) vocabulary -- covered by the
+        # overlap check against SOURCE_ARRAY_RE's own consumed spans.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = FixtureRepo(Path(tmp.name))
+        repo.set_rules()
+        repo.add_pkg(
+            "pkg-x",
+            "pkgname=pkg-x\npkgver=1.0\npkgrel=1\n"
+            'declare -a source=("https://example.org/x.tar.gz")\n'
+            "sha256sums=('SKIP')\n",
+        )
+        repo.set_cone(["pkg-x"])
+        repo.set_ledger(make_ledger())
+        ok, problems = repo.run()
+        self.assertTrue(ok, problems)
+
+
+
     def _one_pkg_finding(self, source_line: str, pkgname: str = "pkg-x"):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -1349,8 +1508,9 @@ class TestReleaseAttestationSchema(BaseFixtureTest):
 
     def test_non_sha256_source_locator_is_red(self):
         row = "\t".join([
-            f"{self.TOOLCHAIN_PKG}/PKGBUILD", "9.9.9", "not-a-sha256", "none", "none",
-            hashlib.sha256(b"x").hexdigest(), "0123abc", "test",
+            f"{self.TOOLCHAIN_PKG}/PKGBUILD", "9.9.9", "not-a-sha256", "none", "none", "none",
+            "none", "none", "none", hashlib.sha256(b"x").hexdigest(), "12345",
+            "https://example.org/upstream", "0123abc", "test",
         ])
         ok, problems = self._baseline_with_attestation(make_attestations(row))
         self.assertFalse(ok)
@@ -2496,6 +2656,160 @@ class TestReconciliationRemovalAuthorization(unittest.TestCase):
         state = guard._reconcile_toolchain_dev_ver(f"{self.TOOLCHAIN_PKG}/PKGBUILD", text, attestations=None)
         self.assertEqual(state, guard.RECON_UNKNOWN)
 
+    # -----------------------------------------------------------------
+    # Round 7: current-state enforcement + the narrow bootstrap
+    # exception. Every in-scope toolchain pkgver location must be
+    # POSITIVELY accounted for (ledgered debt OR RECON_ABSENT_PROVEN),
+    # not merely invisible to NEW_DEBT because the narrow primary
+    # detector never matches a clean numeric pkgver.
+    # -----------------------------------------------------------------
+
+    def _write_unledgered_toolchain_pkg(self):
+        write(self.repo_root / self.TOOLCHAIN_PKG / "PKGBUILD",
+              f"pkgname={self.TOOLCHAIN_PKG}\npkgver=6.4\npkgrel=1\n"
+              'source=("git+https://example.org/toolchain.git#tag=release-6_4")\n'
+              "sha256sums=('SKIP')\n")
+
+    def _seed_commit(self) -> str:
+        self.run_git("commit", "--allow-empty", "-q", "-m", "seed")
+        return self.run_git("rev-parse", "HEAD").stdout.strip()
+
+    def _src_mutable_ref_row(self, introduced_by="0123abc"):
+        # This fixture's locator's `#tag=` fragment ALSO triggers the
+        # (unrelated) SRC_MUTABLE_REF primary detector, exactly like the
+        # real mingw-w64-cross-mingwarm64-windows-default-manifest
+        # recipe this test mirrors -- ledgered here so these
+        # TOOLCHAIN_DEV_VER-focused tests aren't blocked by an unrelated
+        # rule's NEW_DEBT.
+        return ledger_row(f"{self.TOOLCHAIN_PKG}/PKGBUILD", "source", "SRC_MUTABLE_REF",
+                           '"git+https://example.org/toolchain.git#tag=release-6_4"', "#tag=",
+                           removal_gate="PR-1", introduced_by=introduced_by)
+
+    def _bootstrap_attestation(self):
+        return attestation_row(
+            f"{self.TOOLCHAIN_PKG}/PKGBUILD", "6.4",
+            '"git+https://example.org/toolchain.git#tag=release-6_4"',
+            "git", "tag", "release-6_4", tag_kind="lightweight",
+            resolved_commit="c" * 40, resolved_tree="d" * 40,
+        )
+
+    def test_unchanged_bootstrap_seed_passes_current_state_accounting(self):
+        # The narrow bootstrap exception: an UNCHANGED existing toolchain
+        # path (byte-identical to base), with no ledger row anywhere,
+        # may be accounted for by a CURRENT-tree attestation -- this lets
+        # THIS PR introduce the very first attestation row for a state
+        # that has been true all along.
+        seed = self._seed_commit()
+        self._write_unledgered_toolchain_pkg()
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(self._src_mutable_ref_row(seed)))
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1: unledgered clean toolchain path, no registry yet")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        # Same commit content; only the registry gains its first row.
+        self._set_attestations(make_attestations(self._bootstrap_attestation()))
+
+        result = self._invoke(base_ref=commit1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PASS", result.stdout)
+
+    def test_removing_bootstrap_seed_makes_it_unaccounted(self):
+        # Negative control for the above: WITHOUT the attestation, the
+        # exact same unchanged path is UNACCOUNTED (fails), confirming
+        # the seed itself -- not some other side effect -- is what made
+        # the prior test pass.
+        self._write_unledgered_toolchain_pkg()
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1: unledgered clean toolchain path, no registry")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+        # No attestation added this time.
+
+        result = self._invoke(base_ref=commit1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("UNACCOUNTED_TOOLCHAIN_RELEASE_STATE", result.stderr)
+
+    def test_modified_path_with_same_change_seed_still_rejects(self):
+        # The bootstrap exception is byte-identity-gated: if the PKGBUILD
+        # itself changes in the SAME commit that introduces the
+        # attestation, bootstrap must NOT apply -- this is judged
+        # exclusively by base evidence (which cannot exist yet for a
+        # same-change edit), exactly like every other governed
+        # transition.
+        write(self.repo_root / self.TOOLCHAIN_PKG / "PKGBUILD",
+              f"pkgname={self.TOOLCHAIN_PKG}\npkgver=6.3\npkgrel=1\n"
+              'source=("git+https://example.org/toolchain.git#tag=release-6_3")\n'
+              "sha256sums=('SKIP')\n")
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1: different pkgver/tag entirely")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        # Bump to 6.4/release-6_4 AND add the matching attestation in
+        # the very same change.
+        self._write_unledgered_toolchain_pkg()
+        self._set_attestations(make_attestations(self._bootstrap_attestation()))
+
+        result = self._invoke(base_ref=commit1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("UNACCOUNTED_TOOLCHAIN_RELEASE_STATE", result.stderr)
+
+    def test_new_path_with_same_change_seed_still_rejects(self):
+        # A path that does not exist at all at the base commit (a
+        # genuinely new toolchain package introduced by this very
+        # change) is never bootstrap-eligible either -- there is no base
+        # content to prove byte-identity against.
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1: package does not exist yet")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        self._write_unledgered_toolchain_pkg()
+        self._set_attestations(make_attestations(self._bootstrap_attestation()))
+
+        result = self._invoke(base_ref=commit1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("UNACCOUNTED_TOOLCHAIN_RELEASE_STATE", result.stderr)
+
+    def test_base_attested_seed_governs_current_state_after_merge(self):
+        # Once the bootstrap row has genuinely landed at a trusted BASE
+        # commit (simulating "after this PR merges"), the SAME unchanged
+        # path is governed by ordinary base-tree-attestation evidence --
+        # no bootstrap special-casing needed at all, confirming the
+        # mechanism generalizes correctly post-merge.
+        seed = self._seed_commit()
+        self._write_unledgered_toolchain_pkg()
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(self._src_mutable_ref_row(seed)))
+        self._set_attestations(make_attestations(self._bootstrap_attestation()))
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1: registry already carries the seed row at base")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+        # Current tree identical; nothing new this change.
+
+        result = self._invoke(base_ref=commit1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PASS", result.stdout)
+
+    def test_unaccounted_toolchain_state_with_no_base_ref_at_all_rejects(self):
+        # With no --base-ref supplied at all, bootstrap eligibility can
+        # never be established (there is nothing to compare byte-
+        # identity against) -- an unledgered clean toolchain path must
+        # still fail closed, not silently pass merely because no base
+        # was given.
+        self._write_unledgered_toolchain_pkg()
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())
+        self._set_attestations(make_attestations(self._bootstrap_attestation()))
+
+        result = self._invoke(base_ref=None)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("UNACCOUNTED_TOOLCHAIN_RELEASE_STATE", result.stderr)
+
     def test_unknown_dynamic_content_with_row_deleted_is_unverified_removal(self):
         # An unresolvable/dynamic pkgver at the CURRENT commit -- neither
         # provably present nor provably absent -- must block removal just
@@ -2532,24 +2846,39 @@ class TestReconciliationRemovalAuthorization(unittest.TestCase):
         # whose scheme is provided via a conditionally-assigned,
         # therefore-UNKNOWN variable). Promotion must be withheld --
         # confirmed by checking that a SUBSEQUENT new SRC_INSECURE_HTTP
-        # ledger row is accepted (not rejected as "promoted").
+        # ledger row is accepted (not rejected as "promoted"). Uses a
+        # dev-suffixed pkgver with its own genuine, unrelated
+        # TOOLCHAIN_DEV_VER ledger row so this SRC_INSECURE_HTTP-focused
+        # fixture is fully accounted under Round 7's current-state
+        # enforcement (this package is toolchain-scoped by directory
+        # name) without that unrelated rule's accounting interfering
+        # with what this test actually exercises.
+        # A seed commit so the dev_row's introduced_by names a REAL,
+        # pre-existing commit (verify_introduced_by_provenance validates
+        # this whenever repo_root is a real git repository, which this
+        # fixture is).
+        self.run_git("commit", "--allow-empty", "-q", "-m", "seed")
+        seed_commit = self.run_git("rev-parse", "HEAD").stdout.strip()
+        dev_row = ledger_row(f"{self.TOOLCHAIN_PKG}/PKGBUILD", "pkgver", "TOOLCHAIN_DEV_VER",
+                              "1.0.0dev", "1.0.0dev", removal_gate="T0-corrected-toolchain",
+                              introduced_by=seed_commit)
         write(self.repo_root / self.TOOLCHAIN_PKG / "PKGBUILD",
-              f"pkgname={self.TOOLCHAIN_PKG}\npkgver=1.0.0\npkgrel=1\n"
+              f"pkgname={self.TOOLCHAIN_PKG}\npkgver=1.0.0dev\npkgrel=1\n"
               "if true; then\n_p=https\nelse\n_p=http\nfi\n"
               'source=("${_p}://example.org/x.tar.gz")\n'
               "sha256sums=('SKIP')\n")
-        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())  # zero rows already
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(dev_row))  # zero SRC_INSECURE_HTTP rows
         self.run_git("add", "-A")
         self.run_git("commit", "-q", "-m", "commit1: base has zero SRC_INSECURE_HTTP rows, but is UNKNOWN not proven absent")
         commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
 
         write(self.repo_root / self.TOOLCHAIN_PKG / "PKGBUILD",
-              f"pkgname={self.TOOLCHAIN_PKG}\npkgver=1.0.0\npkgrel=1\n"
+              f"pkgname={self.TOOLCHAIN_PKG}\npkgver=1.0.0dev\npkgrel=1\n"
               'source=("http://example.org/new-insecure.tar.gz")\n'
               "sha256sums=('SKIP')\n")
         row = ledger_row(f"{self.TOOLCHAIN_PKG}/PKGBUILD", "source", "SRC_INSECURE_HTTP",
                           '"http://example.org/new-insecure.tar.gz"', "http://", introduced_by=commit1)
-        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(row))
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(row, dev_row))
 
         result = self._invoke(base_ref=commit1)
         self.assertNotIn("Traceback", result.stderr)
