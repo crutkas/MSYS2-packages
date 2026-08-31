@@ -137,6 +137,22 @@ def make_ledger(*rows) -> str:
     return "\n".join([LEDGER_HEADER, *rows]) + "\n"
 
 
+def attestation_row(path, pkgver, source_locator, vcs_type, ref_key, ref_value,
+                     introduced_by="0123abc", provenance="test-fixture"):
+    """Builds one release-attestation TSV row. `source_locator` is the
+    exact raw (on-disk) source-array element text this attestation binds
+    to -- its sha256 is what `source_locator_sha256` records, matching
+    the same raw-locator-hashing convention the debt ledger uses."""
+    return "\t".join([
+        path, pkgver, guard.sha256_hex(source_locator), vcs_type, ref_key, ref_value,
+        introduced_by, provenance,
+    ])
+
+
+def make_attestations(*rows) -> str:
+    return "\n".join([guard.ATTESTATION_HEADER, *rows]) + "\n"
+
+
 class FixtureRepo:
     """A throwaway repo tree under a TemporaryDirectory. Never touches the
     real MSYS2-packages checkout."""
@@ -145,6 +161,7 @@ class FixtureRepo:
         self.root = tmp
         (self.root / ".ci").mkdir(parents=True, exist_ok=True)
         self._cone_digest_enabled = True
+        write(self.root / ".ci" / "arm64-release-attestations.tsv", make_attestations())
 
     def add_pkg(self, directory: str, pkgbuild_text: str) -> None:
         write(self.root / directory / "PKGBUILD", pkgbuild_text)
@@ -166,7 +183,10 @@ class FixtureRepo:
     def set_ledger(self, text: str) -> None:
         write(self.root / ".ci" / "arm64-debt-ledger.tsv", text)
 
-    def run(self, today="2026-01-01", base_ledger_text=None, base_reconciliation=None):
+    def set_attestations(self, text: str) -> None:
+        write(self.root / ".ci" / "arm64-release-attestations.tsv", text)
+
+    def run(self, today="2026-01-01", base_ledger_text=None, base_reconciliation=None, base_release_attestations=None):
         from datetime import datetime
         base_ledger_path = None
         if base_ledger_text is not None:
@@ -182,6 +202,8 @@ class FixtureRepo:
             base_ledger_path=base_ledger_path,
             cone_digest_path=cone_digest_path,
             base_reconciliation=base_reconciliation,
+            attestations_path=self.root / ".ci" / "arm64-release-attestations.tsv",
+            base_release_attestations=base_release_attestations,
         )
 
     def snapshot_reconciliation(self):
@@ -197,10 +219,17 @@ class FixtureRepo:
         `run()` is actually invoked. Call this immediately after writing
         the PKGBUILDs/cone that represent the "PR-1 just landed" state,
         before making any further mutations for a subsequent simulated PR.
+
+        `snapshot_attestations` should be the attestation registry state
+        AT THIS SAME MOMENT (defaults to whatever is currently written to
+        this fixture's attestations file), matching how
+        `resolve_base_reconciliation` sources both content and evidence
+        from the same single historical commit.
         """
         cone = guard.load_cone(self.root / ".ci" / "arm64-cone.txt",
                                 (self.root / ".ci" / "arm64-cone.sha256") if self._cone_digest_enabled else None)
-        return guard.reconcile_current_state(cone, self.root)
+        attestations = guard.load_release_attestations(self.root / ".ci" / "arm64-release-attestations.tsv")
+        return guard.reconcile_current_state(cone, self.root, attestations=attestations)
 
 
 class BaseFixtureTest(unittest.TestCase):
@@ -1241,6 +1270,105 @@ class TestCanonicalForm(BaseFixtureTest):
 
 
 # ---------------------------------------------------------------------------
+# Release-attestation registry schema validation (canonical sort,
+# uniqueness, no wildcard, safe path, known vocabulary, tamper detection).
+# Validated with the identical rigor as ledger/cone/rules (see
+# _parse_release_attestations_text) -- a malformed registry is
+# SCHEMA_INVALID(release-attestations) exactly like any other governed
+# artifact, entirely independent of whether its content could ever
+# authorize anything.
+# ---------------------------------------------------------------------------
+
+class TestReleaseAttestationSchema(BaseFixtureTest):
+    TOOLCHAIN_PKG = "mingw-w64-cross-mingwarm64-toolchain"
+
+    def _baseline_with_attestation(self, attestation_text: str):
+        self.repo.add_pkg(self.TOOLCHAIN_PKG, pkgbuild_toolchain_dev(pkgver="9.9.9dev"))
+        self.repo.set_cone([self.TOOLCHAIN_PKG])
+        row = ledger_row(f"{self.TOOLCHAIN_PKG}/PKGBUILD", "pkgver", "TOOLCHAIN_DEV_VER",
+                          "9.9.9dev", "9.9.9dev", removal_gate="T0-corrected-toolchain")
+        self.repo.set_ledger(make_ledger(row))
+        self.repo.set_attestations(attestation_text)
+        return self.repo.run()
+
+    def test_malformed_header_is_red(self):
+        ok, problems = self._baseline_with_attestation("not\tthe\tright\theader\n")
+        self.assertFalse(ok)
+        self.assertTrue(any("SCHEMA_INVALID(release-attestations)" in p for p in problems), problems)
+
+    def test_missing_trailing_newline_is_red(self):
+        ok, problems = self._baseline_with_attestation(guard.ATTESTATION_HEADER)  # no trailing \n
+        self.assertFalse(ok)
+        self.assertTrue(any("SCHEMA_INVALID(release-attestations)" in p for p in problems), problems)
+
+    def _valid_row(self, pkgver="9.9.9", locator='"https://example.org/x.tar.gz"'):
+        return attestation_row(f"{self.TOOLCHAIN_PKG}/PKGBUILD", pkgver, locator, "none", "none",
+                                hashlib.sha256(b"x").hexdigest())
+
+    def test_duplicate_key_is_red(self):
+        row = self._valid_row()
+        ok, problems = self._baseline_with_attestation(make_attestations(row, row))
+        self.assertFalse(ok)
+        self.assertTrue(any("SCHEMA_INVALID(release-attestations)" in p and "duplicate" in p for p in problems), problems)
+
+    def test_unsorted_registry_is_red(self):
+        row_b = self._valid_row(pkgver="9.9.9")
+        row_a = self._valid_row(pkgver="1.0.0")
+        ok, problems = self._baseline_with_attestation(make_attestations(row_b, row_a))
+        self.assertFalse(ok)
+        self.assertTrue(any("SCHEMA_INVALID(release-attestations)" in p and "sorted" in p for p in problems), problems)
+
+    def test_wildcard_in_path_is_red(self):
+        row = attestation_row(f"{self.TOOLCHAIN_PKG}*/PKGBUILD", "9.9.9",
+                               '"https://example.org/x.tar.gz"', "none", "none", hashlib.sha256(b"x").hexdigest())
+        ok, problems = self._baseline_with_attestation(make_attestations(row))
+        self.assertFalse(ok)
+        self.assertTrue(any("SCHEMA_INVALID(release-attestations)" in p for p in problems), problems)
+
+    def test_path_traversal_is_red(self):
+        row = attestation_row("../etc/PKGBUILD", "9.9.9", '"https://example.org/x.tar.gz"',
+                               "none", "none", hashlib.sha256(b"x").hexdigest())
+        ok, problems = self._baseline_with_attestation(make_attestations(row))
+        self.assertFalse(ok)
+        self.assertTrue(any("SCHEMA_INVALID(release-attestations)" in p for p in problems), problems)
+
+    def test_invalid_vcs_type_is_red(self):
+        row = attestation_row(f"{self.TOOLCHAIN_PKG}/PKGBUILD", "9.9.9", '"https://example.org/x.tar.gz"',
+                               "cvs", "none", hashlib.sha256(b"x").hexdigest())
+        ok, problems = self._baseline_with_attestation(make_attestations(row))
+        self.assertFalse(ok)
+        self.assertTrue(any("SCHEMA_INVALID(release-attestations)" in p for p in problems), problems)
+
+    def test_invalid_ref_key_for_vcs_type_is_red(self):
+        row = attestation_row(f"{self.TOOLCHAIN_PKG}/PKGBUILD", "9.9.9",
+                               '"git+https://example.org/x.git#tag=v1.0"',
+                               "git", "revision", "v1.0")  # "revision" is not valid for git
+        ok, problems = self._baseline_with_attestation(make_attestations(row))
+        self.assertFalse(ok)
+        self.assertTrue(any("SCHEMA_INVALID(release-attestations)" in p for p in problems), problems)
+
+    def test_non_sha256_source_locator_is_red(self):
+        row = "\t".join([
+            f"{self.TOOLCHAIN_PKG}/PKGBUILD", "9.9.9", "not-a-sha256", "none", "none",
+            hashlib.sha256(b"x").hexdigest(), "0123abc", "test",
+        ])
+        ok, problems = self._baseline_with_attestation(make_attestations(row))
+        self.assertFalse(ok)
+        self.assertTrue(any("SCHEMA_INVALID(release-attestations)" in p for p in problems), problems)
+
+    def test_malformed_introduced_by_is_red(self):
+        row = attestation_row(f"{self.TOOLCHAIN_PKG}/PKGBUILD", "9.9.9", '"https://example.org/x.tar.gz"',
+                               "none", "none", hashlib.sha256(b"x").hexdigest(), introduced_by="not-a-sha")
+        ok, problems = self._baseline_with_attestation(make_attestations(row))
+        self.assertFalse(ok)
+        self.assertTrue(any("SCHEMA_INVALID(release-attestations)" in p for p in problems), problems)
+
+    def test_valid_empty_registry_passes(self):
+        ok, problems = self._baseline_with_attestation(make_attestations())
+        self.assertTrue(ok, problems)
+
+
+# ---------------------------------------------------------------------------
 # B3: cone digest binding (monotonic 225-entry declared BUILD closure)
 # ---------------------------------------------------------------------------
 
@@ -2096,6 +2224,7 @@ class TestReconciliationRemovalAuthorization(unittest.TestCase):
         write(self.repo_root / ".ci" / "arm64-cone.txt", self.TOOLCHAIN_PKG + "\n")
         write(self.repo_root / ".ci" / "arm64-cone.sha256",
               sha256_of(self.repo_root / ".ci" / "arm64-cone.txt") + "\n")
+        write(self.repo_root / ".ci" / "arm64-release-attestations.tsv", make_attestations())
 
         def run_git(*args):
             return subprocess.run(["git", *args], cwd=self.repo_root, capture_output=True, text=True, check=True)
@@ -2103,6 +2232,9 @@ class TestReconciliationRemovalAuthorization(unittest.TestCase):
         run_git("init", "-q")
         run_git("config", "user.email", "test@example.com")
         run_git("config", "user.name", "test")
+
+    def _set_attestations(self, text: str) -> None:
+        write(self.repo_root / ".ci" / "arm64-release-attestations.tsv", text)
 
     def _write_pkgbuild(self, pkgver: str) -> None:
         write(self.repo_root / self.TOOLCHAIN_PKG / "PKGBUILD",
@@ -2116,6 +2248,7 @@ class TestReconciliationRemovalAuthorization(unittest.TestCase):
                 "--cone-digest", str(self.repo_root / ".ci" / "arm64-cone.sha256"),
                 "--rules", str(self.repo_root / ".ci" / "arm64-rules.toml"),
                 "--ledger", str(self.repo_root / ".ci" / "arm64-debt-ledger.tsv"),
+                "--release-attestations", str(self.repo_root / ".ci" / "arm64-release-attestations.tsv"),
                 "--repo-root", str(self.repo_root),
                 "--today", "2026-01-01"]
         if base_ref is not None:
@@ -2169,26 +2302,199 @@ class TestReconciliationRemovalAuthorization(unittest.TestCase):
         self.assertIn("UNVERIFIED_DEBT_REMOVAL", result.stderr)
         self.assertIn("TOOLCHAIN_DEV_VER", result.stderr)
 
-    def test_genuine_remediation_with_row_deleted_passes(self):
-        # The positive control proving this mechanism is not merely
-        # fail-closed-always: a TRUE fix (a clean, fully-released numeric
-        # version, no VCS ambiguity) combined with deleting the
-        # now-obsolete ledger row must PASS.
+    def test_clean_numeric_fix_without_attestation_still_blocks_removal(self):
+        # Round 6 fix for the exact gap the audit identified against
+        # Round 5: a clean numeric pkgver is NECESSARY but never
+        # SUFFICIENT on its own any more. With NO attestation anywhere
+        # (current tree, current registry, or base commit), even a
+        # genuinely clean-looking fix cannot reach ABSENT_PROVEN --
+        # Round 5 would have wrongly passed this.
         self._write_pkgbuild("2.44dev")
         row = ledger_row(f"{self.TOOLCHAIN_PKG}/PKGBUILD", "pkgver", "TOOLCHAIN_DEV_VER",
                           "2.44dev", "2.44dev", removal_gate="T0-corrected-toolchain")
         write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(row))
         self.run_git("add", "-A")
-        self.run_git("commit", "-q", "-m", "commit1: baseline dev pin")
+        self.run_git("commit", "-q", "-m", "commit1: baseline dev pin, no attestation registry entry")
         commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
 
-        self._write_pkgbuild("2.44.0")  # clean release: genuinely fixed
+        self._write_pkgbuild("2.44.0")  # clean release spelling, but UNATTESTED
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())  # row deleted
+
+        result = self._invoke(base_ref=commit1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("UNVERIFIED_DEBT_REMOVAL", result.stderr)
+
+    def test_base_attested_release_with_row_deleted_passes(self):
+        # The positive control proving this mechanism is not merely
+        # fail-closed-always: a genuine, independently-recorded
+        # attestation that ALREADY EXISTED at the base commit (never a
+        # same-change addition -- see the next test) authorizes exactly
+        # the (path, pkgver, source-locator) combination it names, and
+        # ONLY that combination, to reach ABSENT_PROVEN and legitimately
+        # authorize the ledger-row deletion.
+        self._write_pkgbuild("2.44dev")
+        row = ledger_row(f"{self.TOOLCHAIN_PKG}/PKGBUILD", "pkgver", "TOOLCHAIN_DEV_VER",
+                          "2.44dev", "2.44dev", removal_gate="T0-corrected-toolchain")
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(row))
+        attestation = attestation_row(
+            f"{self.TOOLCHAIN_PKG}/PKGBUILD", "2.44.0",
+            f'"https://example.org/toolchain-2.44.0.tar.gz"',
+            "none", "none", hashlib.sha256(b"pretend-verified-archive-bytes").hexdigest(),
+        )
+        self._set_attestations(make_attestations(attestation))
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1: baseline dev pin, WITH a genuine base-committed attestation")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        self._write_pkgbuild("2.44.0")  # matches the attested pkgver + locator exactly
         write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())  # row deleted
 
         result = self._invoke(base_ref=commit1)
         self.assertNotIn("Traceback", result.stderr)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("PASS", result.stdout)
+
+    def test_same_change_attestation_addition_does_not_authorize_removal(self):
+        # "Same-change attestation+recipe/row change rejects": adding the
+        # attestation row IN THE SAME CHANGE that deletes the debt row
+        # must NOT authorize the removal -- only an attestation that
+        # ALREADY EXISTED at the trusted base commit may ever do so.
+        self._write_pkgbuild("2.44dev")
+        row = ledger_row(f"{self.TOOLCHAIN_PKG}/PKGBUILD", "pkgver", "TOOLCHAIN_DEV_VER",
+                          "2.44dev", "2.44dev", removal_gate="T0-corrected-toolchain")
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(row))
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1: baseline dev pin, no attestation yet")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        self._write_pkgbuild("2.44.0")
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())  # row deleted
+        attestation = attestation_row(
+            f"{self.TOOLCHAIN_PKG}/PKGBUILD", "2.44.0",
+            f'"https://example.org/toolchain-2.44.0.tar.gz"',
+            "none", "none", hashlib.sha256(b"pretend-verified-archive-bytes").hexdigest(),
+        )
+        self._set_attestations(make_attestations(attestation))  # added in THIS same change
+
+        result = self._invoke(base_ref=commit1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("UNVERIFIED_DEBT_REMOVAL", result.stderr)
+
+    def test_bootstrap_attestation_introduction_authorizes_nothing(self):
+        # "Bootstrap attestation introduction changes no bound
+        # recipe/debt and authorizes nothing": the base commit has NO
+        # attestation-registry file AT ALL (this PR's own bootstrap
+        # state). A change that both introduces the registry (with a row)
+        # AND deletes the corresponding debt row in the SAME commit must
+        # still be rejected -- adding the registry for the first time is
+        # not itself sufficient grounds, matching the same-change rule.
+        self._write_pkgbuild("2.44dev")
+        row = ledger_row(f"{self.TOOLCHAIN_PKG}/PKGBUILD", "pkgver", "TOOLCHAIN_DEV_VER",
+                          "2.44dev", "2.44dev", removal_gate="T0-corrected-toolchain")
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(row))
+        (self.repo_root / ".ci" / "arm64-release-attestations.tsv").unlink()  # base genuinely has no registry
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1: base predates the attestation registry entirely")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        self._write_pkgbuild("2.44.0")
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())  # row deleted
+        attestation = attestation_row(
+            f"{self.TOOLCHAIN_PKG}/PKGBUILD", "2.44.0",
+            f'"https://example.org/toolchain-2.44.0.tar.gz"',
+            "none", "none", hashlib.sha256(b"pretend-verified-archive-bytes").hexdigest(),
+        )
+        self._set_attestations(make_attestations(attestation))  # registry introduced in THIS same change
+
+        result = self._invoke(base_ref=commit1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("UNVERIFIED_DEBT_REMOVAL", result.stderr)
+
+    def test_same_commit_version_only_respell_with_row_deleted_rejects(self):
+        # Required negative from audit item 1: an in-cone toolchain
+        # recipe pinned by an IMMUTABLE #commit= (an untagged snapshot
+        # commit, per the audit's exact concern) whose pkgver is
+        # respelled from "2.44dev" to a clean numeric "2.44.0" while the
+        # SAME #commit= hash is retained must NOT reach ABSENT_PROVEN --
+        # an immutable commit reference alone is necessary but never
+        # proof of a genuine release; only a matching attestation is.
+        commit_hash = "3b69e905b1b94561a48744d5eae52377219173f1"
+        write(self.repo_root / self.TOOLCHAIN_PKG / "PKGBUILD",
+              f"pkgname={self.TOOLCHAIN_PKG}\npkgver=2.44dev\npkgrel=1\n"
+              f'_commit="{commit_hash}"\n'
+              'source=("git+https://example.org/toolchain.git#commit=${_commit}")\n'
+              "sha256sums=('SKIP')\n")
+        row = ledger_row(f"{self.TOOLCHAIN_PKG}/PKGBUILD", "pkgver", "TOOLCHAIN_DEV_VER",
+                          "2.44dev", "2.44dev", removal_gate="T0-corrected-toolchain")
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(row))
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1: dev pin against an untagged snapshot commit")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        # Version-only respell: SAME exact commit hash, only pkgver changes.
+        write(self.repo_root / self.TOOLCHAIN_PKG / "PKGBUILD",
+              f"pkgname={self.TOOLCHAIN_PKG}\npkgver=2.44.0\npkgrel=1\n"
+              f'_commit="{commit_hash}"\n'
+              'source=("git+https://example.org/toolchain.git#commit=${_commit}")\n'
+              "sha256sums=('SKIP')\n")
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())  # row deleted
+
+        result = self._invoke(base_ref=commit1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("UNVERIFIED_DEBT_REMOVAL", result.stderr)
+
+    def test_new_clean_numeric_commit_pinned_snapshot_with_no_prior_row_rejects(self):
+        # Required negative from audit item 6's concern, exercised via
+        # the removal-authorization path directly: a package that has
+        # ALWAYS looked exactly like this (never had a ledger row,
+        # because the narrow primary detector never matched a clean
+        # numeric pkgver) must not be treated as though something
+        # authorized it -- there is simply no attestation for it, so
+        # attempting to characterize its release state via the
+        # reconciler alone (never mind the ledger) yields UNKNOWN, not
+        # ABSENT_PROVEN, confirming the reconciler itself -- not merely
+        # the removal-authorization wrapper -- enforces the inverted
+        # default.
+        commit_hash = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+        text = (
+            f"pkgname={self.TOOLCHAIN_PKG}\npkgver=1.0.0\npkgrel=1\n"
+            f'_commit="{commit_hash}"\n'
+            'source=("git+https://example.org/toolchain.git#commit=${_commit}")\n'
+            "sha256sums=('SKIP')\n"
+        )
+        state = guard._reconcile_toolchain_dev_ver(f"{self.TOOLCHAIN_PKG}/PKGBUILD", text, attestations=None)
+        self.assertEqual(state, guard.RECON_UNKNOWN)
+
+    def test_arbitrary_prerelease_tag_without_attestation_rejects(self):
+        # Required negative from audit item 2: an arbitrary/prerelease
+        # tag name (not the specific attested release) must not reach
+        # ABSENT_PROVEN merely because it IS a git tag -- tag syntax is
+        # intent, not proof.
+        text = (
+            f"pkgname={self.TOOLCHAIN_PKG}\npkgver=1.0.0\npkgrel=1\n"
+            'source=("git+https://example.org/toolchain.git#tag=v1.0.0-rc1")\n'
+            "sha256sums=('SKIP')\n"
+        )
+        state = guard._reconcile_toolchain_dev_ver(f"{self.TOOLCHAIN_PKG}/PKGBUILD", text, attestations=None)
+        self.assertEqual(state, guard.RECON_UNKNOWN)
+
+    def test_marker_free_snapshot_archive_url_without_attestation_rejects(self):
+        # Required negative from audit item 3: an innocuously-named
+        # non-VCS archive URL (no "snapshot"/"nightly"/etc. substring,
+        # which Round 5's now-removed heuristic would have missed) must
+        # not reach ABSENT_PROVEN just because no marker string was
+        # found -- absence of a marker no longer counts as evidence.
+        text = (
+            f"pkgname={self.TOOLCHAIN_PKG}\npkgver=1.0.0\npkgrel=1\n"
+            'source=("https://example.org/toolchain-release-package.tar.gz")\n'
+            "sha256sums=('SKIP')\n"
+        )
+        state = guard._reconcile_toolchain_dev_ver(f"{self.TOOLCHAIN_PKG}/PKGBUILD", text, attestations=None)
+        self.assertEqual(state, guard.RECON_UNKNOWN)
 
     def test_unknown_dynamic_content_with_row_deleted_is_unverified_removal(self):
         # An unresolvable/dynamic pkgver at the CURRENT commit -- neither
