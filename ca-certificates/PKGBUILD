@@ -7,7 +7,7 @@ pkgdesc='Common CA certificates'
 arch=('any')
 url='https://www.mozilla.org/en-US/about/governance/policies/security-group/certs/'
 license=('MPL' 'GPL')
-source=("http://ftp.debian.org/debian/pool/main/c/${pkgname}/${pkgname}_${pkgver}.tar.xz"
+source=("https://snapshot.debian.org/archive/debian/20241223T143500Z/pool/main/c/${pkgname}/${pkgname}_${pkgver}.tar.xz"
         'certdata2pem.py'
         'update-ca-trust'
         'update-ca-trust.8')

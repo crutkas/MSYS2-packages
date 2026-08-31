@@ -11,7 +11,7 @@ license=('spdx:Apache-2.0')
 depends=(perl-HTTP-Date)
 checkdepends=(perl-Test-Deep perl-Test-Requires perl-HTTP-Message)
 options=(!emptydirs)
-source=(http://search.cpan.org/CPAN/authors/id/D/DA/DAGOLDEN/$_dist-$pkgver.tar.gz)
+source=(https://search.cpan.org/CPAN/authors/id/D/DA/DAGOLDEN/$_dist-$pkgver.tar.gz)
 sha256sums=('7094ea5c91f536d263b85e83ab4e9a963e11c4408ce08ecae553fa9c0cc47e73')
 
 build() (
