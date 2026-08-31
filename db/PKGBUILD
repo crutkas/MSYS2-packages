@@ -2,7 +2,7 @@
 
 pkgname=('db' 'libdb' 'libdb-devel' 'db-docs')
 pkgver=6.2.32
-pkgrel=5
+pkgrel=6
 pkgdesc="The Berkeley DB embedded database system"
 url="https://www.oracle.com/technetwork/database/database-technologies/berkeleydb/overview/index.html"
 msys2_references=(
@@ -13,11 +13,18 @@ arch=('i686' 'x86_64')
 depends=('sh')
 makedepends=('autotools' 'gcc')
 source=(http://download.oracle.com/berkeley-db/db-${pkgver}.tar.gz)
+source+=('6.2.32-gcc15-c23-func-ptr.patch')
 options=('!makeflags')
 sha256sums=('a9c5e2b004a5777aa03510cfe5cd766a4a3b777713406b02809c17c8e0e7a8fb')
+sha256sums+=('207c048f6a58c94b8db9502ac32cc2cbf3e2dd8e57e26856e2cdc881212ce7db')
 
 prepare() {
   cd "${srcdir}/${pkgname}-${pkgver}"
+
+  # Fix the DB_CONFIG callback dispatch table so it compiles under GCC 15,
+  # which defaults to C23 (empty parameter lists now mean "(void)").
+  patch -p1 -i "${srcdir}"/6.2.32-gcc15-c23-func-ptr.patch
+
   cd dist
   ac_macrodir=aclocal libtoolize --copy --force --install
   ./s_config
