@@ -2,10 +2,11 @@
 #
 # Every file that is part of this gate's trust boundary is covered here:
 # the analyzer itself, the cone (build-closure scope) and its pinned
-# digest, the rule registry, the debt ledger, the automated test suite,
-# the CI workflow that runs it, and this CODEOWNERS file itself -- a
-# change to ANY of these can alter what the gate enforces or whether it
-# runs at all, so all of them require the same review.
+# digest, the rule registry, the debt ledger, the release-attestation
+# registry, the automated test suite, the CI workflow that runs it, and
+# this CODEOWNERS file itself -- a change to ANY of these can alter what
+# the gate enforces or whether it runs at all, so all of them require
+# the same review.
 #
 # @crutkas is named as owner because they are the truthful CURRENT sole
 # owner/admin of this repository (verified via the GitHub API: the only
@@ -27,6 +28,7 @@
 .ci/arm64-cone.sha256          @crutkas
 .ci/arm64-rules.toml           @crutkas
 .ci/arm64-debt-ledger.tsv      @crutkas
+.ci/arm64-release-attestations.tsv @crutkas
 .ci/tests/                     @crutkas
 .github/workflows/arm64-admission.yml @crutkas
 .github/CODEOWNERS             @crutkas

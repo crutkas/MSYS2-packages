@@ -2573,15 +2573,16 @@ class TestReconciliationRemovalAuthorization(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("UNVERIFIED_DEBT_REMOVAL", result.stderr)
 
-    def test_base_registry_predating_a_schema_migration_is_treated_leniently(self):
-        # Regression for a real CI-observed gap: a base commit whose
-        # attestation-registry file exists but was written under an
-        # OLDER column layout (e.g. a `push`-event `before` SHA landing
-        # on the immediately-prior round's commit, mid schema migration)
-        # must be treated the SAME as "no base registry available" --
-        # never as an uncaught crash, and never as a hard SCHEMA_INVALID
-        # stop. This is safe: an unusable/absent base registry can only
-        # ever WITHHOLD removal-authorization, never grant it.
+    def test_base_registry_predating_a_schema_migration_hard_fails(self):
+        # Round 8 supersedes the prior lenient behavior (which treated an
+        # unparseable base registry identically to "genuinely absent" --
+        # an audit-identified gap: leniency there is indistinguishable
+        # from the exact "was validly introduced, now broken" case the
+        # permanent latch exists to catch). An old-schema (8-column,
+        # pre-Round-7) base registry now hard-fails with a distinct,
+        # controlled SCHEMA_INVALID(base-release-attestations) error --
+        # never a crash, and never silently treated as absent/bootstrap-
+        # eligible.
         self._write_pkgbuild("2.44dev")
         row = ledger_row(f"{self.TOOLCHAIN_PKG}/PKGBUILD", "pkgver", "TOOLCHAIN_DEV_VER",
                           "2.44dev", "2.44dev", removal_gate="T0-corrected-toolchain")
@@ -2594,17 +2595,18 @@ class TestReconciliationRemovalAuthorization(unittest.TestCase):
         commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
 
         # Current tree has the NEW schema (empty is fine) and genuinely
-        # fixes the version -- but with NO attestation, removal must
-        # still be rejected (never crash).
+        # fixes the version -- but the base registry cannot be read at
+        # all, so this must hard-fail rather than silently pass.
         self._write_pkgbuild("2.44.0")
         write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())  # row deleted
         self._set_attestations(make_attestations())  # current tree already migrated to the new schema
 
         result = self._invoke(base_ref=commit1)
         self.assertNotIn("Traceback", result.stderr)
-        self.assertNotIn("SCHEMA_INVALID(release-attestations)", result.stderr)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("UNVERIFIED_DEBT_REMOVAL", result.stderr)
+        self.assertIn("SCHEMA_INVALID(base-release-attestations)", result.stderr)
+        self.assertNotIn("UNVERIFIED_DEBT_REMOVAL", result.stderr)
+        self.assertNotIn("PASS", result.stdout)
 
     def test_same_commit_version_only_respell_with_row_deleted_rejects(self):
         # Required negative from audit item 1: an in-cone toolchain
@@ -2695,52 +2697,75 @@ class TestReconciliationRemovalAuthorization(unittest.TestCase):
     # POSITIVELY accounted for (ledgered debt OR RECON_ABSENT_PROVEN),
     # not merely invisible to NEW_DEBT because the narrow primary
     # detector never matches a clean numeric pkgver.
+    #
+    # Round 8 tightens the bootstrap exception to require the CURRENT
+    # registry to exactly equal the closed, hardcoded
+    # `guard.CANONICAL_BOOTSTRAP_SEED_ROWS` -- these fixtures therefore
+    # use the REAL windows-default-manifest package path/content/locator
+    # that seed row actually attests to (not a fictional toolchain
+    # package), so the mechanism is exercised end-to-end against its
+    # real production data rather than an abstracted stand-in that could
+    # never actually match the closed set.
     # -----------------------------------------------------------------
 
-    def _write_unledgered_toolchain_pkg(self):
-        write(self.repo_root / self.TOOLCHAIN_PKG / "PKGBUILD",
-              f"pkgname={self.TOOLCHAIN_PKG}\npkgver=6.4\npkgrel=1\n"
-              'source=("git+https://example.org/toolchain.git#tag=release-6_4")\n'
+    WDM_PKG = "mingw-w64-cross-mingwarm64-windows-default-manifest"
+    WDM_SOURCE_LOCATOR = '"git://sourceware.org/git/cygwin-apps/${_realname}.git#tag=${_GIT_TAG}"'
+
+    def _use_wdm_cone(self):
+        (self.repo_root / self.WDM_PKG).mkdir(exist_ok=True)
+        write(self.repo_root / ".ci" / "arm64-cone.txt", self.WDM_PKG + "\n")
+        write(self.repo_root / ".ci" / "arm64-cone.sha256",
+              sha256_of(self.repo_root / ".ci" / "arm64-cone.txt") + "\n")
+
+    def _write_wdm_pkg(self, pkgver="6.4", tag="release-6_4"):
+        write(self.repo_root / self.WDM_PKG / "PKGBUILD",
+              "_realname=windows-default-manifest\n"
+              f"pkgname={self.WDM_PKG}\n"
+              f"pkgver={pkgver}\n"
+              "pkgrel=6\n"
+              f'_GIT_TAG="{tag}"\n'
+              f"source=({self.WDM_SOURCE_LOCATOR})\n"
               "sha256sums=('SKIP')\n")
 
     def _seed_commit(self) -> str:
         self.run_git("commit", "--allow-empty", "-q", "-m", "seed")
         return self.run_git("rev-parse", "HEAD").stdout.strip()
 
-    def _src_mutable_ref_row(self, introduced_by="0123abc"):
-        # This fixture's locator's `#tag=` fragment ALSO triggers the
-        # (unrelated) SRC_MUTABLE_REF primary detector, exactly like the
-        # real mingw-w64-cross-mingwarm64-windows-default-manifest
-        # recipe this test mirrors -- ledgered here so these
-        # TOOLCHAIN_DEV_VER-focused tests aren't blocked by an unrelated
-        # rule's NEW_DEBT.
-        return ledger_row(f"{self.TOOLCHAIN_PKG}/PKGBUILD", "source", "SRC_MUTABLE_REF",
-                           '"git+https://example.org/toolchain.git#tag=release-6_4"', "#tag=",
-                           removal_gate="PR-1", introduced_by=introduced_by)
+    def _wdm_src_rule_row(self, introduced_by="0123abc"):
+        # The real recipe's `git://...#tag=...` locator triggers BOTH
+        # SRC_GIT_PROTO (bare `git://` transport) and SRC_MUTABLE_REF
+        # (`#tag=`) as one combined-rule_id ledger row, matching the
+        # real repo's own actual ledger entry for this package -- ledgered
+        # here so these TOOLCHAIN_DEV_VER-focused tests aren't blocked by
+        # this unrelated pair of rules' NEW_DEBT.
+        return ledger_row(f"{self.WDM_PKG}/PKGBUILD", "source", "SRC_GIT_PROTO,SRC_MUTABLE_REF",
+                           self.WDM_SOURCE_LOCATOR, removal_gate="PR-1", introduced_by=introduced_by)
 
-    def _bootstrap_attestation(self):
-        return attestation_row(
-            f"{self.TOOLCHAIN_PKG}/PKGBUILD", "6.4",
-            '"git+https://example.org/toolchain.git#tag=release-6_4"',
-            "git", "tag", "release-6_4", tag_kind="lightweight",
-            resolved_commit="c" * 40, resolved_tree="d" * 40,
-        )
+    def _real_bootstrap_seed_attestation(self) -> str:
+        # The EXACT row from `guard.CANONICAL_BOOTSTRAP_SEED_ROWS` --
+        # reused verbatim (not reconstructed) so these tests always
+        # exercise real equality against the production closed seed set,
+        # never a hand-maintained copy that could silently drift from it.
+        return guard.CANONICAL_BOOTSTRAP_SEED_ROWS[0]
 
     def test_unchanged_bootstrap_seed_passes_current_state_accounting(self):
         # The narrow bootstrap exception: an UNCHANGED existing toolchain
         # path (byte-identical to base), with no ledger row anywhere,
-        # may be accounted for by a CURRENT-tree attestation -- this lets
-        # THIS PR introduce the very first attestation row for a state
-        # that has been true all along.
+        # may be accounted for by a CURRENT-tree attestation THAT EXACTLY
+        # EQUALS the closed canonical seed set -- this is what lets THIS
+        # PR introduce the very first attestation row for a state that
+        # has been true all along.
+        self._use_wdm_cone()
         seed = self._seed_commit()
-        self._write_unledgered_toolchain_pkg()
-        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(self._src_mutable_ref_row(seed)))
+        self._write_wdm_pkg()
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(self._wdm_src_rule_row(seed)))
+        (self.repo_root / ".ci" / "arm64-release-attestations.tsv").unlink()  # base genuinely has no registry file
         self.run_git("add", "-A")
         self.run_git("commit", "-q", "-m", "commit1: unledgered clean toolchain path, no registry yet")
         commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
 
         # Same commit content; only the registry gains its first row.
-        self._set_attestations(make_attestations(self._bootstrap_attestation()))
+        self._set_attestations(make_attestations(self._real_bootstrap_seed_attestation()))
 
         result = self._invoke(base_ref=commit1)
         self.assertNotIn("Traceback", result.stderr)
@@ -2752,8 +2777,10 @@ class TestReconciliationRemovalAuthorization(unittest.TestCase):
         # exact same unchanged path is UNACCOUNTED (fails), confirming
         # the seed itself -- not some other side effect -- is what made
         # the prior test pass.
-        self._write_unledgered_toolchain_pkg()
+        self._use_wdm_cone()
+        self._write_wdm_pkg()
         write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())
+        (self.repo_root / ".ci" / "arm64-release-attestations.tsv").unlink()  # base genuinely has no registry file
         self.run_git("add", "-A")
         self.run_git("commit", "-q", "-m", "commit1: unledgered clean toolchain path, no registry")
         commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
@@ -2764,6 +2791,30 @@ class TestReconciliationRemovalAuthorization(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("UNACCOUNTED_TOOLCHAIN_RELEASE_STATE", result.stderr)
 
+    def test_extra_or_different_seed_row_is_rejected_even_if_matching_content(self):
+        # Round 8: even when the PKGBUILD itself is byte-identical and
+        # base is genuinely ABSENT, a CURRENT registry that does not
+        # EXACTLY equal the closed canonical seed set (here: the right
+        # attestation content but a tampered `provenance` field) must be
+        # rejected wholesale (BOOTSTRAP_SEED_MISMATCH) -- not partially
+        # honored for the fields that happen to match.
+        self._use_wdm_cone()
+        seed = self._seed_commit()
+        self._write_wdm_pkg()
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(self._wdm_src_rule_row(seed)))
+        (self.repo_root / ".ci" / "arm64-release-attestations.tsv").unlink()  # base genuinely has no registry file
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1: unledgered clean toolchain path, no registry yet")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        tampered = self._real_bootstrap_seed_attestation().rsplit("\t", 1)[0] + "\ttampered provenance text"
+        self._set_attestations(make_attestations(tampered))
+
+        result = self._invoke(base_ref=commit1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("BOOTSTRAP_SEED_MISMATCH", result.stderr)
+
     def test_modified_path_with_same_change_seed_still_rejects(self):
         # The bootstrap exception is byte-identity-gated: if the PKGBUILD
         # itself changes in the SAME commit that introduces the
@@ -2771,19 +2822,18 @@ class TestReconciliationRemovalAuthorization(unittest.TestCase):
         # exclusively by base evidence (which cannot exist yet for a
         # same-change edit), exactly like every other governed
         # transition.
-        write(self.repo_root / self.TOOLCHAIN_PKG / "PKGBUILD",
-              f"pkgname={self.TOOLCHAIN_PKG}\npkgver=6.3\npkgrel=1\n"
-              'source=("git+https://example.org/toolchain.git#tag=release-6_3")\n'
-              "sha256sums=('SKIP')\n")
+        self._use_wdm_cone()
+        self._write_wdm_pkg(pkgver="6.3", tag="release-6_3")
         write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())
+        (self.repo_root / ".ci" / "arm64-release-attestations.tsv").unlink()  # base genuinely has no registry file
         self.run_git("add", "-A")
         self.run_git("commit", "-q", "-m", "commit1: different pkgver/tag entirely")
         commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
 
         # Bump to 6.4/release-6_4 AND add the matching attestation in
         # the very same change.
-        self._write_unledgered_toolchain_pkg()
-        self._set_attestations(make_attestations(self._bootstrap_attestation()))
+        self._write_wdm_pkg()
+        self._set_attestations(make_attestations(self._real_bootstrap_seed_attestation()))
 
         result = self._invoke(base_ref=commit1)
         self.assertNotIn("Traceback", result.stderr)
@@ -2795,13 +2845,23 @@ class TestReconciliationRemovalAuthorization(unittest.TestCase):
         # genuinely new toolchain package introduced by this very
         # change) is never bootstrap-eligible either -- there is no base
         # content to prove byte-identity against.
+        self._use_wdm_cone()
+        write(self.repo_root / ".ci" / "arm64-cone.txt", "pkg-placeholder\n")
+        write(self.repo_root / ".ci" / "arm64-cone.sha256",
+              sha256_of(self.repo_root / ".ci" / "arm64-cone.txt") + "\n")
+        (self.repo_root / "pkg-placeholder").mkdir(exist_ok=True)
+        write(self.repo_root / "pkg-placeholder" / "PKGBUILD",
+              "pkgname=pkg-placeholder\npkgver=1.0\npkgrel=1\n"
+              'source=("https://example.org/x.tar.gz")\nsha256sums=(\'SKIP\')\n')
         write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())
+        (self.repo_root / ".ci" / "arm64-release-attestations.tsv").unlink()  # base genuinely has no registry file
         self.run_git("add", "-A")
         self.run_git("commit", "-q", "-m", "commit1: package does not exist yet")
         commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
 
-        self._write_unledgered_toolchain_pkg()
-        self._set_attestations(make_attestations(self._bootstrap_attestation()))
+        self._use_wdm_cone()
+        self._write_wdm_pkg()
+        self._set_attestations(make_attestations(self._real_bootstrap_seed_attestation()))
 
         result = self._invoke(base_ref=commit1)
         self.assertNotIn("Traceback", result.stderr)
@@ -2814,10 +2874,11 @@ class TestReconciliationRemovalAuthorization(unittest.TestCase):
         # path is governed by ordinary base-tree-attestation evidence --
         # no bootstrap special-casing needed at all, confirming the
         # mechanism generalizes correctly post-merge.
+        self._use_wdm_cone()
         seed = self._seed_commit()
-        self._write_unledgered_toolchain_pkg()
-        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(self._src_mutable_ref_row(seed)))
-        self._set_attestations(make_attestations(self._bootstrap_attestation()))
+        self._write_wdm_pkg()
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(self._wdm_src_rule_row(seed)))
+        self._set_attestations(make_attestations(self._real_bootstrap_seed_attestation()))
         self.run_git("add", "-A")
         self.run_git("commit", "-q", "-m", "commit1: registry already carries the seed row at base")
         commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
@@ -2831,17 +2892,163 @@ class TestReconciliationRemovalAuthorization(unittest.TestCase):
     def test_unaccounted_toolchain_state_with_no_base_ref_at_all_rejects(self):
         # With no --base-ref supplied at all, bootstrap eligibility can
         # never be established (there is nothing to compare byte-
-        # identity against) -- an unledgered clean toolchain path must
-        # still fail closed, not silently pass merely because no base
-        # was given.
-        self._write_unledgered_toolchain_pkg()
+        # identity against, and no history to prove genuine ABSENT) -- an
+        # unledgered clean toolchain path must still fail closed, not
+        # silently pass merely because no base was given.
+        self._use_wdm_cone()
+        self._write_wdm_pkg()
         write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())
-        self._set_attestations(make_attestations(self._bootstrap_attestation()))
+        self._set_attestations(make_attestations(self._real_bootstrap_seed_attestation()))
 
         result = self._invoke(base_ref=None)
         self.assertNotIn("Traceback", result.stderr)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("UNACCOUNTED_TOOLCHAIN_RELEASE_STATE", result.stderr)
+
+    # -----------------------------------------------------------------
+    # Round 8: the permanent, history-aware bootstrap latch. A latch
+    # keyed only on "does the immediate base commit's file look absent
+    # right now" is defeatable by a LATER commit deleting or corrupting
+    # an already-validly-introduced registry -- these tests walk a
+    # multi-commit history to prove the latch survives exactly that.
+    # -----------------------------------------------------------------
+
+    def test_bootstrap_cannot_reenter_after_valid_registry_is_later_deleted(self):
+        # commit1: base genuinely absent (no registry file at all).
+        # commit2: a VALID registry is introduced (header-only, zero
+        #          rows -- itself a deliberate, non-permissive VALID
+        #          classification, not ABSENT).
+        # commit3 (used as --base-ref): the registry file is DELETED
+        #          again, making the IMMEDIATE base commit's own tree
+        #          look ABSENT -- but history proves it was once valid,
+        #          so the latch must still be closed (INVALID, hard
+        #          fail), never silently re-opened as ABSENT/bootstrap-
+        #          eligible.
+        self._use_wdm_cone()
+        self._write_wdm_pkg()
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())
+        (self.repo_root / ".ci" / "arm64-release-attestations.tsv").unlink()
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1: base genuinely absent")
+
+        self._set_attestations(make_attestations())  # header-only, VALID
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit2: registry validly introduced, empty")
+
+        (self.repo_root / ".ci" / "arm64-release-attestations.tsv").unlink()
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit3: registry deleted again")
+        commit3 = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        # Current change: re-add the file with the real seed row,
+        # attempting to look like a fresh first-introduction.
+        self._set_attestations(make_attestations(self._real_bootstrap_seed_attestation()))
+
+        result = self._invoke(base_ref=commit3)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("SCHEMA_INVALID(base-release-attestations)", result.stderr)
+        self.assertIn("validly introduced at an earlier ancestor commit", result.stderr)
+
+    def test_bootstrap_cannot_reenter_after_valid_registry_is_later_corrupted(self):
+        # Same as above, but the registry is CORRUPTED (wrong header) at
+        # the base commit rather than deleted outright -- must also
+        # latch INVALID, not fall back to some other lenient path.
+        self._use_wdm_cone()
+        self._write_wdm_pkg()
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())
+        (self.repo_root / ".ci" / "arm64-release-attestations.tsv").unlink()
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1: base genuinely absent")
+
+        self._set_attestations(make_attestations())  # header-only, VALID
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit2: registry validly introduced, empty")
+
+        write(self.repo_root / ".ci" / "arm64-release-attestations.tsv", "not-a-real-header\n")
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit3: registry corrupted")
+        commit3 = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        self._set_attestations(make_attestations(self._real_bootstrap_seed_attestation()))
+
+        result = self._invoke(base_ref=commit3)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("SCHEMA_INVALID(base-release-attestations)", result.stderr)
+        self.assertIn("validly introduced at an earlier ancestor commit", result.stderr)
+
+    def test_base_registry_header_only_is_valid_not_absent_and_closes_latch(self):
+        # A header-only (zero-row) but well-formed registry at base is
+        # VALID, not ABSENT -- a deliberate, non-permissive
+        # classification. This alone permanently closes the bootstrap
+        # latch, confirmed by an unledgered path failing even though the
+        # base registry technically has no rows to consult.
+        self._use_wdm_cone()
+        self._write_wdm_pkg()
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())
+        self._set_attestations(make_attestations())  # header-only
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1: header-only VALID registry at base")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        self._set_attestations(make_attestations(self._real_bootstrap_seed_attestation()))
+
+        result = self._invoke(base_ref=commit1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("UNACCOUNTED_TOOLCHAIN_RELEASE_STATE", result.stderr)
+
+    def test_base_registry_corrupt_from_the_start_hard_fails_not_absent(self):
+        # Distinguishes "never valid, currently corrupt" from "was
+        # valid, now corrupt" (the latch-tripping case covered by
+        # test_bootstrap_cannot_reenter_after_valid_registry_is_later_corrupted):
+        # a registry that exists at base but has NEVER, at any ancestor
+        # commit, validly parsed must ALSO be INVALID (hard fail), never
+        # ABSENT/bootstrap-eligible -- "currently broken" is disqualifying
+        # regardless of whether it was ever previously valid.
+        self._use_wdm_cone()
+        self._write_wdm_pkg()
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())
+        write(self.repo_root / ".ci" / "arm64-release-attestations.tsv", "not-a-real-header\n")
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1: registry present but malformed from the very start")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        self._set_attestations(make_attestations(self._real_bootstrap_seed_attestation()))
+
+        result = self._invoke(base_ref=commit1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("SCHEMA_INVALID(base-release-attestations)", result.stderr)
+        self.assertIn("is malformed", result.stderr)
+        self.assertNotIn("validly introduced at an earlier ancestor commit", result.stderr)
+
+    def test_extra_legitimate_looking_row_added_alongside_real_seed_rejects(self):
+        # "No extra rows": even a SECOND, well-formed, plausible-looking
+        # attestation row alongside the exact real seed must reject the
+        # whole bootstrap attempt -- the closed set is not a whitelist to
+        # append to, it is an exact-equality bar.
+        self._use_wdm_cone()
+        seed = self._seed_commit()
+        self._write_wdm_pkg()
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(self._wdm_src_rule_row(seed)))
+        (self.repo_root / ".ci" / "arm64-release-attestations.tsv").unlink()  # base genuinely has no registry file
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1: unledgered clean toolchain path, no registry yet")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        extra_row = attestation_row(
+            "mingw-w64-cross-mingwarm64-toolchain/PKGBUILD", "9.9.9",
+            '"https://example.org/toolchain-9.9.9.tar.gz"', "none", "none",
+            hashlib.sha256(b"pretend-verified").hexdigest(),
+        )
+        self._set_attestations(make_attestations(extra_row, self._real_bootstrap_seed_attestation()))
+
+        result = self._invoke(base_ref=commit1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("BOOTSTRAP_SEED_MISMATCH", result.stderr)
 
     def test_unknown_dynamic_content_with_row_deleted_is_unverified_removal(self):
         # An unresolvable/dynamic pkgver at the CURRENT commit -- neither

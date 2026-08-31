@@ -1824,41 +1824,16 @@ def load_release_attestations(path: Path | None) -> dict[tuple, "ReleaseAttestat
         raise ParseError(f"cannot read release-attestation registry: {e}") from e
     return _parse_release_attestations_text(raw)
 
-
-def load_base_release_attestations(base_ref: str | None, repo_root: Path = REPO_ROOT) -> dict[tuple, "ReleaseAttestation"] | None:
-    """Materializes the release-attestation registry as it existed at the
-    TRUSTED BASE commit (via `git show`, matching `resolve_default_base_ledger`/
-    `resolve_default_base_cone`'s pattern). Returns None if `base_ref` is
-    unavailable, the file legitimately did not exist yet at that commit
-    (e.g. this PR's own introduction of the registry), OR the historical
-    content cannot be safely parsed under the CURRENT schema (e.g. a
-    schema migration commit whose immediate `push`-event `before` SHA
-    still carries the prior column layout) -- read LENIENTLY, matching
-    `load_base_ledger_rows`/`load_base_cone_entries`'s established
-    treatment of base-commit historical data, which was already validated
-    against whatever schema was current when IT was committed and does
-    not need to re-validate against today's schema to be treated as
-    legitimately absent evidence.
-
-    This leniency is provably safe, unlike leniency toward a malformed
-    CURRENT-tree registry (which `load_release_attestations`/`run`'s own
-    unconditional schema check never affords): every consumer of this
-    return value treats None identically to an empty dict (`attestations
-    or {}`), and an empty/absent set of attestations can only ever WITHHOLD
-    ABSENT_PROVEN, never grant it -- removal-authorization and promotion-
-    totality both remain blocked, the conservative default, exactly as if
-    the base commit had no registry file at all. It can never be exploited
-    to authorize anything a well-formed base registry would not.
-    """
-    if not base_ref:
-        return None
-    raw = _git_show_text(base_ref, RELEASE_ATTESTATIONS_FILE.relative_to(REPO_ROOT).as_posix(), repo_root)
-    if raw is None:
-        return None
-    try:
-        return _parse_release_attestations_text(raw)
-    except ParseError:
-        return None
+# NOTE: the BASE-commit counterpart of this loader is
+# `resolve_base_registry_status` (defined later in this file, near
+# `_git_show_text`/`_registry_ever_valid_in_history`) -- it returns an
+# explicit ABSENT/VALID/INVALID/NO_BASE status rather than a lenient
+# `dict | None`, closing a Round 8 audit finding: a lenient
+# `ParseError -> None` fallback here could not distinguish "this
+# registry has never existed" from "this registry existed validly at an
+# earlier commit but is now broken/deleted", which would let a later
+# commit's deletion or corruption silently re-open the bootstrap
+# exception. See that function's docstring for the full design.
 
 
 def _reconcile_toolchain_dev_ver(path: str, text: str, attestations: dict[tuple, "ReleaseAttestation"] | None) -> str:
@@ -2600,7 +2575,9 @@ def run(cone_path: Path = CONE_FILE, rules_path: Path = RULES_FILE, ledger_path:
         base_reconciliation: dict[tuple[str, str], dict[str, str]] | None = None,
         attestations_path: Path | None = RELEASE_ATTESTATIONS_FILE,
         base_release_attestations: dict[tuple, "ReleaseAttestation"] | None = None,
-        base_ref: str | None = None) -> tuple[bool, list[str]]:
+        base_ref: str | None = None,
+        base_registry_error: str | None = None,
+        base_registry_bootstrap_eligible: bool = False) -> tuple[bool, list[str]]:
     problems: list[str] = []
     today = today or date.today()
 
@@ -2608,6 +2585,21 @@ def run(cone_path: Path = CONE_FILE, rules_path: Path = RULES_FILE, ledger_path:
         rules = load_rules(rules_path)
     except ParseError as e:
         return False, [f"SCHEMA_INVALID(rules): {e}"]
+
+    # Round 8: `base_registry_error` is non-None ONLY when the base
+    # commit's release-attestation registry is in the explicit INVALID
+    # status (see `BaseRegistryStatus`/`resolve_base_registry_status`) --
+    # either currently malformed, or validly introduced at an earlier
+    # ancestor commit but now broken/missing (the permanent history-aware
+    # latch tripping on a regression). This is a hard, controlled FAIL,
+    # reported through the SAME problems-list mechanism as every other
+    # SCHEMA_INVALID check, deliberately BEFORE anything else that could
+    # depend on base evidence -- a currently-unusable base registry must
+    # never be silently treated as "no evidence" (which would incorrectly
+    # let ordinary reconciliation/bootstrap proceed as if nothing were
+    # wrong) nor crash uncaught.
+    if base_registry_error is not None:
+        return False, [f"SCHEMA_INVALID(base-release-attestations): {base_registry_error}"]
 
     # The release-attestation registry is validated with the SAME rigor as
     # every other governed artifact, unconditionally, REGARDLESS of
@@ -2846,25 +2838,64 @@ def run(cone_path: Path = CONE_FILE, rules_path: Path = RULES_FILE, ledger_path:
     # via `_reconciled_state`), which is exactly what governs it going
     # forward once a real attestation lands at a real base commit.
     #
-    # BOOTSTRAP EXCEPTION, narrowly scoped: this registry started this
-    # PR at zero rows, so no path can yet be covered by base evidence no
-    # matter how long it has been true. An UNCHANGED existing toolchain
-    # path (byte-identical PKGBUILD content to the trusted base commit)
-    # that ALSO carries no TOOLCHAIN_DEV_VER ledger row in either the
-    # base or current ledger may additionally be accounted for by a
-    # matching CURRENT-tree attestation. This is what lets THIS PR
-    # introduce the very first attestation row for a state that has been
-    # true all along, without that same-change addition ever authorizing
-    # a ledger removal, rule promotion, or ANY recipe/source/version
-    # change -- those remain governed exclusively by
-    # reconcile_current_state/resolve_base_reconciliation above,
-    # untouched by this block. A path that is new this commit, or whose
-    # bytes differ AT ALL from base, is never bootstrap-eligible: it is
-    # judged exclusively by base evidence, exactly like every other
-    # governed transition, and correctly fails here if base evidence
-    # cannot cover it (this is precisely what makes a brand-new
-    # clean-numeric-pkgver toolchain snapshot with no prior row a hard
-    # failure rather than a silent pass).
+    # BOOTSTRAP EXCEPTION (Round 7, tightened Round 8), narrowly scoped:
+    # `base_registry_bootstrap_eligible` is True ONLY when
+    # `resolve_base_registry_status` has PROVEN, via the permanent
+    # history-aware latch (`_registry_ever_valid_in_history`), that the
+    # release-attestation registry has NEVER, at any commit in
+    # `base_ref`'s own history, existed with content that validly parsed
+    # -- i.e. this is a genuine, first-ever introduction, not merely "the
+    # immediate base commit's file happens to look absent" (which a
+    # later deletion/corruption of an already-valid registry could also
+    # produce, and which the Round 8 audit specifically flagged as an
+    # insufficient, re-openable latch).
+    #
+    # Even when eligible, the CURRENT registry must EXACTLY equal the
+    # CLOSED, hardcoded canonical seed set (`CANONICAL_BOOTSTRAP_SEED_ROWS`,
+    # embedded in this analyzer's own reviewed source, never the
+    # externally-editable TSV file) -- `bootstrap_seed_ok` below is
+    # False, and NO path may bootstrap at all this run, the moment the
+    # current registry contains anything else (an extra row, a modified
+    # field, a different path/pkgver/locator). This is what stops a
+    # same-PR attempt to seed something beyond the one audited row.
+    #
+    # An UNCHANGED existing toolchain path (byte-identical PKGBUILD
+    # content to the trusted base commit) that ALSO carries no
+    # TOOLCHAIN_DEV_VER ledger row in either the base or current ledger
+    # may additionally be accounted for by a matching CURRENT-tree
+    # attestation. This is what lets THIS PR introduce the very first
+    # attestation row for a state that has been true all along, without
+    # that same-change addition ever authorizing a ledger removal, rule
+    # promotion, or ANY recipe/source/version change -- those remain
+    # governed exclusively by reconcile_current_state/
+    # resolve_base_reconciliation above, untouched by this block. A path
+    # that is new this commit, or whose bytes differ AT ALL from base, is
+    # never bootstrap-eligible: it is judged exclusively by base
+    # evidence, exactly like every other governed transition, and
+    # correctly fails here if base evidence cannot cover it (this is
+    # precisely what makes a brand-new clean-numeric-pkgver toolchain
+    # snapshot with no prior row a hard failure rather than a silent
+    # pass).
+    bootstrap_seed_ok = True
+    if base_registry_bootstrap_eligible and current_attestations:
+        try:
+            canonical_bootstrap_seed = _canonical_bootstrap_seed_attestations()
+        except AssertionError as e:
+            problems.append(f"SCHEMA_INVALID(release-attestations): {e}")
+            bootstrap_seed_ok = False
+            canonical_bootstrap_seed = None
+        if canonical_bootstrap_seed is not None and current_attestations != canonical_bootstrap_seed:
+            problems.append(
+                "BOOTSTRAP_SEED_MISMATCH: the base release-attestation registry is proven genuinely ABSENT "
+                "throughout its entire history (this would be its first legitimate introduction), but the "
+                "CURRENT release-attestation registry does not exactly equal the closed, hardcoded canonical "
+                "bootstrap seed set defined in CANONICAL_BOOTSTRAP_SEED_ROWS in this analyzer's own reviewed "
+                "source -- extending or altering what the bootstrap exception may ever seed requires a "
+                "reviewed code change to that constant itself, never an unaudited edit to the external "
+                "arm64-release-attestations.tsv file alone"
+            )
+            bootstrap_seed_ok = False
+
     toolchain_debt_paths = {
         row["path"] for row in ledger_rows
         if row["field"] == "pkgver" and row["rule_id"] == "TOOLCHAIN_DEV_VER"
@@ -2881,7 +2912,7 @@ def run(cone_path: Path = CONE_FILE, rules_path: Path = RULES_FILE, ledger_path:
         if state == RECON_ABSENT_PROVEN:
             continue
         bootstrap_ok = False
-        if rel not in base_ledger_toolchain_paths:
+        if base_registry_bootstrap_eligible and bootstrap_seed_ok and rel not in base_ledger_toolchain_paths:
             try:
                 pkgbuild = resolve_cone_path(directory, repo_root)
                 current_text = pkgbuild.read_text(encoding="utf-8")
@@ -3103,6 +3134,260 @@ def _git_show_text(base_ref: str, rel_path: str, repo_root: Path) -> str | None:
     return result.stdout
 
 
+def _repo_is_shallow(repo_root: Path) -> bool:
+    """True iff `repo_root` is a shallow git clone (limited fetch depth).
+    Used exclusively to guard `_registry_ever_valid_in_history` (Round 8):
+    that function's permanent bootstrap latch depends on walking the
+    COMPLETE ancestry of `base_ref` via `git log`, and a shallow clone
+    could silently make an earlier, now-unreachable commit that DID
+    validly introduce the registry invisible to that walk -- which would
+    incorrectly report "never valid in history" and wrongly re-open the
+    bootstrap exception. Raising (rather than assuming full history) is
+    the fail-closed choice; the shipped CI workflow already uses
+    `fetch-depth: 0` (full history) for exactly this reason.
+    """
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--is-shallow-repository"],
+            cwd=repo_root, capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        raise BaseRefResolutionError(f"cannot determine whether the repository is a shallow clone: {e}") from e
+    if result.returncode != 0:
+        raise BaseRefResolutionError(f"git rev-parse --is-shallow-repository failed unexpectedly: {result.stderr.strip()}")
+    return result.stdout.strip() == "true"
+
+
+def _registry_ever_valid_in_history(base_ref: str, rel_path: str, repo_root: Path) -> bool:
+    """Returns True iff the release-attestation registry at `rel_path`
+    validly parsed (per `_parse_release_attestations_text` -- including a
+    header-only, zero-row parse, which is a legitimate VALID state, not
+    an error) at ANY commit in `base_ref`'s OWN history that touched that
+    path (via `git log --format=%H <base_ref> -- <rel_path>`, walking
+    ONLY the immutable, already-committed ancestry of the trusted base
+    commit -- never the current/PR-head tree, which is untrusted).
+
+    This is the PERMANENT, history-aware bootstrap latch (Round 8,
+    closing an audit-identified gap in the immediate-base-only check): a
+    latch keyed solely on "does the file exist at base_ref's own tree
+    right now" is defeatable by a LATER commit that deletes or corrupts
+    an already-validly-introduced registry, making the immediate base
+    look ABSENT/INVALID again and incorrectly re-opening the bootstrap
+    exception. Walking the full history instead makes "was this registry
+    EVER validly introduced, anywhere in this branch's committed past"
+    provable from immutable, already-reviewed commit data -- once true,
+    it can never become false again, exactly like every other one-way
+    latch in this analyzer (rule promotion, cone growth-only monotonicity).
+
+    Refuses to run (raises `BaseRefResolutionError`, a hard controlled
+    failure) if the repository is a shallow clone -- see
+    `_repo_is_shallow`'s docstring.
+    """
+    import subprocess
+    if _repo_is_shallow(repo_root):
+        raise BaseRefResolutionError(
+            "repository is a shallow clone -- the release-attestation registry's history-aware bootstrap "
+            "latch requires complete history (git log over the full ancestry of --base-ref) to safely prove "
+            "the registry was never validly introduced at an earlier, now-unreachable commit; refusing to "
+            "silently treat missing history as \"never introduced\" (the shipped CI workflow uses "
+            "fetch-depth: 0 for exactly this reason)"
+        )
+    try:
+        result = subprocess.run(
+            ["git", "log", "--format=%H", base_ref, "--", rel_path],
+            cwd=repo_root, capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        raise BaseRefResolutionError(f"git log failed for {base_ref} -- {rel_path}: {e}") from e
+    if result.returncode != 0:
+        raise BaseRefResolutionError(f"git log {base_ref} -- {rel_path} failed unexpectedly: {result.stderr.strip()}")
+    shas = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    for sha in shas:
+        raw = _git_show_text(sha, rel_path, repo_root)
+        if raw is None:
+            continue  # this ancestor commit's diff removed the file -- not a valid-introducing commit
+        try:
+            _parse_release_attestations_text(raw)
+            return True
+        except ParseError:
+            continue
+    return False
+
+
+BASE_REGISTRY_ABSENT = "ABSENT"
+BASE_REGISTRY_VALID = "VALID"
+BASE_REGISTRY_INVALID = "INVALID"
+BASE_REGISTRY_NO_BASE = "NO_BASE"
+
+
+@dataclass
+class BaseRegistryStatus:
+    """Explicit, exhaustive status for the release-attestation registry
+    AS IT EXISTED at a trusted base commit (Round 8 -- replaces the prior
+    lenient `dict | None` return, which could not distinguish a currently-
+    broken/deleted registry that was ONCE validly introduced from a
+    registry that has genuinely never existed at all).
+
+    status:
+      ABSENT   -- `base_ref` resolves, and the registry has NEVER, at any
+                  commit in `base_ref`'s own history, existed with content
+                  that validly parsed (see `_registry_ever_valid_in_history`).
+                  This is the ONLY status under which the bootstrap
+                  exception may ever fire (`bootstrap_eligible=True`).
+      VALID    -- the registry exists at `base_ref`'s own tree RIGHT NOW
+                  and parses successfully (including header-only/empty --
+                  a deliberate, non-permissive classification: an empty
+                  but well-formed registry is VALID, not ABSENT, and
+                  therefore ALSO permanently closes the bootstrap latch).
+                  `attestations` holds the parsed evidence.
+      INVALID  -- a hard, controlled failure: EITHER the registry exists
+                  at `base_ref`'s own tree right now but fails to parse,
+                  OR the registry validly existed at an EARLIER ancestor
+                  commit but is now missing or broken (a regression after
+                  a legitimate introduction). Both cases must hard-fail
+                  the run (never silently treated as ABSENT/bootstrap-
+                  eligible, and never silently treated as "no evidence,
+                  proceed anyway") -- `error` explains why.
+      NO_BASE  -- no `base_ref` was resolved at all (e.g. an ad hoc local
+                  run with no --base-ref); the cross-commit check is
+                  skipped entirely, matching every other base-ref-derived
+                  check in this analyzer -- never itself an error, but
+                  also never bootstrap-eligible (genuine ABSENT proof
+                  requires a resolved base commit to prove absence
+                  against).
+
+    `attestations` is ALWAYS a dict (never None) -- empty `{}` unless
+    status is VALID. `bootstrap_eligible` is True only for ABSENT.
+    """
+    status: str
+    attestations: dict[tuple, "ReleaseAttestation"]
+    bootstrap_eligible: bool
+    error: str | None = None
+
+
+def resolve_base_registry_status(base_ref: str | None, repo_root: Path = REPO_ROOT) -> BaseRegistryStatus:
+    """Computes the release-attestation registry's explicit status at the
+    trusted base commit -- see `BaseRegistryStatus`'s docstring for the
+    full ABSENT/VALID/INVALID/NO_BASE semantics and why each exists.
+    Replaces the prior lenient `load_base_release_attestations`, whose
+    single `ParseError -> None` fallback could not distinguish "never
+    introduced" from "was introduced, now broken" -- exactly the gap an
+    independent audit identified (a later commit deleting or corrupting
+    an already-valid registry would make the IMMEDIATE base look ABSENT
+    again, silently re-opening bootstrap eligibility). May raise
+    `BaseRefResolutionError` for any operational git failure (an invalid
+    base ref, a git command failure, or a shallow clone that cannot
+    safely prove the history-aware latch) -- callers must let this
+    propagate to a hard, controlled stop, exactly like every other
+    base-ref-derived check in this analyzer.
+    """
+    rel_path = RELEASE_ATTESTATIONS_FILE.relative_to(REPO_ROOT).as_posix()
+    if not base_ref:
+        return BaseRegistryStatus(BASE_REGISTRY_NO_BASE, {}, False, None)
+    raw_now = _git_show_text(base_ref, rel_path, repo_root)
+    current_ok = False
+    current_attestations: dict | None = None
+    current_error: str | None = None
+    if raw_now is not None:
+        try:
+            current_attestations = _parse_release_attestations_text(raw_now)
+            current_ok = True
+        except ParseError as e:
+            current_error = str(e)
+    if raw_now is not None and current_ok:
+        return BaseRegistryStatus(BASE_REGISTRY_VALID, current_attestations, False, None)
+    ever_valid = _registry_ever_valid_in_history(base_ref, rel_path, repo_root)
+    if ever_valid:
+        detail = f"malformed: {current_error}" if raw_now is not None else "missing (deleted after a prior valid introduction)"
+        return BaseRegistryStatus(
+            BASE_REGISTRY_INVALID, {}, False,
+            f"release-attestation registry at base commit {base_ref!r} was validly introduced at an earlier "
+            f"ancestor commit in this branch's history but is currently {detail} -- once a registry has ever "
+            f"been validly introduced, the bootstrap exception can never re-open, and a currently broken or "
+            f"missing registry is a hard failure, never silently treated as absent evidence"
+        )
+    if raw_now is not None:
+        return BaseRegistryStatus(
+            BASE_REGISTRY_INVALID, {}, False,
+            f"release-attestation registry at base commit {base_ref!r} is malformed: {current_error}",
+        )
+    return BaseRegistryStatus(BASE_REGISTRY_ABSENT, {}, True, None)
+
+
+# Round 8: the CLOSED, hardcoded set of rows this analyzer will ever
+# accept as a legitimate BOOTSTRAP seed (see the bootstrap-eligibility
+# block in `run()`). This is embedded directly in the guard's own
+# reviewed source -- deliberately NOT in the externally-editable
+# arm64-release-attestations.tsv data file -- specifically so that
+# "extending" the bootstrap-eligible seed set requires an ordinary,
+# fully-visible code change to THIS file, subject to the same
+# CODEOWNERS/review governance as every other rule/constant here, never
+# a silent same-PR edit to the external TSV file alone. Same-PR code can
+# still, in principle, express a change to this constant -- an
+# independent audit of this file remains mandatory, exactly as it is for
+# every other governance-critical constant in this analyzer (the debt
+# ledger's own rule vocabulary, VCS_FRAGMENT_VOCAB, etc.); this mechanism
+# does not and cannot make code review itself unnecessary, only makes
+# tampering fully visible in an ordinary diff rather than hideable in a
+# separate data file.
+#
+# The one row here is the SAME exact, independently-verified seed
+# committed to `.ci/arm64-release-attestations.tsv` in Round 7/8: real
+# upstream evidence for mingw-w64-cross-mingwarm64-windows-default-
+# manifest's pkgver=6.4, #tag=release-6_4, confirmed via `git ls-remote`/
+# `git fetch --depth 1`/`git cat-file -p` against the real
+# `sourceware.org` repository (see the row's own `provenance` field).
+CANONICAL_BOOTSTRAP_SEED_ROWS: tuple[str, ...] = (
+    "\t".join([
+        "mingw-w64-cross-mingwarm64-windows-default-manifest/PKGBUILD",
+        "6.4",
+        "abf080f350d9e5201fa5cb903453019f7a88bc16dee278a9eb03ead83c108a1d",
+        "git", "tag", "release-6_4", "lightweight",
+        "c12b0a634b1a9d721b3e1b2220fa09e5353fe25e",
+        "89be8f84f5e45822a0498742bd071b4c60efa79b",
+        "none", "none",
+        "https://sourceware.org/git/cygwin-apps/windows-default-manifest.git",
+        "947f4acba60d486e1125746b831f0633af4bf5ba",
+        "independently verified via git ls-remote, git fetch --depth 1, and git cat-file against "
+        "https://sourceware.org/git/cygwin-apps/windows-default-manifest.git on 2026-08-31 -- release-6_4 is "
+        "a lightweight tag pointing directly to commit c12b0a634b1a9d721b3e1b2220fa09e5353fe25e whose tree is "
+        "89be8f84f5e45822a0498742bd071b4c60efa79b, exactly matching the tag,commit,tree triple relayed by a "
+        "coordinator-supplied PR47 audit root, independently reproduced rather than trusted",
+    ]),
+)
+# sha256 of "\n".join(CANONICAL_BOOTSTRAP_SEED_ROWS) + "\n" -- a
+# self-check asserted every time the seed is consulted (see
+# `_canonical_bootstrap_seed_attestations`), catching an accidental
+# partial edit to one without the other (e.g. a copy-paste error that
+# changes one field of the row above without updating this digest).
+BOOTSTRAP_SEED_DIGEST = "ad4a5e7cb46ddacfd29822fcde92078768c8d92feb62ad5d3321bc06e884645d"
+
+
+def _canonical_bootstrap_seed_digest() -> str:
+    return sha256_hex(("\n".join(CANONICAL_BOOTSTRAP_SEED_ROWS) + "\n"))
+
+
+def _canonical_bootstrap_seed_attestations() -> dict[tuple, "ReleaseAttestation"]:
+    """Parses `CANONICAL_BOOTSTRAP_SEED_ROWS` through the SAME schema-
+    validation core as any other registry read
+    (`_parse_release_attestations_text`), after first asserting its
+    self-check digest matches `BOOTSTRAP_SEED_DIGEST`. Raises
+    AssertionError (a hard, never-silent failure -- this is a
+    governance-critical constant, not ordinary data) on a digest
+    mismatch, refusing to bootstrap anything until both are consistent
+    again.
+    """
+    actual = _canonical_bootstrap_seed_digest()
+    if actual != BOOTSTRAP_SEED_DIGEST:
+        raise AssertionError(
+            f"CANONICAL_BOOTSTRAP_SEED_ROWS digest mismatch: expected {BOOTSTRAP_SEED_DIGEST!r}, got {actual!r} "
+            f"-- this hardcoded seed table and its self-check digest have gone out of sync"
+        )
+    raw = ATTESTATION_HEADER + "\n" + "\n".join(CANONICAL_BOOTSTRAP_SEED_ROWS) + "\n"
+    return _parse_release_attestations_text(raw)
+
+
 _UNSET_ATTESTATIONS = object()
 
 
@@ -3123,13 +3408,13 @@ def resolve_base_reconciliation(
     withholding is always the safe default).
 
     The release-attestation registry consulted here is ALSO the base
-    commit's own (via `load_base_release_attestations`) -- content and
-    evidence are both drawn from the same single historical commit, which
-    is simply the self-consistent single source of truth for "what was
-    provably true at that moment", with no same-change-authorization
-    question to raise (unlike `reconcile_current_state`'s removal-
-    authorization caller, which necessarily mixes current content with
-    base evidence).
+    commit's own (via `resolve_base_registry_status(...).attestations`)
+    -- content and evidence are both drawn from the same single
+    historical commit, which is simply the self-consistent single source
+    of truth for "what was provably true at that moment", with no
+    same-change-authorization question to raise (unlike
+    `reconcile_current_state`'s removal-authorization caller, which
+    necessarily mixes current content with base evidence).
 
     A cone path that did NOT exist yet at the base commit (a genuinely
     new package introduced by this very change) is simply OMITTED from
@@ -3141,15 +3426,17 @@ def resolve_base_reconciliation(
 
     `base_attestations`, if supplied (not the `_UNSET_ATTESTATIONS`
     sentinel default), is used AS GIVEN rather than reloaded here --
-    this lets `main()` load and validate the base registry exactly once,
-    surfacing a malformed base registry as one clean, controlled FAIL
-    message instead of this function raising an uncaught `ParseError`
-    from its own independent internal load.
+    this lets `main()` compute the base registry's status exactly once
+    (via `resolve_base_registry_status`) and share it with both this
+    function and removal-authorization, surfacing a malformed/regressed
+    base registry as one clean, controlled FAIL message rather than this
+    function raising a second, independent `ParseError`/
+    `BaseRefResolutionError` from its own internal load.
     """
     if not base_ref:
         return None
     if base_attestations is _UNSET_ATTESTATIONS:
-        base_attestations = load_base_release_attestations(base_ref, repo_root)
+        base_attestations = resolve_base_registry_status(base_ref, repo_root).attestations
     result: dict[tuple[str, str], dict[str, str]] = {}
     for directory in cone:
         rel = directory + "/PKGBUILD"
@@ -3180,7 +3467,7 @@ def main(argv=None) -> int:
     parser.add_argument("--no-cone-digest", action="store_true", help="Disable cone digest pinning entirely (fixture tests only -- never used by the shipped CI workflow).")
     parser.add_argument("--rules", type=Path, default=RULES_FILE)
     parser.add_argument("--ledger", type=Path, default=LEDGER_FILE)
-    parser.add_argument("--release-attestations", type=Path, default=RELEASE_ATTESTATIONS_FILE, help="Path to the release-attestation registry. Schema-validated unconditionally; its CONTENT never authorizes anything at the commit that introduces/modifies a row, only once it exists at a trusted base commit (see load_base_release_attestations).")
+    parser.add_argument("--release-attestations", type=Path, default=RELEASE_ATTESTATIONS_FILE, help="Path to the release-attestation registry. Schema-validated unconditionally; its CONTENT never authorizes anything at the commit that introduces/modifies a row, only once it exists at a trusted base commit (see resolve_base_registry_status).")
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT, help="Repository root cone paths are resolved against (for isolated fixture tests only).")
     parser.add_argument("--today", type=str, default=None, help="Override today's date (YYYY-MM-DD), for tests only.")
     parser.add_argument("--base-ledger", type=Path, default=None, help="Path to the ledger file as it existed at the PR's base/merge-base commit (used only to detect newly-promoted rules). Omit to auto-resolve via --base-ref.")
@@ -3237,20 +3524,23 @@ def main(argv=None) -> int:
             # path rather than crashing main() with an uncaught exception.
             base_reconciliation = None
             base_release_attestations = None
+            base_registry_error = None
+            base_registry_bootstrap_eligible = False
             if args.base_ref is not None:
-                # base_release_attestations feeds removal-authorization
-                # AND the promotion-totality reconciliation below (see
-                # `run`/`resolve_base_reconciliation`): it is loaded here,
-                # ONCE, and shared with both consumers, avoiding a
-                # redundant second independent load inside
-                # `resolve_base_reconciliation`. A base-commit registry
-                # that cannot be parsed under today's schema (e.g. a
-                # `push`-event `before` SHA landing on a pre-migration
-                # commit) is read LENIENTLY here -- see
-                # `load_base_release_attestations`'s docstring for why
-                # this is safe (it can only withhold authorization,
-                # never grant it) -- so this never raises.
-                base_release_attestations = load_base_release_attestations(args.base_ref, repo_root=args.repo_root)
+                # The base commit's release-attestation registry status
+                # (Round 8: explicit ABSENT/VALID/INVALID, replacing the
+                # prior lenient dict-or-None -- see
+                # `resolve_base_registry_status`/`BaseRegistryStatus` for
+                # the full semantics, including the permanent
+                # history-aware bootstrap latch) is computed here, ONCE,
+                # and shared with removal-authorization, promotion-
+                # totality, AND current-state-enforcement's bootstrap
+                # exception below -- never independently reloaded by any
+                # of them.
+                base_registry_status = resolve_base_registry_status(args.base_ref, repo_root=args.repo_root)
+                base_release_attestations = base_registry_status.attestations
+                base_registry_error = base_registry_status.error
+                base_registry_bootstrap_eligible = base_registry_status.bootstrap_eligible
                 try:
                     cone_for_reconciliation = load_cone(args.cone, None if args.no_cone_digest else args.cone_digest)
                 except ParseError:
@@ -3272,7 +3562,9 @@ def main(argv=None) -> int:
                             base_cone_path=base_cone_path, base_reconciliation=base_reconciliation,
                             attestations_path=args.release_attestations,
                             base_release_attestations=base_release_attestations,
-                            base_ref=args.base_ref)
+                            base_ref=args.base_ref,
+                            base_registry_error=base_registry_error,
+                            base_registry_bootstrap_eligible=base_registry_bootstrap_eligible)
     finally:
         for resolved_temp in (resolved_temp_base_ledger, resolved_temp_base_cone):
             if resolved_temp is not None:
