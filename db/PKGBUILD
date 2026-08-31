@@ -16,7 +16,7 @@ source=(http://download.oracle.com/berkeley-db/db-${pkgver}.tar.gz)
 source+=('6.2.32-gcc15-c23-func-ptr.patch')
 options=('!makeflags')
 sha256sums=('a9c5e2b004a5777aa03510cfe5cd766a4a3b777713406b02809c17c8e0e7a8fb')
-sha256sums+=('207c048f6a58c94b8db9502ac32cc2cbf3e2dd8e57e26856e2cdc881212ce7db')
+sha256sums+=('c38ee8a39211e69718d74032d0158d323ba11b58c67cfed7796be155d46fb7e0')
 
 prepare() {
   cd "${srcdir}/${pkgname}-${pkgver}"
