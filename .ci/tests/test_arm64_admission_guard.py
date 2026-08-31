@@ -2573,6 +2573,39 @@ class TestReconciliationRemovalAuthorization(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("UNVERIFIED_DEBT_REMOVAL", result.stderr)
 
+    def test_base_registry_predating_a_schema_migration_is_treated_leniently(self):
+        # Regression for a real CI-observed gap: a base commit whose
+        # attestation-registry file exists but was written under an
+        # OLDER column layout (e.g. a `push`-event `before` SHA landing
+        # on the immediately-prior round's commit, mid schema migration)
+        # must be treated the SAME as "no base registry available" --
+        # never as an uncaught crash, and never as a hard SCHEMA_INVALID
+        # stop. This is safe: an unusable/absent base registry can only
+        # ever WITHHOLD removal-authorization, never grant it.
+        self._write_pkgbuild("2.44dev")
+        row = ledger_row(f"{self.TOOLCHAIN_PKG}/PKGBUILD", "pkgver", "TOOLCHAIN_DEV_VER",
+                          "2.44dev", "2.44dev", removal_gate="T0-corrected-toolchain")
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(row))
+        # Base has an OLD-schema (8-column, pre-Round-7) registry file.
+        write(self.repo_root / ".ci" / "arm64-release-attestations.tsv",
+              "path\tpkgver\tsource_locator_sha256\tvcs_type\tref_key\tref_value\tintroduced_by\tprovenance\n")
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1: base predates the Round 7 schema migration")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        # Current tree has the NEW schema (empty is fine) and genuinely
+        # fixes the version -- but with NO attestation, removal must
+        # still be rejected (never crash).
+        self._write_pkgbuild("2.44.0")
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())  # row deleted
+        self._set_attestations(make_attestations())  # current tree already migrated to the new schema
+
+        result = self._invoke(base_ref=commit1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertNotIn("SCHEMA_INVALID(release-attestations)", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("UNVERIFIED_DEBT_REMOVAL", result.stderr)
+
     def test_same_commit_version_only_respell_with_row_deleted_rejects(self):
         # Required negative from audit item 1: an in-cone toolchain
         # recipe pinned by an IMMUTABLE #commit= (an untagged snapshot

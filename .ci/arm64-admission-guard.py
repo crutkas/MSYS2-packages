@@ -1828,22 +1828,37 @@ def load_release_attestations(path: Path | None) -> dict[tuple, "ReleaseAttestat
 def load_base_release_attestations(base_ref: str | None, repo_root: Path = REPO_ROOT) -> dict[tuple, "ReleaseAttestation"] | None:
     """Materializes the release-attestation registry as it existed at the
     TRUSTED BASE commit (via `git show`, matching `resolve_default_base_ledger`/
-    `resolve_default_base_cone`'s pattern), and validates it with the
-    IDENTICAL rigor as the current-tree file (see
-    `_parse_release_attestations_text`) -- a malformed base-commit
-    registry is exactly as disqualifying as a malformed current one.
-    Returns None if `base_ref` is unavailable, or the file legitimately
-    did not exist yet at that commit (this PR's own introduction of the
-    (empty) registry) -- in either case, no attestation evidence is
-    available, which is the conservative default everywhere in this
-    section (nothing can reach ABSENT_PROVEN via attestation).
+    `resolve_default_base_cone`'s pattern). Returns None if `base_ref` is
+    unavailable, the file legitimately did not exist yet at that commit
+    (e.g. this PR's own introduction of the registry), OR the historical
+    content cannot be safely parsed under the CURRENT schema (e.g. a
+    schema migration commit whose immediate `push`-event `before` SHA
+    still carries the prior column layout) -- read LENIENTLY, matching
+    `load_base_ledger_rows`/`load_base_cone_entries`'s established
+    treatment of base-commit historical data, which was already validated
+    against whatever schema was current when IT was committed and does
+    not need to re-validate against today's schema to be treated as
+    legitimately absent evidence.
+
+    This leniency is provably safe, unlike leniency toward a malformed
+    CURRENT-tree registry (which `load_release_attestations`/`run`'s own
+    unconditional schema check never affords): every consumer of this
+    return value treats None identically to an empty dict (`attestations
+    or {}`), and an empty/absent set of attestations can only ever WITHHOLD
+    ABSENT_PROVEN, never grant it -- removal-authorization and promotion-
+    totality both remain blocked, the conservative default, exactly as if
+    the base commit had no registry file at all. It can never be exploited
+    to authorize anything a well-formed base registry would not.
     """
     if not base_ref:
         return None
     raw = _git_show_text(base_ref, RELEASE_ATTESTATIONS_FILE.relative_to(REPO_ROOT).as_posix(), repo_root)
     if raw is None:
         return None
-    return _parse_release_attestations_text(raw)
+    try:
+        return _parse_release_attestations_text(raw)
+    except ParseError:
+        return None
 
 
 def _reconcile_toolchain_dev_ver(path: str, text: str, attestations: dict[tuple, "ReleaseAttestation"] | None) -> str:
@@ -3225,19 +3240,17 @@ def main(argv=None) -> int:
             if args.base_ref is not None:
                 # base_release_attestations feeds removal-authorization
                 # AND the promotion-totality reconciliation below (see
-                # `run`/`resolve_base_reconciliation`): it is loaded and
-                # VALIDATED here, ONCE, before either consumer runs (a
-                # malformed base-commit registry is a hard, controlled
-                # failure, never silently treated as "no attestations
-                # available" and never allowed to crash main() with an
-                # uncaught exception from a second, independent load
-                # inside resolve_base_reconciliation -- see
-                # `load_base_release_attestations`).
-                try:
-                    base_release_attestations = load_base_release_attestations(args.base_ref, repo_root=args.repo_root)
-                except ParseError as e:
-                    print(f"FAIL: arm64-admission-guard: malformed release-attestation registry at base commit {args.base_ref!r}: {e}", file=sys.stderr)
-                    return 1
+                # `run`/`resolve_base_reconciliation`): it is loaded here,
+                # ONCE, and shared with both consumers, avoiding a
+                # redundant second independent load inside
+                # `resolve_base_reconciliation`. A base-commit registry
+                # that cannot be parsed under today's schema (e.g. a
+                # `push`-event `before` SHA landing on a pre-migration
+                # commit) is read LENIENTLY here -- see
+                # `load_base_release_attestations`'s docstring for why
+                # this is safe (it can only withhold authorization,
+                # never grant it) -- so this never raises.
+                base_release_attestations = load_base_release_attestations(args.base_ref, repo_root=args.repo_root)
                 try:
                     cone_for_reconciliation = load_cone(args.cone, None if args.no_cone_digest else args.cone_digest)
                 except ParseError:
