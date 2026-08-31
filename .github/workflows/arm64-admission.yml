@@ -1,0 +1,63 @@
+name: arm64-admission
+
+# ARM64 package-admission governance gate (PR-0). Runs the deterministic,
+# offline static analyzer in .ci/arm64-admission-guard.py plus its full
+# fixture-based test suite. Intentionally triggers on every push/pull_request
+# (no path filter) -- the guard always re-scans the ENTIRE declared cone
+# (.ci/arm64-cone.txt) regardless of which files changed, so a path filter
+# here would only save CI minutes, never change correctness; omitting one
+# also closes off a "touch an unrelated file to dodge the gate" bypass class.
+
+concurrency:
+  group: arm64-admission-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least-privilege: this job only ever reads repository content (checkout)
+# and performs a local, read-only `git show` for base-ledger resolution --
+# it never writes to the repository, comments, or any other API surface.
+permissions:
+  contents: read
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  guard:
+    # NB-1: the job (and hence its status-check) name explicitly includes
+    # the triggering event so a `push`-triggered run's status can never be
+    # confused with a `pull_request`-triggered run's status under branch
+    # protection's "required status check" matching (which matches on
+    # name, not on which trigger produced it) -- the two events reach
+    # this job via different, non-attacker-substitutable trust paths (see
+    # derive_github_actions_base_ref), and their status checks must stay
+    # distinguishable accordingly.
+    name: "ARM64 admission guard (${{ github.event_name }})"
+    runs-on: ubuntu-latest
+    steps:
+      # NB-3: third-party Actions are pinned to immutable full commit SHAs
+      # (never mutable version tags, which a compromised or hijacked
+      # upstream tag could silently repoint) -- version numbers are kept
+      # only as trailing comments for readability.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+
+      - name: Run arm64-admission-guard tests
+        run: python .ci/tests/test_arm64_admission_guard.py -v
+
+      - name: Run arm64-admission-guard
+        # No --base-ref is passed here, deliberately: the guard derives its
+        # own trusted base commit from GITHUB_EVENT_PATH (a JSON file
+        # GitHub's runner writes BEFORE any repository code -- including
+        # this workflow file itself -- is read), never from anything a
+        # workflow YAML computes. On a `pull_request` trigger this
+        # workflow's own file is part of the diff under review, so any
+        # base-selection logic expressed here would be attacker-editable;
+        # see derive_github_actions_base_ref in arm64-admission-guard.py.
+        run: python .ci/arm64-admission-guard.py
