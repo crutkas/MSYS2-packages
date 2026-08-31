@@ -166,7 +166,7 @@ class FixtureRepo:
     def set_ledger(self, text: str) -> None:
         write(self.root / ".ci" / "arm64-debt-ledger.tsv", text)
 
-    def run(self, today="2026-01-01", base_ledger_text=None):
+    def run(self, today="2026-01-01", base_ledger_text=None, base_reconciliation=None):
         from datetime import datetime
         base_ledger_path = None
         if base_ledger_text is not None:
@@ -181,7 +181,26 @@ class FixtureRepo:
             repo_root=self.root,
             base_ledger_path=base_ledger_path,
             cone_digest_path=cone_digest_path,
+            base_reconciliation=base_reconciliation,
         )
+
+    def snapshot_reconciliation(self):
+        """Computes `guard.reconcile_current_state` against whatever this
+        fixture's on-disk content is RIGHT NOW, for use as a
+        `base_reconciliation` snapshot in a LATER `run(...)` call -- this
+        is the test-fixture equivalent of the real CLI's
+        `resolve_base_reconciliation` (which materializes historical
+        content via `git show <base_ref>:<path>`): both answer "was the
+        rule's condition provably absent at the moment the ledger's row
+        count reached zero for it", using whatever tree existed AT THAT
+        MOMENT, not whatever the fixture is mutated to contain by the time
+        `run()` is actually invoked. Call this immediately after writing
+        the PKGBUILDs/cone that represent the "PR-1 just landed" state,
+        before making any further mutations for a subsequent simulated PR.
+        """
+        cone = guard.load_cone(self.root / ".ci" / "arm64-cone.txt",
+                                (self.root / ".ci" / "arm64-cone.sha256") if self._cone_digest_enabled else None)
+        return guard.reconcile_current_state(cone, self.root)
 
 
 class BaseFixtureTest(unittest.TestCase):
@@ -1197,6 +1216,29 @@ class TestCanonicalForm(BaseFixtureTest):
         self.assertFalse(ok)
         self.assertTrue(any("SCHEMA_INVALID(rules)" in p for p in problems), problems)
 
+    def test_new_ratchetable_rule_without_reconciler_is_red(self):
+        # A ratchetable rule that names no entry in
+        # RATCHETABLE_RULE_RECONCILERS would be structurally EXEMPT from
+        # removal-authorization/promotion-totality checking -- as
+        # dangerous, by construction, as the original CONTROLLING DEFECT.
+        # Adding one must fail closed at rules-load time, not silently
+        # admit an ungoverned ratchetable rule.
+        self.baseline()
+        bad_rules = RULES_TOML + (
+            "\n[rule.SRC_FTP_INSECURE]\n"
+            'severity = "ratchetable"\n'
+            "promote_when_clear = true\n"
+            'description = "hypothetical new rule with no reconciler"\n'
+            'matched_marker = "ftp://"\n'
+            'reason = "insecure ftp:// transport"\n'
+        )
+        self.repo.set_rules(bad_rules)
+        ok, problems = self.repo.run()
+        self.assertFalse(ok)
+        self.assertTrue(any(
+            "SCHEMA_INVALID(rules)" in p and "SRC_FTP_INSECURE" in p and "reconciler" in p for p in problems
+        ), problems)
+
 
 # ---------------------------------------------------------------------------
 # B3: cone digest binding (monotonic 225-entry declared BUILD closure)
@@ -1291,15 +1333,78 @@ class TestPromotion(BaseFixtureTest):
         ok, problems = self.repo.run(base_ledger_text=pre_pr1_ledger_text)
         self.assertTrue(ok, problems)
 
+        # Snapshot the independent reconciliation state of the tree AS IT
+        # EXISTS RIGHT NOW -- i.e. the moment PR-1 lands and SRC_GIT_PROTO/
+        # SRC_INSECURE_HTTP/SRC_MUTABLE_REF's ledger counts all reach zero.
+        # This is what the SECOND run below must use to decide whether
+        # that historical zero-count was legitimately total (see `run`'s
+        # promotion-totality gate) -- using the CURRENT (post-pkg-c) tree
+        # instead would defeat the very promotion this test exists to
+        # prove, since the reintroduced pkg-c violation would make
+        # totality look false FOREVER rather than being caught as an
+        # immediate hard failure the way a genuinely promoted rule must.
+        post_pr1_reconciliation = self.repo.snapshot_reconciliation()
+
         self.repo.add_pkg("pkg-c", 'pkgname=pkg-c\npkgver=3.0.0\npkgrel=1\n'
                           'source=("http://example.org/new-insecure.tar.gz")\n'
                           "sha256sums=('SKIP')\n")
         with_new_row = remaining + [ledger_row("pkg-c/PKGBUILD", "source", "SRC_INSECURE_HTTP",
                                                 '"http://example.org/new-insecure.tar.gz"', "http://")]
         self.repo.set_ledger(make_ledger(*with_new_row))
-        ok, problems = self.repo.run(base_ledger_text=post_pr1_ledger_text)
+        ok, problems = self.repo.run(base_ledger_text=post_pr1_ledger_text, base_reconciliation=post_pr1_reconciliation)
         self.assertFalse(ok)
         self.assertTrue(any("promoted" in p for p in problems), problems)
+
+    def test_pr1_simulation_promotion_withheld_without_reconciliation_evidence(self):
+        # Negative control for the totality gate itself: the SAME
+        # zero-row transition as above, but WITHOUT a base_reconciliation
+        # snapshot (e.g. an ad hoc local run with no base-tree access at
+        # all). Promotion must be WITHHELD, not assumed -- so a new,
+        # correctly-ledgered SRC_INSECURE_HTTP row is legal (no "promoted"
+        # problem), even though the base ledger already shows zero rows
+        # for that rule. This is the deliberate, safe default: absence of
+        # totality proof never grants promotion.
+        pre_pr1_ledger_text = make_ledger(*self.baseline())
+        self.repo.add_pkg("pkg-a", 'pkgname=pkg-a\npkgver=1.0.0\npkgrel=1\n'
+                          'source=("git+https://example.org/pkg-a.git#commit=deadbeef")\n'
+                          "sha256sums=('SKIP')\n")
+        self.repo.add_pkg("pkg-b", 'pkgname=pkg-b\npkgver=2.0.0\npkgrel=1\n'
+                          'source=("https://example.org/pkg-b-${pkgver}.tar.gz")\n'
+                          "sha256sums=('SKIP')\n")
+        remaining = [ledger_row("mingw-w64-cross-mingwarm64-toolchain/PKGBUILD", "pkgver", "TOOLCHAIN_DEV_VER",
+                                 "9.9.9dev", "9.9.9dev", removal_gate="T0-corrected-toolchain")]
+        self.repo.set_ledger(make_ledger(*remaining))
+
+        self.repo.add_pkg("pkg-c", 'pkgname=pkg-c\npkgver=3.0.0\npkgrel=1\n'
+                          'source=("http://example.org/new-insecure.tar.gz")\n'
+                          "sha256sums=('SKIP')\n")
+        with_new_row = remaining + [ledger_row("pkg-c/PKGBUILD", "source", "SRC_INSECURE_HTTP",
+                                                '"http://example.org/new-insecure.tar.gz"', "http://")]
+        self.repo.set_ledger(make_ledger(*with_new_row))
+        ok, problems = self.repo.run(base_ledger_text=pre_pr1_ledger_text, base_reconciliation=None)
+        self.assertTrue(ok, problems)
+
+    def test_post_promotion_reintroduction_still_fails(self):
+        # "Post-promotion reintroduction must still fail": once a rule is
+        # legitimately promoted (zero rows + proven totality at the base
+        # commit), a run whose CURRENT tree reintroduces the condition
+        # via an EXISTING (not brand-new) path must fail -- via ordinary
+        # NEW_DEBT if unledgered, since the reintroduction cannot ever be
+        # authorized as tracked debt again.
+        self.repo.add_pkg("pkg-a", 'pkgname=pkg-a\npkgver=1.0.0\npkgrel=1\n'
+                          'source=("https://example.org/pkg-a.tar.gz")\n'
+                          "sha256sums=('SKIP')\n")
+        self.repo.set_cone(["pkg-a"])
+        self.repo.set_ledger(make_ledger())
+        base_reconciliation = self.repo.snapshot_reconciliation()
+
+        # Reintroduce the exact insecure condition on the SAME path.
+        self.repo.add_pkg("pkg-a", 'pkgname=pkg-a\npkgver=1.0.0\npkgrel=1\n'
+                          'source=("http://example.org/pkg-a.tar.gz")\n'
+                          "sha256sums=('SKIP')\n")
+        ok, problems = self.repo.run(base_ledger_text=make_ledger(), base_reconciliation=base_reconciliation)
+        self.assertFalse(ok)
+        self.assertTrue(any("NEW_DEBT" in p for p in problems), problems)
 
     def test_no_base_ledger_means_nothing_promoted_yet(self):
         self.baseline()
@@ -1891,6 +1996,26 @@ class TestCLIBaseRefEndToEnd(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("FAIL", result.stdout + result.stderr)
 
+    def test_github_actions_empty_event_path_is_hard_fail(self):
+        # NB-2: GITHUB_ACTIONS=true with GITHUB_EVENT_PATH explicitly set
+        # to an EMPTY STRING (as distinct from missing/nonexistent) must
+        # ALSO hard-fail -- the real Actions runner always sets a
+        # non-empty value, so this can only indicate something is wrong
+        # with the environment, never legitimate "not really in Actions".
+        write(self.repo_root / "pkg-a" / "PKGBUILD", "pkgname=pkg-a\npkgver=1.0\npkgrel=1\nsource=()\n")
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1")
+
+        result = self._invoke(env={
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_EVENT_NAME": "pull_request",
+            "GITHUB_EVENT_PATH": "",
+        })
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("FAIL", result.stdout + result.stderr)
+
     def test_workflow_supplied_base_ref_mismatching_github_event_is_hard_fail(self):
         # If a workflow-computed --base-ref were ever (re-)introduced and
         # disagreed with the trusted, event-derived base, that must be a
@@ -1944,6 +2069,185 @@ class TestCLIBaseRefEndToEnd(unittest.TestCase):
         result = self._invoke_as_github_actions(
             event={"before": "0000000000000000000000000000000000000000"}, event_name="push",
         )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PASS", result.stdout)
+
+
+# ---------------------------------------------------------------------------
+# Reconciliation architecture: removal-authorization and promotion-totality
+# gating, exercised end-to-end through the REAL --base-ref CLI path (real
+# git history, real `git show` materialization of the base commit's tree
+# via `resolve_base_reconciliation`) -- this is the CONTROLLING DEFECT the
+# reconciliation layer exists to close: a ledgered debt row must never be
+# removable just because a narrower/respelled locator makes the PRIMARY
+# detector stop noticing it.
+# ---------------------------------------------------------------------------
+
+class TestReconciliationRemovalAuthorization(unittest.TestCase):
+    TOOLCHAIN_PKG = "mingw-w64-cross-mingwarm64-toolchain"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="arm64-reconcile-e2e-")
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+        self.repo_root = Path(self.tmp)
+        (self.repo_root / ".ci").mkdir(parents=True)
+        (self.repo_root / self.TOOLCHAIN_PKG).mkdir()
+        write(self.repo_root / ".ci" / "arm64-rules.toml", RULES_TOML)
+        write(self.repo_root / ".ci" / "arm64-cone.txt", self.TOOLCHAIN_PKG + "\n")
+        write(self.repo_root / ".ci" / "arm64-cone.sha256",
+              sha256_of(self.repo_root / ".ci" / "arm64-cone.txt") + "\n")
+
+        def run_git(*args):
+            return subprocess.run(["git", *args], cwd=self.repo_root, capture_output=True, text=True, check=True)
+        self.run_git = run_git
+        run_git("init", "-q")
+        run_git("config", "user.email", "test@example.com")
+        run_git("config", "user.name", "test")
+
+    def _write_pkgbuild(self, pkgver: str) -> None:
+        write(self.repo_root / self.TOOLCHAIN_PKG / "PKGBUILD",
+              f"pkgname={self.TOOLCHAIN_PKG}\npkgver={pkgver}\npkgrel=1\n"
+              f'source=("https://example.org/toolchain-{pkgver}.tar.gz")\n'
+              "sha256sums=('SKIP')\n")
+
+    def _invoke(self, base_ref=None):
+        args = [sys.executable, str(GUARD_PATH),
+                "--cone", str(self.repo_root / ".ci" / "arm64-cone.txt"),
+                "--cone-digest", str(self.repo_root / ".ci" / "arm64-cone.sha256"),
+                "--rules", str(self.repo_root / ".ci" / "arm64-rules.toml"),
+                "--ledger", str(self.repo_root / ".ci" / "arm64-debt-ledger.tsv"),
+                "--repo-root", str(self.repo_root),
+                "--today", "2026-01-01"]
+        if base_ref is not None:
+            args += ["--base-ref", base_ref]
+        return subprocess.run(args, cwd=self.repo_root, capture_output=True, text=True, env=clean_subprocess_env())
+
+    def test_respell_with_row_kept_is_stale_debt(self):
+        # "respell + old row": the ledgered locator text no longer exists
+        # anywhere on disk once respelled, so the EXISTING same-commit
+        # STALE_DEBT check (no cross-commit machinery needed) must already
+        # catch this -- confirms the baseline protection this whole
+        # mechanism builds on top of is intact.
+        self._write_pkgbuild("2.44dev")
+        row = ledger_row(f"{self.TOOLCHAIN_PKG}/PKGBUILD", "pkgver", "TOOLCHAIN_DEV_VER",
+                          "2.44dev", "2.44dev", removal_gate="T0-corrected-toolchain")
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(row))
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1: baseline dev pin")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        self._write_pkgbuild("2.44.r474.g9c93e483b")
+        # ledger row for "2.44dev" left UNCHANGED (not deleted, not updated)
+
+        result = self._invoke(base_ref=commit1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("STALE_DEBT", result.stderr)
+
+    def test_respell_with_row_deleted_is_unverified_removal(self):
+        # THE CONTROLLING DEFECT, exercised end-to-end: respell the exact
+        # audit-cited case (2.44dev -> 2.44.r474.g9c93e483b, a live
+        # git-describe-style snapshot spelling TOOLCHAIN_DEV_VER_RE does
+        # NOT match) AND delete the now-"undetected" ledger row in the
+        # SAME change. Before the reconciliation architecture, this
+        # combination passed green (V and L both silently agree on
+        # absence). It must now fail via UNVERIFIED_DEBT_REMOVAL.
+        self._write_pkgbuild("2.44dev")
+        row = ledger_row(f"{self.TOOLCHAIN_PKG}/PKGBUILD", "pkgver", "TOOLCHAIN_DEV_VER",
+                          "2.44dev", "2.44dev", removal_gate="T0-corrected-toolchain")
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(row))
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1: baseline dev pin")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        self._write_pkgbuild("2.44.r474.g9c93e483b")
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())  # row deleted
+
+        result = self._invoke(base_ref=commit1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("UNVERIFIED_DEBT_REMOVAL", result.stderr)
+        self.assertIn("TOOLCHAIN_DEV_VER", result.stderr)
+
+    def test_genuine_remediation_with_row_deleted_passes(self):
+        # The positive control proving this mechanism is not merely
+        # fail-closed-always: a TRUE fix (a clean, fully-released numeric
+        # version, no VCS ambiguity) combined with deleting the
+        # now-obsolete ledger row must PASS.
+        self._write_pkgbuild("2.44dev")
+        row = ledger_row(f"{self.TOOLCHAIN_PKG}/PKGBUILD", "pkgver", "TOOLCHAIN_DEV_VER",
+                          "2.44dev", "2.44dev", removal_gate="T0-corrected-toolchain")
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(row))
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1: baseline dev pin")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        self._write_pkgbuild("2.44.0")  # clean release: genuinely fixed
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())  # row deleted
+
+        result = self._invoke(base_ref=commit1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PASS", result.stdout)
+
+    def test_unknown_dynamic_content_with_row_deleted_is_unverified_removal(self):
+        # An unresolvable/dynamic pkgver at the CURRENT commit -- neither
+        # provably present nor provably absent -- must block removal just
+        # as firmly as a provably-present one (RECON_UNKNOWN and
+        # RECON_PRESENT are both non-authorizing).
+        self._write_pkgbuild("2.44dev")
+        row = ledger_row(f"{self.TOOLCHAIN_PKG}/PKGBUILD", "pkgver", "TOOLCHAIN_DEV_VER",
+                          "2.44dev", "2.44dev", removal_gate="T0-corrected-toolchain")
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(row))
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1: baseline dev pin")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        write(self.repo_root / self.TOOLCHAIN_PKG / "PKGBUILD",
+              f"pkgname={self.TOOLCHAIN_PKG}\n"
+              "if true; then\n_v=2.44.0\nelse\n_v=2.45.0\nfi\n"
+              "pkgver=${_v}\npkgrel=1\n"
+              'source=("https://example.org/toolchain-${pkgver}.tar.gz")\n'
+              "sha256sums=('SKIP')\n")
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())  # row deleted
+
+        result = self._invoke(base_ref=commit1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("UNVERIFIED_DEBT_REMOVAL", result.stderr)
+
+    def test_zero_count_promotion_withheld_when_base_tree_reconciler_shows_present(self):
+        # "zero-count promotion with incomplete reconciler": the BASE
+        # ledger already shows zero SRC_INSECURE_HTTP rows (naive
+        # promotion condition satisfied), but the BASE TREE itself, at
+        # that exact historical commit, still had an undetected plaintext
+        # HTTP fetch reachable only through a respelling the primary
+        # detector missed (simulated here directly: a source element
+        # whose scheme is provided via a conditionally-assigned,
+        # therefore-UNKNOWN variable). Promotion must be withheld --
+        # confirmed by checking that a SUBSEQUENT new SRC_INSECURE_HTTP
+        # ledger row is accepted (not rejected as "promoted").
+        write(self.repo_root / self.TOOLCHAIN_PKG / "PKGBUILD",
+              f"pkgname={self.TOOLCHAIN_PKG}\npkgver=1.0.0\npkgrel=1\n"
+              "if true; then\n_p=https\nelse\n_p=http\nfi\n"
+              'source=("${_p}://example.org/x.tar.gz")\n'
+              "sha256sums=('SKIP')\n")
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger())  # zero rows already
+        self.run_git("add", "-A")
+        self.run_git("commit", "-q", "-m", "commit1: base has zero SRC_INSECURE_HTTP rows, but is UNKNOWN not proven absent")
+        commit1 = self.run_git("rev-parse", "HEAD").stdout.strip()
+
+        write(self.repo_root / self.TOOLCHAIN_PKG / "PKGBUILD",
+              f"pkgname={self.TOOLCHAIN_PKG}\npkgver=1.0.0\npkgrel=1\n"
+              'source=("http://example.org/new-insecure.tar.gz")\n'
+              "sha256sums=('SKIP')\n")
+        row = ledger_row(f"{self.TOOLCHAIN_PKG}/PKGBUILD", "source", "SRC_INSECURE_HTTP",
+                          '"http://example.org/new-insecure.tar.gz"', "http://", introduced_by=commit1)
+        write(self.repo_root / ".ci" / "arm64-debt-ledger.tsv", make_ledger(row))
+
+        result = self._invoke(base_ref=commit1)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertNotIn("promoted", result.stderr)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("PASS", result.stdout)
 

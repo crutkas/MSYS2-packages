@@ -1442,6 +1442,347 @@ def detect_findings_for_file(path: str, text: str) -> tuple[list[Finding], list[
 
 
 # ---------------------------------------------------------------------------
+# Reconciliation architecture (removal authorization + promotion totality)
+# ---------------------------------------------------------------------------
+#
+# CONTROLLING DEFECT this section closes: `run()`'s NEW_DEBT/STALE_DEBT
+# checks and the promotion check were ALL driven by the SAME single
+# detector-derived signal (`detect_findings_for_file`'s Finding list /
+# `v_keys`). That conflation means: if a ledgered locator is respelled
+# just enough that the PRIMARY detector (a narrow literal pattern, e.g.
+# TOOLCHAIN_DEV_VER_RE) stops matching -- while the underlying condition
+# the rule exists to catch (an unreleased/dev-snapshot toolchain pin, an
+# insecure transport, a mutable VCS ref) has NOT actually changed -- then
+# deleting the now-"stale" ledger row for that locator is INDISTINGUISHABLE,
+# to the detector, from a genuine fix. Nothing independently re-verifies
+# "is the condition truly gone" before authorizing a debt-row removal, and
+# `promote_when_clear` can then make that false "cleared" state permanent
+# and irreversible the next time a base ledger with zero rows for the rule
+# is observed.
+#
+# The fix is a SEPARATE reconciliation layer, deliberately NOT sharing code
+# path with the primary literal detector, that classifies the CURRENT,
+# independently re-parsed on-disk state of every in-scope (path, field)
+# location into one of three states for each ratchetable rule:
+#
+#   PRESENT       -- the rule's condition is confirmed to still hold here.
+#   ABSENT_PROVEN -- the condition is POSITIVELY, conservatively proven
+#                    gone (never merely "the narrow detector didn't fire").
+#   UNKNOWN       -- cannot be determined one way or the other (dynamic
+#                    content, an unmodeled construct, an unresolvable
+#                    ambiguity, ...).
+#
+# Only ABSENT_PROVEN may ever authorize removing a ledger row for that
+# rule at that location. PRESENT and UNKNOWN are treated IDENTICALLY by
+# every consumer of this state (both block removal, both withhold
+# promotion) -- the two are distinguished only for diagnostic clarity
+# about WHY a removal was blocked, never for different enforcement
+# behavior. This is the load-bearing invariant of this whole section:
+# fail closed on ambiguity, exactly like everywhere else in this analyzer.
+RECON_PRESENT = "PRESENT"
+RECON_ABSENT_PROVEN = "ABSENT_PROVEN"
+RECON_UNKNOWN = "UNKNOWN"
+RECONCILIATION_STATES = (RECON_PRESENT, RECON_ABSENT_PROVEN, RECON_UNKNOWN)
+
+
+def _recon_worse(a: str, b: str) -> str:
+    """Combines two reconciliation states conservatively: PRESENT is
+    'worse' (more blocking) than UNKNOWN, which is 'worse' than
+    ABSENT_PROVEN. Used to fold multiple independent pieces of evidence
+    (e.g. several source= elements, or several concerns within one
+    element) into a single field-level verdict without ever letting one
+    clean piece of evidence silently outvote one damning piece."""
+    order = {RECON_ABSENT_PROVEN: 0, RECON_UNKNOWN: 1, RECON_PRESENT: 2}
+    return a if order[a] >= order[b] else b
+
+
+CLEAN_RELEASE_VERSION_RE = re.compile(r"^[0-9]+(\.[0-9]+)*$")
+# Heuristic, narrowly-scoped positive-evidence check for finding 4's
+# "non-VCS snapshot ambiguity" case: a non-VCS download whose URL/filename
+# literal itself names an unreleased/nightly/live artifact even though
+# `pkgver` happens to already be spelled as a clean numeric release. This
+# is deliberately conservative (a small, fixed substring list, checked
+# case-insensitively against the fully-resolved source value) -- it exists
+# only to WIDEN what counts as "not proven released", never to narrow it.
+NON_VCS_SNAPSHOT_MARKERS = ("snapshot", "nightly", "unstable", "-git", "-dev-", "-continuous")
+
+
+def _reconcile_toolchain_dev_ver(path: str, text: str) -> str:
+    """Independent reconciler for TOOLCHAIN_DEV_VER, evaluated against a
+    FRESH parse of the current on-disk text -- this function shares no
+    code path with `detect_findings_for_file`'s Finding construction, and
+    in particular does NOT simply re-check `TOOLCHAIN_DEV_VER_RE` and call
+    that the answer (that would be exactly the conflation this section
+    exists to break). `TOOLCHAIN_DEV_VER_RE` remains the PRIMARY detector
+    (drives V/NEW_DEBT, i.e. what must be ledgered) precisely because it is
+    narrow and therefore low-false-positive; this reconciler is
+    deliberately broader/more conservative and answers a different
+    question -- not "does this match the exact known dev-marker spelling"
+    but "has a positive, multi-factor case for RELEASED state been made" --
+    used only to gate whether an EXISTING ledger row for this rule may ever
+    be removed, or a promotion granted.
+
+    Returns RECON_PRESENT / RECON_ABSENT_PROVEN / RECON_UNKNOWN for the
+    toolchain path's pkgver. Non-toolchain paths are out of this rule's
+    scope entirely and are not evaluated (callers must check
+    `is_toolchain_path` first).
+    """
+    if PKGVER_FUNCTION_RE.search(text):
+        # A pkgver() function makes the TRUE runtime version statically
+        # undecidable (see detect_findings_for_file's own PARSE_FAIL for
+        # this same condition at primary-detection time) -- the reconciler
+        # must never claim proof of release here. Never execute/interpret
+        # the function body.
+        return RECON_UNKNOWN
+    try:
+        pkgver_word, _ = parse_pkgver(text, path)
+    except ParseError:
+        return RECON_UNKNOWN
+    if pkgver_word is None:
+        return RECON_UNKNOWN
+    resolved_vars = build_resolved_variable_map(text)
+    pkgver_effective, pkgver_unresolved = resolve_effective_value(pkgver_word.value, resolved_vars)
+    if pkgver_unresolved:
+        # The pkgver value itself contains content this analyzer cannot
+        # statically resolve -- cannot positively prove anything about it.
+        return RECON_UNKNOWN
+    if TOOLCHAIN_DEV_VER_RE.match(pkgver_effective):
+        # Still matches the exact narrow dev-marker spelling: definitely
+        # still present, by the strongest possible evidence.
+        return RECON_PRESENT
+    if not CLEAN_RELEASE_VERSION_RE.match(pkgver_effective):
+        # ANY spelling that is not a fully clean, plain numeric dotted
+        # version (this is what catches a git-describe-style live
+        # respelling such as "2.44.r474.g9c93e483b", any "rcN"/"alpha"/
+        # "beta" pre-release marker, etc.) is conservatively treated as
+        # still present -- this is the core fix for the exact adversarial
+        # case that motivated this whole section.
+        return RECON_PRESENT
+
+    # pkgver_effective is now known to be a clean numeric release spelling.
+    # That alone is not sufficient: cross-check the source array (if any)
+    # for VCS-tracking ambiguity that would undercut a "released" claim.
+    try:
+        arrays, _ = parse_source_arrays(text, path)
+    except ParseError:
+        return RECON_UNKNOWN
+    state = RECON_ABSENT_PROVEN
+    saw_any_vcs_source = False
+    for words in arrays.values():
+        for w in words:
+            effective, unresolved = resolve_effective_value(w.value, resolved_vars)
+            opaque_spans = _collect_opaque_spans(w, unresolved)
+            vcs_type_span = _extract_vcs_type_span(effective)
+            frag_key_span = _extract_fragment_key_span(effective)
+            # `_extract_vcs_type_span` returns a span for the scheme token
+            # of ANY URL with a "://" (git, https, http, ftp, ...) -- it
+            # is NOT itself proof of a VCS source. Only treat the element
+            # as VCS-typed if that token is ACTUALLY one of the VCS types
+            # this analyzer models (VCS_FRAGMENT_VOCAB); an ordinary
+            # https:// download must fall through to the plain-download
+            # branch below regardless of whether it happens to have a
+            # (structurally valid but semantically inert) scheme span.
+            vcs_type_text = effective[vcs_type_span[0]:vcs_type_span[1]] if vcs_type_span is not None else None
+            is_recognized_vcs = vcs_type_text in VCS_FRAGMENT_VOCAB
+            if vcs_type_span is not None and vcs_type_text not in VCS_FRAGMENT_VOCAB and frag_key_span is None:
+                # A non-VCS scheme (https/http/ftp/...) with no fragment
+                # at all -- an ordinary plain download. Still check its
+                # resolved text for an unreleased/nightly-naming
+                # heuristic marker (finding 4's "non-VCS snapshot
+                # ambiguity") before treating it as release-compatible.
+                lowered = effective.lower()
+                if any(marker in lowered for marker in NON_VCS_SNAPSHOT_MARKERS):
+                    state = _recon_worse(state, RECON_PRESENT)
+                continue
+            if vcs_type_span is None and frag_key_span is None:
+                continue  # no scheme, no fragment at all -- nothing to evaluate
+            if not is_recognized_vcs:
+                if frag_key_span is not None:
+                    # A non-VCS scheme (or no scheme at all) carrying a
+                    # fragment this analyzer cannot attribute to a known
+                    # VCS type -- genuinely ambiguous, not proof either way.
+                    state = _recon_worse(state, RECON_UNKNOWN)
+                continue
+            saw_any_vcs_source = True
+            if _span_overlaps_any(vcs_type_span, opaque_spans) or (
+                frag_key_span is not None and _span_overlaps_any(frag_key_span, opaque_spans)
+            ):
+                state = _recon_worse(state, RECON_UNKNOWN)
+                continue
+            vocab = VCS_FRAGMENT_VOCAB[vcs_type_text]
+            immutable_keys, mutable_keys = vocab
+            if frag_key_span is None:
+                # No fragment at all on a VCS source == tracks the
+                # implicit default ref (makepkg's `ref=origin/HEAD` for
+                # git when no fragment is given) -- behaviorally identical
+                # to an explicit `branch=`, i.e. a perpetually-moving
+                # target, never evidence of a fixed release.
+                state = _recon_worse(state, RECON_PRESENT)
+                continue
+            frag_key_text = effective[frag_key_span[0]:frag_key_span[1]]
+            if frag_key_text in immutable_keys:
+                pass  # commit/revision: release-compatible, contributes nothing blocking.
+            elif frag_key_text in mutable_keys:
+                if vcs_type_text in ("git", "fossil") and frag_key_text == "tag":
+                    # A git/fossil TAG is a deliberate, human-curated
+                    # release marker -- unlike `branch`, it is release-
+                    # compatible evidence for THIS rule's purposes (a
+                    # tag-pinned source is exactly what
+                    # windows-default-manifest/PKGBUILD's real, currently
+                    # ABSENT toolchain sibling does: pkgver=6.4, clean
+                    # release spelling, source pinned to `#tag=
+                    # release-6_4`). SRC_MUTABLE_REF's OWN, separately
+                    # reconciled classification of this exact same
+                    # fragment as "mutable" is correct and unaffected --
+                    # the two rules are answering different questions
+                    # (this rule cares whether a RELEASE was intended;
+                    # SRC_MUTABLE_REF cares whether the referenced commit
+                    # can move over time) and are allowed to disagree.
+                    pass
+                else:
+                    # `#branch=` (any VCS type), or `tag`/`revision`-family
+                    # mutable keys for hg where the vocabulary marks them
+                    # mutable without the git/fossil tag exception above:
+                    # a perpetually-moving target, never release evidence.
+                    state = _recon_worse(state, RECON_PRESENT)
+            else:
+                # An unrecognized key within a known VCS type.
+                state = _recon_worse(state, RECON_UNKNOWN)
+    if saw_any_vcs_source and len(arrays.get("source", [])) + sum(
+        len(v) for k, v in arrays.items() if k != "source"
+    ) > 1:
+        # "Conflicting sources": more than one source element is present
+        # alongside at least one VCS-typed element. This analyzer cannot
+        # statically prove the several elements agree on release intent
+        # (e.g. one clean tag-pinned VCS entry plus an unrelated second
+        # download whose own state was already folded in above; even when
+        # every individual element looked release-compatible, the
+        # multiplicity itself is exactly the ambiguity finding 4 flags).
+        # This is deliberately ONLY a downgrade from ABSENT_PROVEN to
+        # UNKNOWN (never left as ABSENT_PROVEN), and never upgrades an
+        # already-PRESENT verdict away from PRESENT.
+        state = _recon_worse(state, RECON_UNKNOWN) if state == RECON_ABSENT_PROVEN else state
+    return state
+
+
+def _reconcile_src_rule_for_field(rule_id: str, path: str, field_words: list["Word"], resolved_vars: dict) -> str:
+    """Independent reconciler for SRC_GIT_PROTO / SRC_INSECURE_HTTP /
+    SRC_MUTABLE_REF, evaluated over ALL elements of one source/source_
+    <arch> array field. Deliberately structured as an explicit tri-state
+    PARTITION (known-compliant / known-violating / unknown-ambiguous) over
+    the SAME resolved structural primitives (`_extract_vcs_type_span`,
+    `_extract_protocol_span`, `_extract_fragment_key_span`) the primary
+    detector uses -- but as its own standalone classification function,
+    never by calling into or reusing `detect_findings_for_file`'s Finding
+    list. Folds every element's verdict together with `_recon_worse` so a
+    single violating or ambiguous element can never be silently outvoted
+    by other, cleaner elements in the same field.
+    """
+    state = RECON_ABSENT_PROVEN
+    for w in field_words:
+        effective, unresolved = resolve_effective_value(w.value, resolved_vars)
+        opaque_spans = _collect_opaque_spans(w, unresolved)
+        vcs_type_span = _extract_vcs_type_span(effective)
+        proto_span = _extract_protocol_span(effective)
+        frag_key_span = _extract_fragment_key_span(effective)
+        delimiter_ambiguous = bool(opaque_spans) and _delimiter_could_be_hidden(effective, opaque_spans, "://")
+
+        if rule_id in ("SRC_GIT_PROTO", "SRC_INSECURE_HTTP"):
+            if proto_span is None:
+                continue  # no scheme/transport at all -- not this rule's concern
+            if delimiter_ambiguous or _span_overlaps_any(proto_span, opaque_spans):
+                state = _recon_worse(state, RECON_UNKNOWN)
+                continue
+            proto_text = effective[proto_span[0]:proto_span[1]]
+            if rule_id == "SRC_GIT_PROTO":
+                if proto_text == "git":
+                    state = _recon_worse(state, RECON_PRESENT)
+                elif proto_text in ("https", "http", "ftps", "ftp", "hg", "svn", "bzr", "fossil"):
+                    pass  # known-secure or known-non-git-insecure transport for THIS rule's concern
+                else:
+                    state = _recon_worse(state, RECON_UNKNOWN)
+            else:  # SRC_INSECURE_HTTP -- scoped to literal plaintext http:// only, per current policy
+                if proto_text == "http":
+                    state = _recon_worse(state, RECON_PRESENT)
+                elif proto_text in ("https", "git", "ftps", "ftp", "hg", "svn", "bzr", "fossil"):
+                    pass
+                else:
+                    state = _recon_worse(state, RECON_UNKNOWN)
+        else:  # SRC_MUTABLE_REF
+            if vcs_type_span is None and frag_key_span is None:
+                continue  # no VCS type, no fragment at all -- not this rule's concern
+            if delimiter_ambiguous or (
+                vcs_type_span is not None and _span_overlaps_any(vcs_type_span, opaque_spans)
+            ) or (frag_key_span is not None and _span_overlaps_any(frag_key_span, opaque_spans)):
+                state = _recon_worse(state, RECON_UNKNOWN)
+                continue
+            if vcs_type_span is None:
+                continue  # a fragment on a non-VCS scheme is an inert URI fragment
+            vcs_type_text = effective[vcs_type_span[0]:vcs_type_span[1]]
+            vocab = VCS_FRAGMENT_VOCAB.get(vcs_type_text)
+            if vocab is None:
+                state = _recon_worse(state, RECON_UNKNOWN)
+                continue
+            immutable_keys, mutable_keys = vocab
+            if frag_key_span is None:
+                state = _recon_worse(state, RECON_PRESENT)  # implicit default ref: a moving target
+                continue
+            frag_key_text = effective[frag_key_span[0]:frag_key_span[1]]
+            if frag_key_text in mutable_keys:
+                state = _recon_worse(state, RECON_PRESENT)
+            elif frag_key_text not in immutable_keys:
+                state = _recon_worse(state, RECON_UNKNOWN)
+    return state
+
+
+def reconcile_current_state(cone: list[str], repo_root: Path) -> dict[tuple[str, str], dict[str, str]]:
+    """Computes the independent reconciliation state for every in-scope
+    (path, field) location across the whole current cone, for every
+    ratchetable rule with a registered reconciler. Returns
+    {(path, field): {rule_id: state}}. Raises ParseError (caller turns
+    this into PARSE_FAIL, matching primary detection's own fail-closed
+    behavior on an unparseable file) if any in-cone file cannot be safely
+    re-parsed -- an unreconcilable file must never be silently treated as
+    proving anything absent.
+    """
+    result: dict[tuple[str, str], dict[str, str]] = {}
+    for directory in cone:
+        pkgbuild = resolve_cone_path(directory, repo_root)
+        try:
+            text = pkgbuild.read_text(encoding="utf-8")
+        except OSError as e:
+            raise ParseError(f"cannot read {pkgbuild} for reconciliation: {e}") from e
+        rel = directory + "/PKGBUILD"
+
+        if is_toolchain_path(rel):
+            result[(rel, "pkgver")] = {"TOOLCHAIN_DEV_VER": _reconcile_toolchain_dev_ver(rel, text)}
+
+        try:
+            arrays, _ = parse_source_arrays(text, rel)
+        except ParseError as e:
+            raise ParseError(f"{rel}: cannot re-parse source arrays for reconciliation: {e}") from e
+        resolved_vars = build_resolved_variable_map(text)
+        for field_name, words in arrays.items():
+            result[(rel, field_name)] = {
+                rid: _reconcile_src_rule_for_field(rid, rel, words, resolved_vars)
+                for rid in ("SRC_GIT_PROTO", "SRC_INSECURE_HTTP", "SRC_MUTABLE_REF")
+            }
+    return result
+
+
+# Every RATCHETABLE rule_id must have an entry here (checked in load_rules)
+# -- an unrecognized ratchetable rule_id with no registered reconciler is
+# SCHEMA_INVALID(rules), fail-closed, rather than silently exempt from
+# removal-authorization/promotion-totality checking. TOOLCHAIN_DEV_VER's
+# reconciler is scoped by `is_toolchain_path` inside
+# `reconcile_current_state`; the three SRC_* rules share one per-field
+# reconciler function, parameterized by rule_id.
+RATCHETABLE_RULE_RECONCILERS = frozenset({
+    "TOOLCHAIN_DEV_VER", "SRC_GIT_PROTO", "SRC_INSECURE_HTTP", "SRC_MUTABLE_REF",
+})
+
+
+# ---------------------------------------------------------------------------
 # Cone / rules / ledger loading and validation
 # ---------------------------------------------------------------------------
 
@@ -1487,6 +1828,18 @@ def load_rules(rules_path: Path) -> dict[str, Rule]:
             raise ParseError(f"rule {rule_id}: reason must be a string")
         if severity == "ratchetable" and reason is None:
             raise ParseError(f"rule {rule_id}: ratchetable rules must declare an authoritative 'reason'")
+        if severity == "ratchetable" and rule_id not in RATCHETABLE_RULE_RECONCILERS:
+            # A ratchetable rule with no registered independent reconciler
+            # would be exempt from removal-authorization/promotion-
+            # totality checking by construction -- silently as dangerous
+            # as the CONTROLLING DEFECT this whole mechanism exists to
+            # close. Fail closed rather than adding a new ratchetable rule
+            # that nothing can safely gate.
+            raise ParseError(
+                f"rule {rule_id}: severity=ratchetable but no reconciler is registered in "
+                f"RATCHETABLE_RULE_RECONCILERS -- every ratchetable rule must have an independent "
+                f"reconciliation strategy before it may be ledgered/promoted"
+            )
         rules[rule_id] = Rule(rule_id, severity, promote, matched_marker, reason)
     return rules
 
@@ -1777,6 +2130,39 @@ def load_base_ledger_rule_ids(base_ledger_path: Path | None) -> set[str] | None:
     return rule_ids
 
 
+def load_base_ledger_rows(base_ledger_path: Path | None) -> list[dict] | None:
+    """Returns the FULL set of rows (as {field_name: value} dicts, same
+    shape as `load_ledger`'s return value) from the BASE (parent/merge-
+    base) commit's ledger, used ONLY for the removal-authorization check
+    (see `run`): comparing which (path, field, locator_sha256) keys
+    existed at the base commit but no longer exist in the current ledger,
+    i.e. were REMOVED by this change. Returns None under the exact same
+    conditions as `load_base_ledger_rule_ids` (no base available, or it
+    fails even a best-effort parse) -- in that case, the removal-
+    authorization check is skipped entirely (there is nothing to compare
+    a removal against at the introducing commit), never silently treated
+    as "no removals occurred". Read leniently, matching
+    `load_base_ledger_rule_ids`: this is historical data that was already
+    validated when it was committed.
+    """
+    if base_ledger_path is None or not Path(base_ledger_path).is_file():
+        return None
+    try:
+        raw = Path(base_ledger_path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    lines = raw.splitlines()
+    if not lines or lines[0] != LEDGER_HEADER:
+        return None
+    rows: list[dict] = []
+    for line in lines[1:]:
+        cols = line.split("\t")
+        if len(cols) != len(LEDGER_FIELDS):
+            return None
+        rows.append(dict(zip(LEDGER_FIELDS, cols)))
+    return rows
+
+
 def load_base_cone_entries(base_cone_path: Path | None) -> set[str] | None:
     """Returns the set of non-blank lines in the BASE (parent/merge-base)
     commit's cone file, used only for the cross-commit cone-monotonicity
@@ -1801,7 +2187,8 @@ def run(cone_path: Path = CONE_FILE, rules_path: Path = RULES_FILE, ledger_path:
         today: date | None = None, repo_root: Path = REPO_ROOT,
         base_ledger_path: Path | None = None,
         cone_digest_path: Path | None = CONE_DIGEST_FILE,
-        base_cone_path: Path | None = None) -> tuple[bool, list[str]]:
+        base_cone_path: Path | None = None,
+        base_reconciliation: dict[tuple[str, str], dict[str, str]] | None = None) -> tuple[bool, list[str]]:
     problems: list[str] = []
     today = today or date.today()
 
@@ -1854,17 +2241,60 @@ def run(cone_path: Path = CONE_FILE, rules_path: Path = RULES_FILE, ledger_path:
     # OWN file, so "current file has zero rows" can never catch that PR. If
     # no base ledger is available (this is the introducing commit), nothing
     # is treated as promoted yet, since nothing has ever been cleared.
+    #
+    # A zero-row base ledger is NECESSARY but no longer SUFFICIENT for
+    # promotion: it is also gated on the independent reconciler proving
+    # TOTALITY over the BASE COMMIT'S OWN tree (`base_reconciliation`, NOT
+    # the current tree's `reconciliation`) -- that the rule's condition was
+    # RECON_ABSENT_PROVEN at every single in-scope (path, field) location
+    # that existed at that historical commit, with no RECON_PRESENT/
+    # RECON_UNKNOWN anywhere. Using the BASE tree rather than the CURRENT
+    # one is deliberate and load-bearing: promotion must stay a permanent,
+    # one-way decision made once (when the ledger count first reached
+    # zero) and never re-litigated by whatever the CURRENT commit happens
+    # to contain -- if it instead asked "is totality true RIGHT NOW", the
+    # very act of this commit reintroducing a violation would silently
+    # withdraw the rule's promotion (defeating the entire point: a
+    # promoted rule must make reintroduction an immediate hard failure,
+    # not a door that reopens the moment someone walks through it). A rule
+    # whose ledger count reached zero only because its DETECTOR was too
+    # narrow to see a still-present condition AT THAT HISTORICAL COMMIT
+    # (the exact TOOLCHAIN_DEV_VER respelling attack) fails this totality
+    # proof and is correctly never promoted -- new ledger rows for it
+    # remain legal, which is the safe direction to err in: withholding
+    # promotion never disables enforcement, it only keeps the debt-
+    # tracking path open. Reintroduction by a BRAND NEW package this same
+    # commit adds (which `base_reconciliation` cannot see, since it never
+    # existed at the base commit) is still caught unconditionally by
+    # ordinary NEW_DEBT plus the "promoted rule cannot accept a new ledger
+    # row" check just below, neither of which consult this data at all.
     base_rule_ids = load_base_ledger_rule_ids(base_ledger_path)
     if base_rule_ids is not None:
-        promoted = {rid for rid, r in rules.items()
-                    if r.severity == "ratchetable" and r.promote_when_clear
-                    and rid not in base_rule_ids}
+        naive_promotion_candidates = {
+            rid for rid, r in rules.items()
+            if r.severity == "ratchetable" and r.promote_when_clear
+            and rid not in base_rule_ids
+        }
+        promoted = set()
+        for rid in naive_promotion_candidates:
+            if base_reconciliation is None:
+                continue  # no base-tree evidence available -- withhold, never guess
+            rule_states = [
+                state for field_states in base_reconciliation.values()
+                for r_id, state in field_states.items() if r_id == rid
+            ]
+            if rule_states and all(s == RECON_ABSENT_PROVEN for s in rule_states):
+                promoted.add(rid)
+            # else: totality not proven (no in-scope locations at all, or
+            # at least one PRESENT/UNKNOWN) -- promotion is withheld, not
+            # granted. This is a silent withholding, not a problem: it is
+            # not itself an error for a rule to be not-yet-promotable.
     else:
         promoted = set()
     for row in ledger_rows:
         for rid in row["rule_id"].split(","):
             if rid in promoted:
-                problems.append(f"SCHEMA_INVALID(ledger): rule_id {rid!r} is promoted (zero rows in the base ledger) and cannot accept new entries; offending row path={row['path']}")
+                problems.append(f"SCHEMA_INVALID(ledger): rule_id {rid!r} is promoted (zero rows in the base ledger, and independent reconciliation proves totality) and cannot accept new entries; offending row path={row['path']}")
 
     for row in ledger_rows:
         if today > datetime.strptime(row["expires"], "%Y-%m-%d").date():
@@ -1894,6 +2324,31 @@ def run(cone_path: Path = CONE_FILE, rules_path: Path = RULES_FILE, ledger_path:
     if absolute_hits:
         problems.extend(f"TOOLCHAIN_QUARANTINE: {h}" for h in absolute_hits)
 
+    # Independent reconciliation pass (see the "Reconciliation architecture"
+    # section above `Rule`/`load_rules`): computed from a FRESH re-parse of
+    # every in-cone file, entirely separate from the
+    # detect_findings_for_file() call above that drives V/NEW_DEBT/
+    # STALE_DEBT. This is what lets removal-authorization below ask "is
+    # the condition POSITIVELY proven gone on the CURRENT tree" rather
+    # than merely "did the primary detector fail to notice it" -- the
+    # exact distinction the CONTROLLING DEFECT collapsed. Deliberately
+    # computed AFTER the loop above (which already validated every cone
+    # path resolves and is readable, returning SCHEMA_INVALID(cone)/
+    # PARSE_FAIL as appropriate) so a ParseError here can only mean the
+    # content itself is unparseable, correctly bucketed as PARSE_FAIL.
+    try:
+        reconciliation = reconcile_current_state(cone, repo_root)
+    except ParseError as e:
+        return False, problems + [f"PARSE_FAIL: {e}"]
+
+    def _reconciled_state(path: str, field: str, rule_id: str) -> str:
+        """Looks up one rule's reconciliation state at one (path, field),
+        defaulting to RECON_UNKNOWN (never RECON_ABSENT_PROVEN) if that
+        location has no recorded state at all -- e.g. the field no longer
+        exists in this file, or the rule doesn't apply there. Absence of
+        evidence is never treated as evidence of absence."""
+        return reconciliation.get((path, field), {}).get(rule_id, RECON_UNKNOWN)
+
     ledger_keys = {(r["path"], r["field"], r["locator_sha256"]): r for r in ledger_rows}
     for key, f_ in v_keys.items():
         if key not in ledger_keys:
@@ -1906,6 +2361,40 @@ def run(cone_path: Path = CONE_FILE, rules_path: Path = RULES_FILE, ledger_path:
     for key, row in ledger_keys.items():
         if key not in v_keys:
             problems.append(f"STALE_DEBT (L\u2284V): {key[0]} field={key[1]} rule_id={row['rule_id']} locator={row['locator']!r} no longer violates on current disk content")
+
+    # Removal authorization (the direct fix for the CONTROLLING DEFECT):
+    # for every row that existed in the BASE ledger but is ABSENT from the
+    # current ledger -- i.e. this change DELETED it -- verify, via the
+    # independent reconciler (never via v_keys/the primary detector), that
+    # every rule_id the deleted row named is RECON_ABSENT_PROVEN at that
+    # exact (path, field) on the CURRENT disk content. A row whose exact
+    # OLD locator no longer matches anything (respelled, moved, or
+    # genuinely fixed) is otherwise invisible to both NEW_DEBT and
+    # STALE_DEBT once removed -- this check is the only place that looks
+    # at REMOVED rows at all. RECON_PRESENT or RECON_UNKNOWN for any
+    # constituent rule_id blocks the removal; only unanimous
+    # RECON_ABSENT_PROVEN across every constituent rule_id authorizes it.
+    base_ledger_rows = load_base_ledger_rows(base_ledger_path)
+    if base_ledger_rows is not None:
+        for base_row in base_ledger_rows:
+            base_key = (base_row.get("path"), base_row.get("field"), base_row.get("locator_sha256"))
+            if None in base_key or base_key in ledger_keys:
+                continue  # still present (or malformed base row) -- not a removal
+            rule_ids = base_row.get("rule_id", "").split(",")
+            unresolved_states = {
+                rid: _reconciled_state(base_row["path"], base_row["field"], rid)
+                for rid in rule_ids if rid in RATCHETABLE_RULE_RECONCILERS
+            }
+            blocking = {rid: st for rid, st in unresolved_states.items() if st != RECON_ABSENT_PROVEN}
+            if blocking:
+                problems.append(
+                    f"UNVERIFIED_DEBT_REMOVAL: {base_row['path']} field={base_row['field']} "
+                    f"rule_id={base_row['rule_id']!r} was removed from the ledger this change, but "
+                    f"independent reconciliation does not prove its condition is gone "
+                    f"({', '.join(f'{rid}={st}' for rid, st in sorted(blocking.items()))}); a ledgered debt row "
+                    f"may only be removed once its underlying condition is RECON_ABSENT_PROVEN, never merely "
+                    f"because the primary detector no longer notices it (former locator={base_row.get('locator')!r})"
+                )
 
     for row in ledger_rows:
         rel = row["path"]
@@ -1959,6 +2448,16 @@ def derive_github_actions_base_ref(env: dict | None = None) -> str | None:
     BaseRefResolutionError -- a corrupt or unreadable event file is exactly
     the kind of ambiguity this analyzer fails closed on everywhere else,
     never silently treated the same as "no base to check at all".
+
+    Missing/empty `GITHUB_EVENT_PATH` while `GITHUB_ACTIONS=true` is
+    ALWAYS a hard failure, never treated as "not in GitHub Actions" --
+    the real Actions runner unconditionally sets a non-empty
+    `GITHUB_EVENT_PATH` for every job, so its absence or emptiness in an
+    otherwise-genuine Actions environment can only mean something has
+    gone wrong (a misconfigured self-hosted runner, a spoofed/partial
+    environment, ...), and treating that silently as "nothing to check"
+    would reopen exactly the missing-base-ref bypass this function exists
+    to close.
     """
     env = env if env is not None else os.environ
     if env.get("GITHUB_ACTIONS") != "true":
@@ -1966,7 +2465,10 @@ def derive_github_actions_base_ref(env: dict | None = None) -> str | None:
     event_path = env.get("GITHUB_EVENT_PATH")
     event_name = env.get("GITHUB_EVENT_NAME", "")
     if not event_path:
-        return None
+        raise BaseRefResolutionError(
+            "GITHUB_ACTIONS=true but GITHUB_EVENT_PATH is missing/empty -- the real Actions runner always "
+            "sets this, so its absence cannot be silently treated as 'not running in GitHub Actions'"
+        )
     try:
         with open(event_path, "r", encoding="utf-8") as f:
             event = json.load(f)
@@ -2064,6 +2566,84 @@ def resolve_default_base_cone(cone_path: Path, base_ref: str | None, repo_root: 
     return _resolve_default_base_file(cone_path, base_ref, repo_root, "arm64-base-cone-", ".txt")
 
 
+def _git_show_text(base_ref: str, rel_path: str, repo_root: Path) -> str | None:
+    """Like `_resolve_default_base_file`, but returns the file's content as
+    a string directly rather than materializing it to a temp file --
+    used for reconciling MANY paths against one base commit without a
+    temp file per path. Same fail-closed semantics: None ONLY for
+    "the path legitimately did not exist at this (already-valid) base
+    commit"; every other failure raises BaseRefResolutionError. Callers
+    must have already validated `base_ref` itself (e.g. via
+    `_git_ref_is_valid_commit`) -- this function re-validates it anyway
+    for safety, at the cost of one extra `git rev-parse` per call site
+    that doesn't already guarantee it.
+    """
+    import subprocess
+    if not base_ref:
+        raise BaseRefResolutionError("--base-ref was not provided (empty/missing) -- refusing to silently skip the cross-commit check")
+    if not _git_ref_is_valid_commit(base_ref, repo_root):
+        raise BaseRefResolutionError(f"--base-ref {base_ref!r} does not resolve to a real commit in this repository")
+    try:
+        result = subprocess.run(
+            ["git", "show", f"{base_ref}:{rel_path}"],
+            cwd=repo_root, capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        raise BaseRefResolutionError(f"git show failed for {base_ref}:{rel_path}: {e}") from e
+    if result.returncode != 0:
+        stderr = result.stderr or ""
+        if "does not exist in" in stderr or "exists on disk, but not in" in stderr:
+            return None
+        raise BaseRefResolutionError(f"git show {base_ref}:{rel_path} failed unexpectedly: {stderr.strip()}")
+    return result.stdout
+
+
+def resolve_base_reconciliation(cone: list[str], base_ref: str | None, repo_root: Path = REPO_ROOT) -> dict[tuple[str, str], dict[str, str]] | None:
+    """Materializes every CURRENT-cone path's PKGBUILD content as it
+    existed at `base_ref` and computes the SAME independent reconciler
+    (`reconcile_current_state`'s per-file logic) against that historical
+    content, rather than the current tree -- this is what lets the
+    promotion-totality check answer the temporally correct question ("was
+    the rule's condition truly, provably absent everywhere AT THE MOMENT
+    the base ledger's row count reached zero for it") instead of being
+    confused by the CURRENT tree, which the SAME commit under review might
+    be simultaneously mutating. Returns None if `base_ref` is not
+    available at all (promotion is then never granted -- see `run`,
+    withholding is always the safe default).
+
+    A cone path that did NOT exist yet at the base commit (a genuinely
+    new package introduced by this very change) is simply OMITTED from
+    the result rather than raising -- this is not a gap: any violation
+    such a new package introduces is still caught unconditionally by the
+    ordinary NEW_DEBT check and by the separate, unconditional "a promoted
+    rule_id may never accept a new ledger row" check in `run`, neither of
+    which consult this reconciliation data at all.
+    """
+    if not base_ref:
+        return None
+    result: dict[tuple[str, str], dict[str, str]] = {}
+    for directory in cone:
+        rel = directory + "/PKGBUILD"
+        text = _git_show_text(base_ref, rel, repo_root)
+        if text is None:
+            continue  # genuinely new package at this base -- omit, see docstring
+        if is_toolchain_path(rel):
+            result[(rel, "pkgver")] = {"TOOLCHAIN_DEV_VER": _reconcile_toolchain_dev_ver(rel, text)}
+        try:
+            arrays, _ = parse_source_arrays(text, rel)
+        except ParseError:
+            # The historical content can't be safely re-parsed -- treat as
+            # no evidence for this path (omit), never as proof of absence.
+            continue
+        resolved_vars = build_resolved_variable_map(text)
+        for field_name, words in arrays.items():
+            result[(rel, field_name)] = {
+                rid: _reconcile_src_rule_for_field(rid, rel, words, resolved_vars)
+                for rid in ("SRC_GIT_PROTO", "SRC_INSECURE_HTTP", "SRC_MUTABLE_REF")
+            }
+    return result
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--cone", type=Path, default=CONE_FILE)
@@ -2116,6 +2696,23 @@ def main(argv=None) -> int:
             if base_cone_path is None and args.base_ref is not None:
                 base_cone_path = resolve_default_base_cone(args.cone, args.base_ref, repo_root=args.repo_root)
                 resolved_temp_base_cone = base_cone_path
+
+            # base_reconciliation feeds the promotion-totality gate (see
+            # `run`): it requires materializing every CURRENT-cone path's
+            # content AS IT EXISTED AT THE BASE COMMIT. If the current
+            # cone itself cannot even be loaded here, base_reconciliation
+            # is simply left None (promotion withheld -- always safe) and
+            # `run()`'s own cone loading below reports the real
+            # SCHEMA_INVALID(cone) error through its normal, controlled
+            # path rather than crashing main() with an uncaught exception.
+            base_reconciliation = None
+            if args.base_ref is not None:
+                try:
+                    cone_for_reconciliation = load_cone(args.cone, None if args.no_cone_digest else args.cone_digest)
+                except ParseError:
+                    cone_for_reconciliation = None
+                if cone_for_reconciliation is not None:
+                    base_reconciliation = resolve_base_reconciliation(cone_for_reconciliation, args.base_ref, repo_root=args.repo_root)
         except BaseRefResolutionError as e:
             print(f"FAIL: arm64-admission-guard: cannot resolve --base-ref {args.base_ref!r}: {e}", file=sys.stderr)
             print("  - refusing to silently proceed without the cross-commit monotonicity check", file=sys.stderr)
@@ -2125,7 +2722,7 @@ def main(argv=None) -> int:
         cone_digest_path = None if args.no_cone_digest else args.cone_digest
         ok, problems = run(args.cone, args.rules, args.ledger, today=today, repo_root=args.repo_root,
                             base_ledger_path=base_ledger_path, cone_digest_path=cone_digest_path,
-                            base_cone_path=base_cone_path)
+                            base_cone_path=base_cone_path, base_reconciliation=base_reconciliation)
     finally:
         for resolved_temp in (resolved_temp_base_ledger, resolved_temp_base_cone):
             if resolved_temp is not None:
