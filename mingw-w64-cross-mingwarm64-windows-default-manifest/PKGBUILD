@@ -15,7 +15,7 @@ license=('BSD')
 makedepends=('git' "${_mingw_suff}-mingwarm64-gcc" "${_mingw_suff}-mingwarm64-binutils" 'autotools')
 _GIT_TAG="release-6_4"
 options=('!strip' '!buildflags')
-source=("git://sourceware.org/git/cygwin-apps/${_realname}.git#tag=${_GIT_TAG}")
+source=("git+https://sourceware.org/git/cygwin-apps/${_realname}.git#commit=c12b0a634b1a9d721b3e1b2220fa09e5353fe25e")
 sha256sums=('69743b1ad7e6046d95a04b9aa565e3216a570dae5ff48e615f96a08781b56aa0')
 msys2_references=(
   'cygwin: windows-default-manifest'

@@ -12,7 +12,7 @@ license=('spdx:AGPL-3.0-or-later')
 arch=('i686' 'x86_64')
 depends=('sh')
 makedepends=('autotools' 'gcc')
-source=(http://download.oracle.com/berkeley-db/db-${pkgver}.tar.gz)
+source=(https://download.oracle.com/berkeley-db/db-${pkgver}.tar.gz)
 options=('!makeflags')
 sha256sums=('a9c5e2b004a5777aa03510cfe5cd766a4a3b777713406b02809c17c8e0e7a8fb')
 

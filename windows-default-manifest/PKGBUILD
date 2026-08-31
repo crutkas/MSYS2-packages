@@ -10,7 +10,7 @@ arch=('i686' 'x86_64')
 license=('BSD')
 makedepends=('git' 'gcc' 'autotools')
 _GIT_TAG="release-${pkgver//\./_}"
-source=("git://sourceware.org/git/cygwin-apps/${pkgname}.git#tag=${_GIT_TAG}")
+source=("git+https://sourceware.org/git/cygwin-apps/${pkgname}.git#commit=c12b0a634b1a9d721b3e1b2220fa09e5353fe25e")
 sha256sums=('SKIP')
 
 prepare() {

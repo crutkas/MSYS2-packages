@@ -13,7 +13,7 @@ msys2_references=(
 depends=('dash')
 makedepends=('coreutils' 'git' 'grep' 'gzip' 'sed' 'autotools' 'gcc')
 # options=('debug' '!strip')
-source=(${pkgname}-${pkgver}::git://sourceware.org/git/cygwin-apps/rebase.git#tag=${pkgname}-${pkgver//./-}
+source=(${pkgname}-${pkgver}::git+https://sourceware.org/git/cygwin-apps/rebase.git#commit=4b9c18ba098855504dac71cdfcf24e892750e89d
         '001-rebase-4.4.1-msys2.patch'
         '002-rebaseall-add-python-exts.patch'
         '003-allow-non-database-mode-when-__CYGWIN__-__MSYS__.patch'

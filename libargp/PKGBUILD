@@ -10,7 +10,7 @@ url="https://www.gnu.org/software/gnulib/"
 license=('spdx:LGPL-3.0-or-later')
 makedepends=('autotools' 'gcc' 'git')
 _commit=5e1283bb13d74c6619afb71c6a322c648a8cc91e
-source=("git+git://git.savannah.gnu.org/gnulib.git#commit=${_commit}"
+source=("git+https://github.com/coreutils/gnulib.git#commit=${_commit}"
         libargp-config.patch
         libargp-global-variables.patch
         libargp-so.patch)

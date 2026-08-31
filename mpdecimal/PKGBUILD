@@ -11,7 +11,7 @@ license=('spdx:BSD-2-Clause')
 depends=('gcc-libs')
 makedepends=('autotools' 'gcc')
 checkdepends=('wget')
-source=("http://www.bytereef.org/software/${pkgname}/releases/${pkgname}-${pkgver}.tar.gz")
+source=("https://www.bytereef.org/software/${pkgname}/releases/${pkgname}-${pkgver}.tar.gz")
 sha256sums=('942445c3245b22730fd41a67a7c5c231d11cb1b9936b9c0f76334fb7d0b4468c')
 
 prepare() {
